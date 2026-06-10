@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WohnungsSwipe</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,700&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+
+<!-- ══ AUTH ═══════════════════════════════════════════════ -->
+<div id="auth-screen" class="screen active">
+  <div class="auth-bg">
+    <div class="auth-blob blob1"></div>
+    <div class="auth-blob blob2"></div>
+    <div class="auth-blob blob3"></div>
+  </div>
+  <div class="auth-container">
+    <div class="auth-logo">
+      <span class="logo-icon">🏠</span>
+      <h1 class="logo-text">WohnungsSwipe</h1>
+      <p class="logo-sub">Wohnungssuche, neu gedacht.</p>
+    </div>
+    <div class="auth-tabs">
+      <button class="tab-btn active" data-tab="login">Anmelden</button>
+      <button class="tab-btn" data-tab="register">Registrieren</button>
+    </div>
+    <form id="login-form" class="auth-form active">
+      <div class="field-group">
+        <label>E-Mail</label>
+        <input type="email" id="login-email" placeholder="deine@email.de" required />
+      </div>
+      <div class="field-group">
+        <label>Passwort</label>
+        <input type="password" id="login-password" placeholder="••••••••" required />
+      </div>
+      <button type="submit" class="btn-primary">Einloggen</button>
+      <button type="button" class="btn-link" id="show-forgot">Passwort vergessen?</button>
+      <p class="form-error" id="login-error"></p>
+    </form>
+    <form id="register-form" class="auth-form">
+      <div class="field-group">
+        <label>Username</label>
+        <input type="text" id="reg-username" placeholder="Dein Name" required />
+      </div>
+      <div class="field-group">
+        <label>E-Mail</label>
+        <input type="email" id="reg-email" placeholder="deine@email.de" required />
+      </div>
+      <div class="field-group">
+        <label>Passwort</label>
+        <input type="password" id="reg-password" placeholder="Mindestens 6 Zeichen" required />
+      </div>
+      <button type="submit" class="btn-primary">Account erstellen</button>
+      <p class="form-error" id="reg-error"></p>
+    </form>
+    <!-- Forgot password panel -->
+    <div id="forgot-panel" style="display:none;flex-direction:column;gap:14px">
+      <p style="color:var(--text2);font-size:.875rem">Gib deine E-Mail ein – wir schicken dir einen Reset-Link.</p>
+      <div class="field-group">
+        <label>E-Mail</label>
+        <input type="email" id="forgot-email" placeholder="deine@email.de" />
+      </div>
+      <button class="btn-primary" id="forgot-submit">Reset-Link senden</button>
+      <button class="btn-link" id="hide-forgot">← Zurück zum Login</button>
+      <p class="form-success" id="forgot-ok"></p>
+      <p class="form-error" id="forgot-error"></p>
+    </div>
+  </div>
+</div>
+
+<!-- ══ APP ════════════════════════════════════════════════ -->
+<div id="app-screen" class="screen">
+  <nav class="app-nav">
+    <div class="nav-logo">🏠 <span>WohnungsSwipe</span></div>
+    <div class="nav-actions">
+      <span id="nav-username" class="nav-user"></span>
+      <button id="logout-btn" class="btn-ghost">Logout</button>
+    </div>
+  </nav>
+
+  <div class="tab-bar">
+    <button class="tab-nav active" data-view="swipe">   <span class="tab-icon">🃏</span><span>Swipen</span></button>
+    <button class="tab-nav"        data-view="add">     <span class="tab-icon">➕</span><span>Hinzufügen</span></button>
+    <button class="tab-nav"        data-view="rated">   <span class="tab-icon">💚</span><span>Bewertet</span></button>
+    <button class="tab-nav"        data-view="groups">  <span class="tab-icon">👥</span><span>Gruppen</span></button>
+    <button class="tab-nav"        data-view="jobs">    <span class="tab-icon">📡</span><span>Suchagenten</span></button>
+    <button class="tab-nav"        data-view="settings"><span class="tab-icon">⚙️</span><span>Profil</span></button>
+  </div>
+
+  <!-- ── SWIPE ─────────────────────────────────────── -->
+  <div id="view-swipe" class="view active">
+    <div class="swipe-header">
+      <div class="swipe-counter"><span id="remaining-count">0</span> übrig</div>
+    </div>
+    <div class="card-stack" id="card-stack">
+      <div class="empty-state" id="empty-swipe">
+        <div class="empty-icon">🏘️</div>
+        <p>Keine Inserate mehr.</p>
+        <p class="empty-sub">Füge welche hinzu oder richte einen Suchagenten ein.</p>
+      </div>
+    </div>
+    <div class="swipe-actions" id="swipe-actions" style="display:none">
+      <button class="action-btn dislike"   id="btn-dislike"   title="Nein (←)">✕</button>
+      <button class="action-btn superlike" id="btn-superlike" title="Super! (↑)">⭐</button>
+      <button class="action-btn like"      id="btn-like"      title="Ja! (→)">♥</button>
+    </div>
+  </div>
+
+  <!-- ── ADD ───────────────────────────────────────── -->
+  <div id="view-add" class="view">
+    <div class="view-content">
+      <h2 class="view-title">Inserat hinzufügen</h2>
+      <p class="view-subtitle">Link von Kleinanzeigen, ImmobilienScout24 oder Immowelt einfügen.</p>
+      <div class="card-form">
+        <div class="field-group">
+          <label>Inserat-Link</label>
+          <input type="url" id="listing-url" placeholder="https://www.kleinanzeigen.de/s-anzeige/..." />
+        </div>
+        <button id="add-listing-btn" class="btn-primary">
+          <span id="add-btn-text">Laden &amp; hinzufügen</span>
+          <span id="add-btn-spinner" style="display:none">⏳ Lädt…</span>
+        </button>
+        <p class="form-error" id="add-error"></p>
+      </div>
+      <div id="add-preview" style="display:none">
+        <p class="section-label">Vorschau</p>
+        <div id="preview-card"></div>
+      </div>
+      <div class="card-form" style="margin-top:16px">
+        <p class="section-label">Unterstützte Portale</p>
+        <div class="chip-row">
+          <span class="chip">kleinanzeigen.de</span>
+          <span class="chip">immobilienscout24.de</span>
+          <span class="chip">immowelt.de</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── RATED ─────────────────────────────────────── -->
+  <div id="view-rated" class="view">
+    <div class="view-content">
+      <div class="rated-header">
+        <h2 class="view-title">Meine Bewertungen</h2>
+        <div class="rated-filter" id="rated-filter">
+          <button class="filter-btn active" data-filter="all">Alle</button>
+          <button class="filter-btn" data-filter="like">♥ Likes</button>
+          <button class="filter-btn" data-filter="superlike">⭐ Super</button>
+          <button class="filter-btn" data-filter="dislike">✕ Nein</button>
+        </div>
+      </div>
+      <div id="rated-list" class="listings-grid"></div>
+      <div id="rated-empty" class="empty-state" style="display:none">
+        <div class="empty-icon">💔</div><p>Keine Bewertungen.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── GROUPS ────────────────────────────────────── -->
+  <div id="view-groups" class="view">
+    <div class="view-content">
+      <div id="groups-main">
+        <h2 class="view-title">Gruppen</h2>
+        <p class="view-subtitle">Such gemeinsam mit anderen.</p>
+        <div class="btn-row">
+          <button class="btn-primary" id="create-group-btn" style="flex:1">Erstellen</button>
+          <button class="btn-secondary" id="join-group-btn" style="flex:1">Beitreten</button>
+        </div>
+        <div id="groups-list" class="groups-grid"></div>
+      </div>
+      <div id="group-detail" style="display:none">
+        <button class="btn-ghost back-btn" id="back-to-groups">← Zurück</button>
+        <div id="group-detail-content"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── JOBS (Suchagenten) ─────────────────────────── -->
+  <div id="view-jobs" class="view">
+    <div class="view-content">
+      <h2 class="view-title">Suchagenten</h2>
+      <p class="view-subtitle">Suchergebnis-URL eintragen – neue Inserate werden automatisch geladen.</p>
+      <div class="card-form">
+        <div class="field-group">
+          <label>Bezeichnung</label>
+          <input type="text" id="job-label" placeholder="z.B. Berlin 2-Zimmer bis 1200€" />
+        </div>
+        <div class="field-group">
+          <label>Such-URL (Suchergebnisseite)</label>
+          <input type="url" id="job-url" placeholder="https://www.kleinanzeigen.de/s-wohnung-mieten/berlin/c203l3331" />
+        </div>
+        <div class="field-group" style="max-width:180px">
+          <label>Intervall (Minuten)</label>
+          <input type="number" id="job-interval" value="60" min="10" max="1440" />
+        </div>
+        <div class="field-group">
+          <label>Sichtbarkeit</label>
+          <select id="job-visibility">
+            <option value="global">🌐 Alle Nutzer sehen diese Inserate</option>
+            <option value="private">🔒 Nur ich (privat)</option>
+            <option value="group">👥 Bestimmte Gruppe</option>
+          </select>
+        </div>
+        <div id="job-visibility-group-row" class="field-group" style="display:none">
+          <label>Gruppe</label>
+          <select id="job-visibility-group">
+            <option value="">Gruppe wählen…</option>
+          </select>
+        </div>
+        <button id="job-add-btn" class="btn-primary">
+          <span id="job-add-text">Suchagent hinzufügen</span>
+          <span id="job-add-spinner" style="display:none">⏳ …</span>
+        </button>
+        <p class="form-error" id="job-error"></p>
+      </div>
+
+      <div class="card-form hint-card">
+        <p class="section-label">So bekommst du eine Such-URL</p>
+        <div class="hint-list">
+          <div class="hint-item"><strong>Kleinanzeigen</strong> – Suche filtern (Ort, Preis, Zimmer) → URL aus der Adressleiste kopieren.</div>
+          <div class="hint-item"><strong>ImmobilienScout24</strong> – Suchergebnisse filtern → URL kopieren.</div>
+          <div class="hint-item"><strong>Immowelt</strong> – Suchergebnisse filtern → URL kopieren.</div>
+        </div>
+      </div>
+
+      <div id="jobs-list"></div>
+      <div id="jobs-empty" class="empty-state" style="display:none">
+        <div class="empty-icon">📡</div>
+        <p>Noch keine Suchagenten.</p>
+        <p class="empty-sub">Trage oben eine Suchergebnis-URL ein.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── SETTINGS ──────────────────────────────────── -->
+  <div id="view-settings" class="view">
+    <div class="view-content">
+      <h2 class="view-title">Profil</h2>
+
+      <!-- Account card -->
+      <div class="settings-card">
+        <div class="settings-avatar-row">
+          <div class="settings-avatar" id="settings-avatar">?</div>
+          <div>
+            <div class="settings-display-name" id="settings-display-name">—</div>
+            <div class="settings-display-email" id="settings-display-email">—</div>
+            <div class="settings-display-since" id="settings-display-since"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Stats -->
+      <div class="settings-section">
+        <div class="section-label">Statistiken</div>
+        <div class="stats-grid">
+          <div class="stat-chip"><span class="stat-num" id="stat-likes">—</span><span class="stat-label">Likes</span></div>
+          <div class="stat-chip"><span class="stat-num" id="stat-superlikes">—</span><span class="stat-label">Super-Likes</span></div>
+          <div class="stat-chip"><span class="stat-num" id="stat-dislikes">—</span><span class="stat-label">Übersprungen</span></div>
+          <div class="stat-chip"><span class="stat-num" id="stat-groups">—</span><span class="stat-label">Gruppen</span></div>
+        </div>
+      </div>
+
+      <!-- Username -->
+      <div class="settings-section">
+        <div class="section-label">Username ändern</div>
+        <div class="inline-row">
+          <div class="field-group" style="flex:1">
+            <input type="text" id="settings-username" placeholder="Neuer Username" />
+          </div>
+          <button class="btn-secondary compact" id="save-username-btn">Speichern</button>
+        </div>
+        <p class="form-error"   id="settings-username-error"></p>
+        <p class="form-success" id="settings-username-ok"></p>
+      </div>
+
+      <!-- Email -->
+      <div class="settings-section">
+        <div class="section-label">E-Mail ändern</div>
+        <div class="inline-row">
+          <div class="field-group" style="flex:1">
+            <input type="email" id="settings-email" placeholder="neue@email.de" />
+          </div>
+          <button class="btn-secondary compact" id="save-email-btn">Speichern</button>
+        </div>
+        <p class="form-error"   id="settings-email-error"></p>
+        <p class="form-success" id="settings-email-ok"></p>
+      </div>
+
+      <!-- Password -->
+      <div class="settings-section">
+        <div class="section-label">Passwort ändern</div>
+        <div class="field-group">
+          <label>Aktuelles Passwort</label>
+          <input type="password" id="settings-pw-current" placeholder="••••••••" />
+        </div>
+        <div class="field-group">
+          <label>Neues Passwort</label>
+          <input type="password" id="settings-pw-new" placeholder="Mindestens 6 Zeichen" />
+        </div>
+        <div class="field-group">
+          <label>Wiederholen</label>
+          <input type="password" id="settings-pw-confirm" placeholder="••••••••" />
+        </div>
+        <button class="btn-primary" id="save-password-btn">Passwort ändern</button>
+        <p class="form-error"   id="settings-pw-error"></p>
+        <p class="form-success" id="settings-pw-ok"></p>
+      </div>
+
+      <!-- Notifications -->
+      <div class="settings-section">
+        <div class="section-label">Benachrichtigungen</div>
+
+        <div class="notify-row">
+          <div class="notify-info">
+            <span class="notify-label">🔔 Browser-Benachrichtigungen</span>
+            <span class="notify-sub" id="push-status-text">Nicht aktiviert</span>
+          </div>
+          <button class="btn-secondary compact" id="push-toggle-btn">Aktivieren</button>
+        </div>
+
+        <div class="toggle-list">
+          <label class="toggle-row">
+            <span>📧 E-Mail-Benachrichtigungen</span>
+            <input type="checkbox" id="notify-email" class="toggle-cb" />
+            <span class="toggle-switch"></span>
+          </label>
+          <label class="toggle-row">
+            <span>🎉 Match in Gruppe</span>
+            <input type="checkbox" id="notify-match" class="toggle-cb" />
+            <span class="toggle-switch"></span>
+          </label>
+          <label class="toggle-row">
+            <span>📡 Neue Inserate vom Suchagenten</span>
+            <input type="checkbox" id="notify-new" class="toggle-cb" />
+            <span class="toggle-switch"></span>
+          </label>
+        </div>
+        <p class="notify-hint" id="email-config-hint" style="display:none">
+          ⚠️ E-Mail-Versand ist nicht konfiguriert. Setze die SMTP_* Umgebungsvariablen im Docker-Container.
+        </p>
+        <p class="form-success" id="notify-ok"></p>
+      </div>
+
+      <button class="btn-danger" id="settings-logout-btn">Ausloggen</button>
+    </div>
+  </div>
+</div><!-- end app-screen -->
+
+<!-- ══ LIGHTBOX ═══════════════════════════════════════════ -->
+<div id="lightbox" class="lightbox" style="display:none">
+  <button class="lb-close" id="lb-close">✕</button>
+  <button class="lb-arrow lb-prev" id="lb-prev">‹</button>
+  <button class="lb-arrow lb-next" id="lb-next">›</button>
+  <div class="lb-img-wrap"><img id="lb-img" src="" alt="" /></div>
+  <div class="lb-counter" id="lb-counter"></div>
+  <div class="lb-thumbnails" id="lb-thumbnails"></div>
+</div>
+
+<!-- Modals -->
+<div id="create-group-modal" class="modal" style="display:none">
+  <div class="modal-card">
+    <h3>Gruppe erstellen</h3>
+    <div class="field-group"><label>Name</label><input type="text" id="new-group-name" placeholder="z.B. WG-Suche 2025" /></div>
+    <div class="modal-actions">
+      <button class="btn-ghost" id="cancel-create">Abbrechen</button>
+      <button class="btn-primary" id="confirm-create">Erstellen</button>
+    </div>
+    <p class="form-error" id="create-group-error"></p>
+  </div>
+</div>
+<div id="join-group-modal" class="modal" style="display:none">
+  <div class="modal-card">
+    <h3>Gruppe beitreten</h3>
+    <div class="field-group"><label>Einladungscode</label><input type="text" id="join-code" placeholder="ABC123" style="text-transform:uppercase" /></div>
+    <div class="modal-actions">
+      <button class="btn-ghost" id="cancel-join">Abbrechen</button>
+      <button class="btn-primary" id="confirm-join">Beitreten</button>
+    </div>
+    <p class="form-error" id="join-group-error"></p>
+  </div>
+</div>
+
+<div id="toast"></div>
+<script src="/js/app.js"></script>
+</body>
+</html>

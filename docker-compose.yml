@@ -1,0 +1,35 @@
+version: '3.8'
+services:
+  wohnungsswipe:
+    build: .
+    container_name: wohnungsswipe
+    ports:
+      - "3000:3000"
+    volumes:
+      - wohnungsswipe_data:/data
+    environment:
+      - PORT=3000
+      - DB_PATH=/data/wohnungsswipe.db
+      - SESSION_SECRET=aendere-mich-bitte-im-produktivbetrieb
+
+      # ── E-Mail (optional) ─────────────────────────────
+      # Ohne diese Einstellungen werden E-Mails nur geloggt, nicht gesendet.
+      # Beispiel für Gmail:
+      #   SMTP_HOST=smtp.gmail.com
+      #   SMTP_PORT=587
+      #   SMTP_USER=deine@gmail.com
+      #   SMTP_PASS=dein-app-passwort
+      #   SMTP_FROM="WohnungsSwipe" <deine@gmail.com>
+      - SMTP_HOST=
+      - SMTP_PORT=587
+      - SMTP_USER=
+      - SMTP_PASS=
+      - SMTP_FROM=
+
+      # ── Basis-URL (für Links in E-Mails & Push) ────────
+      - BASE_URL=http://localhost:3000
+
+    restart: unless-stopped
+
+volumes:
+  wohnungsswipe_data:
