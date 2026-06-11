@@ -396,3 +396,45 @@ a { color:var(--accent); text-decoration:none; }
 .btn-vis-save:hover { background:var(--accent2); }
 .job-actions .btn-vis { border-color:rgba(167,139,250,.3); color:#a78bfa; }
 .job-actions .btn-vis:hover { background:rgba(167,139,250,.1); }
+
+/* ── Contacted badge & button ──────────────────────────── */
+.contacted-badge {
+  display:inline-flex; align-items:center; gap:5px;
+  font-size:.72rem; font-weight:600;
+  color:#60b4f0; background:rgba(96,180,240,.1);
+  border:1px solid rgba(96,180,240,.25);
+  border-radius:6px; padding:2px 8px; margin-bottom:6px;
+}
+.contact-btn {
+  width:100%; display:flex; align-items:center; justify-content:center; gap:5px;
+  background:rgba(96,180,240,.08); color:#60b4f0;
+  border:1px solid rgba(96,180,240,.2); border-radius:8px;
+  padding:6px 10px; font-size:.76rem; cursor:pointer; transition:background .2s;
+  margin-bottom:5px;
+}
+.contact-btn:hover { background:rgba(96,180,240,.16); }
+.contact-btn.active { background:rgba(91,220,138,.1); color:var(--like); border-color:rgba(91,220,138,.25); }
+
+/* Note textarea inside cards */
+.contact-note-wrap { margin-top:6px; display:none; }
+.contact-note-wrap.open { display:block; }
+.contact-note {
+  width:100%; background:var(--bg3); border:1px solid var(--border);
+  border-radius:8px; padding:7px 10px; color:var(--text);
+  font-size:.78rem; resize:vertical; min-height:56px; outline:none;
+  font-family:inherit; transition:border-color .2s;
+}
+.contact-note:focus { border-color:var(--accent); }
+.contact-note-actions { display:flex; gap:6px; margin-top:5px; }
+.contact-note-actions button {
+  font-size:.74rem; padding:4px 10px; border-radius:7px; cursor:pointer;
+  border:1px solid var(--border); background:var(--bg3); color:var(--text2);
+  transition:background .15s;
+}
+.contact-note-actions button:hover { background:var(--bg2); color:var(--text); }
+.contact-note-save { border-color:var(--accent) !important; color:var(--accent) !important; }
+
+/* Archive card – slightly muted */
+.list-card.archived { opacity:.85; }
+.list-card.archived:hover { opacity:1; }
+.archive-ts { font-size:.68rem; color:var(--text3); margin-bottom:5px; }

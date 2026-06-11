@@ -77,6 +77,7 @@ function showView(name) {
   if (name === 'groups')   loadGroups();
   if (name === 'jobs')     loadJobs();
   if (name === 'settings') loadSettings();
+  if (name === 'archive')  loadArchive();
 }
 
 document.querySelectorAll('.tab-nav').forEach(btn =>
@@ -275,10 +276,64 @@ function buildListCard(listing, opts = {}) {
       ${opts.matchInfo ? `<div class="match-count" style="font-size:.76rem;color:var(--like);margin-bottom:5px">${esc(opts.matchInfo)}</div>` : ''}
       ${swipe ? `<div class="swipe-badge ${swipe}">${swipeLabelMap[swipe]||swipe}</div>` : ''}
       <a class="list-card-link" href="${esc(listing.url)}" target="_blank" rel="noopener">Inserat öffnen →</a>
+      ${listing.contacted ? '<div class="contacted-badge">📬 Angeschrieben</div>' : ''}
+      <button class="contact-btn ${listing.contacted ? 'active' : ''}" data-contact-btn data-listing-id="${listing.id}" data-contacted="${listing.contacted ? '1' : '0'}">
+        ${listing.contacted ? '✓ Angeschrieben' : '📬 Als angeschrieben markieren'}
+      </button>
+      <div class="contact-note-wrap" data-note-wrap>
+        <textarea class="contact-note" placeholder="Notiz (optional): Wann kontaktiert, Antwort, etc." data-note-text>${esc(listing.contact_note || '')}</textarea>
+        <div class="contact-note-actions">
+          <button class="contact-note-save" data-note-save>Speichern</button>
+          <button data-note-cancel>Abbrechen</button>
+        </div>
+      </div>
       <button class="unswipe-btn" data-listing-id="${listing.id}">↩ Bewertung zurückziehen</button>
     </div>`;
 
   if (hasImg) div.querySelector('.list-card-img-area').addEventListener('click', () => lb.open(images));
+  // Contact button wiring
+  const contactBtn  = div.querySelector('[data-contact-btn]');
+  const noteWrap    = div.querySelector('[data-note-wrap]');
+  const noteText    = div.querySelector('[data-note-text]');
+  const noteSave    = div.querySelector('[data-note-save]');
+  const noteCancel  = div.querySelector('[data-note-cancel]');
+
+  if (contactBtn) {
+    contactBtn.addEventListener('click', async () => {
+      const isContacted = contactBtn.dataset.contacted === '1';
+      if (!isContacted) {
+        // Mark as contacted + show note field
+        const r = await api('/api/contacts', { method: 'POST', body: {
+          listingId: listing.id,
+          groupId: opts.groupId || null,
+          note: noteText?.value || '',
+        }});
+        if (r.success) {
+          contactBtn.textContent    = '✓ Angeschrieben';
+          contactBtn.dataset.contacted = '1';
+          contactBtn.classList.add('active');
+          noteWrap?.classList.add('open');
+          toast('📬 Als angeschrieben markiert');
+        }
+      } else {
+        // Toggle note panel
+        noteWrap?.classList.toggle('open');
+      }
+    });
+  }
+
+  if (noteSave) {
+    noteSave.addEventListener('click', async () => {
+      await api(`/api/contacts/${listing.id}`, { method: 'PATCH', body: {
+        note: noteText?.value || '',
+        groupId: opts.groupId || null,
+      }});
+      noteWrap?.classList.remove('open');
+      toast('✓ Notiz gespeichert');
+    });
+  }
+  if (noteCancel) noteCancel.addEventListener('click', () => noteWrap?.classList.remove('open'));
+
   div.querySelector('.unswipe-btn').addEventListener('click', async () => {
     const btn = div.querySelector('.unswipe-btn');
     btn.disabled = true; btn.textContent = '⏳ …';
@@ -287,11 +342,24 @@ function buildListCard(listing, opts = {}) {
       div.style.opacity = '0'; div.style.transition = 'opacity .3s';
       setTimeout(() => div.remove(), 280);
       toast('↩ Bewertung zurückgezogen');
-      state.swipeQueue = []; // force reload on next swipe tab
+      state.swipeQueue = [];
     } else {
       btn.disabled = false; btn.textContent = '↩ Bewertung zurückziehen';
     }
   });
+
+  // Hide unswipe button for archived cards (listing is offline anyway)
+  if (opts.isArchive) {
+    div.querySelector('.unswipe-btn')?.remove();
+    // Add archive timestamp if available
+    if (listing.archived_at) {
+      const ts = document.createElement('div');
+      ts.className = 'archive-ts';
+      const d = new Date(listing.archived_at + 'Z');
+      ts.textContent = `📦 Archiviert ${d.toLocaleDateString('de-DE', { day:'2-digit', month:'2-digit', year:'numeric' })}`;
+      div.querySelector('.list-card-body')?.prepend(ts);
+    }
+  }
   return div;
 }
 
@@ -650,6 +718,9 @@ async function openGroupDetail(group) {
                 <button data-action="remove"    data-listing="${r.id}">↩ Zurückziehen</button>
               </div>
             </div>
+            ${r.group_contacted
+              ? `<div class="contacted-badge" style="display:inline-flex;margin-top:4px">📬 Angeschrieben ${r.group_contact_note ? '· ' + esc(r.group_contact_note.substring(0,40)) : ''}</div>`
+              : `<button class="contact-btn" style="margin-top:5px;justify-content:flex-start" onclick="markGroupContacted(${r.id},${gid},this)">📬 Als angeschrieben markieren</button>`}
             <a href="${esc(r.url)}" target="_blank" rel="noopener" style="font-size:.73rem;color:var(--accent);display:block;margin-top:5px">Inserat öffnen →</a>
           </div>
         </div>`;
@@ -1103,6 +1174,63 @@ function arrayBufferToBase64(buf) {
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(()=>{});
 }
+
+
+
+// Helper for group detail contact button (called from inline onclick)
+async function markGroupContacted(listingId, groupId, btn) {
+  const note = prompt('Notiz (optional): Wann kontaktiert, Antwort erhalten, etc.') || '';
+  const r = await api('/api/contacts', { method: 'POST', body: { listingId, groupId, note } });
+  if (r.success) {
+    const badge = document.createElement('div');
+    badge.className = 'contacted-badge';
+    badge.style.display = 'inline-flex';
+    badge.style.marginTop = '4px';
+    badge.textContent = '📬 Angeschrieben' + (note ? ' · ' + note.substring(0, 40) : '');
+    btn.replaceWith(badge);
+    toast('📬 Als angeschrieben markiert');
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+//  ARCHIVE
+// ══════════════════════════════════════════════════════════
+let _archiveAll = [];
+let _archiveFilter = 'all';
+
+async function loadArchive() {
+  const d = await api('/api/archive');
+  _archiveAll = d.listings || [];
+  renderArchive();
+}
+
+function renderArchive() {
+  const list  = $id('archive-list');
+  const empty = $id('archive-empty');
+  let items = _archiveAll;
+  if (_archiveFilter === 'contacted') {
+    items = items.filter(l => l.contacted);
+  } else if (_archiveFilter !== 'all') {
+    items = items.filter(l => l.my_swipe === _archiveFilter);
+  }
+  list.innerHTML = '';
+  if (!items.length) { empty.style.display = ''; return; }
+  empty.style.display = 'none';
+  items.forEach(l => {
+    const card = buildListCard({ ...l, contact_note: l.contact_note }, { isArchive: true });
+    card.classList.add('archived');
+    list.appendChild(card);
+  });
+}
+
+$id('archive-filter')?.addEventListener('click', e => {
+  const btn = e.target.closest('.filter-btn');
+  if (!btn) return;
+  $id('archive-filter').querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  _archiveFilter = btn.dataset.filter;
+  renderArchive();
+});
 
 // ══════════════════════════════════════════════════════════
 //  INIT

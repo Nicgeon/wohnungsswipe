@@ -88,6 +88,7 @@
     <button class="tab-nav"        data-view="rated">   <span class="tab-icon">💚</span><span>Bewertet</span></button>
     <button class="tab-nav"        data-view="groups">  <span class="tab-icon">👥</span><span>Gruppen</span></button>
     <button class="tab-nav"        data-view="jobs">    <span class="tab-icon">📡</span><span>Suchagenten</span></button>
+    <button class="tab-nav"        data-view="archive"> <span class="tab-icon">🗃️</span><span>Archiv</span></button>
     <button class="tab-nav"        data-view="settings"><span class="tab-icon">⚙️</span><span>Profil</span></button>
   </div>
 
@@ -232,6 +233,32 @@
         <div class="empty-icon">📡</div>
         <p>Noch keine Suchagenten.</p>
         <p class="empty-sub">Trage oben eine Suchergebnis-URL ein.</p>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- ── ARCHIVE ──────────────────────────────────────── -->
+  <div id="view-archive" class="view">
+    <div class="view-content">
+      <div class="rated-header">
+        <div>
+          <h2 class="view-title">Archiv</h2>
+          <p style="font-size:.83rem;color:var(--text2);margin-top:2px">Inserate die offline gegangen sind.</p>
+        </div>
+        <div class="rated-filter" id="archive-filter">
+          <button class="filter-btn active" data-filter="all">Alle</button>
+          <button class="filter-btn" data-filter="like">♥ Likes</button>
+          <button class="filter-btn" data-filter="superlike">⭐ Super</button>
+          <button class="filter-btn" data-filter="dislike">✕ Nein</button>
+          <button class="filter-btn" data-filter="contacted">📬 Angeschrieben</button>
+        </div>
+      </div>
+      <div id="archive-list" class="listings-grid"></div>
+      <div id="archive-empty" class="empty-state" style="display:none">
+        <div class="empty-icon">🗃️</div>
+        <p>Noch nichts im Archiv.</p>
+        <p class="empty-sub">Offline gegangene Inserate landen hier automatisch.</p>
       </div>
     </div>
   </div>

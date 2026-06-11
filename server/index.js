@@ -132,6 +132,21 @@ async function initDb() {
       auth       TEXT NOT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS contacts (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      listing_id   INTEGER NOT NULL,
+      user_id      INTEGER,
+      group_id     INTEGER,
+      note         TEXT DEFAULT '',
+      contacted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(listing_id, user_id, group_id)
+    );
+    CREATE TABLE IF NOT EXISTS archive_notes (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      listing_id  INTEGER UNIQUE NOT NULL,
+      reason      TEXT DEFAULT 'offline',
+      archived_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 
   // Migrations
@@ -511,10 +526,14 @@ app.delete('/api/listings/swipe/:id', requireAuth, (req, res) => {
 
 app.get('/api/listings/rated', requireAuth, (req, res) => {
   const listings = dbAll(`
-    SELECT l.*, s.action as my_swipe FROM listings l
+    SELECT l.*, s.action as my_swipe,
+      CASE WHEN c.id IS NOT NULL THEN 1 ELSE 0 END as contacted
+    FROM listings l
     JOIN swipes s ON l.id=s.listing_id AND s.user_id=?
+    LEFT JOIN contacts c ON c.listing_id=l.id AND c.user_id=? AND c.group_id IS NULL
+    WHERE l.status != 'offline'
     ORDER BY s.swiped_at DESC
-  `, [req.session.userId]);
+  `, [req.session.userId, req.session.userId]);
   res.json({ listings });
 });
 
@@ -542,6 +561,81 @@ app.get('/api/listings/liked', requireAuth, (req, res) => {
       [req.session.userId]);
   }
   res.json({ listings: liked || [] });
+});
+
+// ── Archive ───────────────────────────────────────────────
+// Returns offline listings that this user has swiped on
+app.get('/api/archive', requireAuth, (req, res) => {
+  const listings = dbAll(`
+    SELECT l.*, s.action as my_swipe,
+      an.archived_at, an.reason as archive_reason,
+      CASE WHEN c.id IS NOT NULL THEN 1 ELSE 0 END as contacted
+    FROM listings l
+    JOIN swipes s ON l.id=s.listing_id AND s.user_id=?
+    LEFT JOIN archive_notes an ON an.listing_id=l.id
+    LEFT JOIN contacts c ON c.listing_id=l.id AND c.user_id=? AND c.group_id IS NULL
+    WHERE l.status = 'offline'
+    ORDER BY an.archived_at DESC, s.swiped_at DESC
+  `, [req.session.userId, req.session.userId]);
+  res.json({ listings });
+});
+
+// ── Contacts ───────────────────────────────────────────────
+// Mark a listing as "contacted" for current user or a group
+app.post('/api/contacts', requireAuth, (req, res) => {
+  const { listingId, groupId, note } = req.body;
+  if (!listingId) return res.status(400).json({ error: 'listingId erforderlich' });
+  if (groupId) {
+    // verify user is in group
+    if (!dbGet('SELECT 1 FROM group_members WHERE group_id=? AND user_id=?', [groupId, req.session.userId]))
+      return res.status(403).json({ error: 'Kein Zugriff auf diese Gruppe' });
+    try {
+      dbRun('INSERT OR REPLACE INTO contacts (listing_id,user_id,group_id,note,contacted_at) VALUES (?,NULL,?,?,datetime("now"))',
+        [listingId, groupId, note||'']);
+    } catch(e) { return res.status(500).json({ error: e.message }); }
+  } else {
+    try {
+      dbRun('INSERT OR REPLACE INTO contacts (listing_id,user_id,group_id,note,contacted_at) VALUES (?,?,NULL,?,datetime("now"))',
+        [listingId, req.session.userId, note||'']);
+    } catch(e) { return res.status(500).json({ error: e.message }); }
+  }
+  saveDb();
+  res.json({ success: true });
+});
+
+app.delete('/api/contacts/:listingId', requireAuth, (req, res) => {
+  const { groupId } = req.query;
+  if (groupId) {
+    dbRun('DELETE FROM contacts WHERE listing_id=? AND group_id=?', [req.params.listingId, groupId]);
+  } else {
+    dbRun('DELETE FROM contacts WHERE listing_id=? AND user_id=? AND group_id IS NULL', [req.params.listingId, req.session.userId]);
+  }
+  saveDb();
+  res.json({ success: true });
+});
+
+// Update note on contact
+app.patch('/api/contacts/:listingId', requireAuth, (req, res) => {
+  const { note, groupId } = req.body;
+  if (groupId) {
+    dbRun('UPDATE contacts SET note=? WHERE listing_id=? AND group_id=?', [note||'', req.params.listingId, groupId]);
+  } else {
+    dbRun('UPDATE contacts SET note=? WHERE listing_id=? AND user_id=? AND group_id IS NULL', [note||'', req.params.listingId, req.session.userId]);
+  }
+  saveDb();
+  res.json({ success: true });
+});
+
+// Get contact status for a listing (used by group results)
+app.get('/api/contacts/:listingId', requireAuth, (req, res) => {
+  const { groupId } = req.query;
+  let contact;
+  if (groupId) {
+    contact = dbGet('SELECT * FROM contacts WHERE listing_id=? AND group_id=?', [req.params.listingId, groupId]);
+  } else {
+    contact = dbGet('SELECT * FROM contacts WHERE listing_id=? AND user_id=? AND group_id IS NULL', [req.params.listingId, req.session.userId]);
+  }
+  res.json({ contact: contact || null });
 });
 
 // ── Groups ─────────────────────────────────────────────────
@@ -594,13 +688,16 @@ app.get('/api/groups/:id/results', requireAuth, (req, res) => {
   const rows = dbAll(`
     SELECT l.id,l.title,l.price,l.price_cold,l.size,l.location,l.rooms,
            l.image_url,l.images_json,l.tags_json,l.url,l.platform,l.status,
-           s.user_id,s.action,u.username
+           s.user_id,s.action,u.username,
+           CASE WHEN c.id IS NOT NULL THEN 1 ELSE 0 END as group_contacted,
+           c.note as group_contact_note, c.contacted_at as group_contacted_at
     FROM listings l
     JOIN swipes s ON l.id=s.listing_id AND s.user_id IN (${ph})
     JOIN users u ON s.user_id=u.id
+    LEFT JOIN contacts c ON c.listing_id=l.id AND c.group_id=?
     WHERE l.status != 'offline'
     ORDER BY l.id
-  `, memberIds);
+  `, [...memberIds, gid]);
 
   const byId = {};
   rows.forEach(r => {
@@ -609,6 +706,8 @@ app.get('/api/groups/:id/results', requireAuth, (req, res) => {
       size: r.size, location: r.location, rooms: r.rooms, status: r.status,
       image_url: r.image_url, images_json: r.images_json, tags_json: r.tags_json,
       url: r.url, platform: r.platform, votes: [], score: 0,
+      group_contacted: r.group_contacted, group_contact_note: r.group_contact_note,
+      group_contacted_at: r.group_contacted_at,
     };
     const pts = r.action === 'superlike' ? 2 : r.action === 'like' ? 1 : -1;
     byId[r.id].votes.push({ username: r.username, action: r.action, pts });
@@ -753,6 +852,9 @@ async function runStatusCheck() {
   console.log(`[Status] Prüfe ${listings.length} aktive Inserate…`);
   const { offline, reserved } = await checkExistingListings(listings, (id, status) => {
     dbRun("UPDATE listings SET status=? WHERE id=?", [status, id]);
+    if (status === 'offline') {
+      try { dbRun("INSERT OR IGNORE INTO archive_notes (listing_id,reason) VALUES (?,?)", [id, 'offline']); } catch(_){}
+    }
     saveDb();
     console.log(`[Status] Inserat ${id} → ${status}`);
   });
