@@ -720,7 +720,7 @@ async function openGroupDetail(group) {
             </div>
             ${r.group_contacted
               ? `<div class="contacted-badge" style="display:inline-flex;margin-top:4px">📬 Angeschrieben ${r.group_contact_note ? '· ' + esc(r.group_contact_note.substring(0,40)) : ''}</div>`
-              : `<button class="contact-btn" style="margin-top:5px;justify-content:flex-start" onclick="markGroupContacted(${r.id},${gid},this)">📬 Als angeschrieben markieren</button>`}
+              : `<button class="contact-btn" style="margin-top:5px;justify-content:flex-start" onclick="markGroupContacted(${r.id},${group.id},this)">📬 Als angeschrieben markieren</button>`}
             <a href="${esc(r.url)}" target="_blank" rel="noopener" style="font-size:.73rem;color:var(--accent);display:block;margin-top:5px">Inserat öffnen →</a>
           </div>
         </div>`;
