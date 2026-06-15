@@ -68,10 +68,22 @@ function showScreen(id) {
 }
 
 function showView(name) {
+  if (name === 'more') {
+    toggleMoreSubtabs();
+    return;
+  }
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.querySelectorAll('.tab-nav').forEach(b => b.classList.remove('active'));
+  hideMoreSubtabs();
   $id(`view-${name}`).classList.add('active');
-  document.querySelector(`.tab-nav[data-view="${name}"]`).classList.add('active');
+  const directTab = document.querySelector(`.tab-nav[data-view="${name}"]`);
+  const moreTab = document.querySelector('.tab-nav[data-view="more"]');
+  if (directTab) directTab.classList.add('active');
+  else if (moreTab && ['add', 'jobs', 'archive'].includes(name)) {
+    moreTab.classList.add('active');
+    setMoreSubtabActive(name);
+    showMoreSubtabs();
+  }
   if (name === 'swipe')    loadSwipeQueue();
   if (name === 'rated')    loadRated();
   if (name === 'groups')   loadGroups();
@@ -80,9 +92,39 @@ function showView(name) {
   if (name === 'archive')  loadArchive();
 }
 
+function showMoreSubtabs() {
+  const bar = $id('more-subtabs');
+  if (bar) bar.style.display = 'flex';
+}
+function hideMoreSubtabs() {
+  const bar = $id('more-subtabs');
+  if (bar) bar.style.display = 'none';
+}
+function toggleMoreSubtabs() {
+  const bar = $id('more-subtabs');
+  if (!bar) return;
+  bar.style.display = bar.style.display === 'none' ? 'flex' : 'none';
+}
+function setMoreSubtabActive(name) {
+  document.querySelectorAll('.subtab-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.subview === name);
+  });
+}
+
 document.querySelectorAll('.tab-nav').forEach(btn =>
   btn.addEventListener('click', () => showView(btn.dataset.view))
 );
+
+document.querySelectorAll('.subtab-btn').forEach(btn =>
+  btn.addEventListener('click', () => showView(btn.dataset.subview))
+);
+
+if (!window.__listCardMenuGlobalBound) {
+  document.addEventListener('click', () => {
+    document.querySelectorAll('.list-card-menu.open').forEach(m => m.classList.remove('open'));
+  });
+  window.__listCardMenuGlobalBound = true;
+}
 
 // ══════════════════════════════════════════════════════════
 //  AUTH
@@ -249,6 +291,7 @@ function buildListCard(listing, opts = {}) {
   const cold   = (listing.price_cold || '').trim();
   const total  = (listing.price      || '').trim();
   const swipe  = listing.my_swipe;
+  const hasContextMenu = !!swipe;
   const swipeLabelMap = { like:'♥ Like', superlike:'⭐ Super-Like', dislike:'✕ Nein' };
 
   const div = document.createElement('div');
@@ -264,6 +307,26 @@ function buildListCard(listing, opts = {}) {
       ${listing.status === 'reserved'  ? `<span class="list-card-offline-badge" style="background:rgba(240,200,60,.8)">Reserviert</span>` : ''}
     </div>
     <div class="list-card-body">
+      ${hasContextMenu ? `<div class="list-card-menu-wrap">
+        <button class="list-card-menu-btn" data-card-menu-btn aria-label="Aktionen">⋯</button>
+        <div class="list-card-menu" data-card-menu>
+          <div class="list-card-menu-label">Bewertung ändern</div>
+          <button data-rate-action="like" data-listing-id="${listing.id}">♥ Like setzen</button>
+          <button data-rate-action="superlike" data-listing-id="${listing.id}">⭐ Super-Like setzen</button>
+          <button data-rate-action="dislike" data-listing-id="${listing.id}">✕ Nein setzen</button>
+          <button class="contact-btn ${listing.contacted ? 'active' : ''}" data-contact-btn data-listing-id="${listing.id}" data-contacted="${listing.contacted ? '1' : '0'}">
+            ${listing.contacted ? '✓ Angeschrieben' : '📬 Als angeschrieben markieren'}
+          </button>
+          <div class="contact-note-wrap" data-note-wrap>
+            <textarea class="contact-note" placeholder="Notiz (optional): Wann kontaktiert, Antwort, etc." data-note-text>${esc(listing.contact_note || '')}</textarea>
+            <div class="contact-note-actions">
+              <button class="contact-note-save" data-note-save>Speichern</button>
+              <button data-note-cancel>Abbrechen</button>
+            </div>
+          </div>
+          <button class="unswipe-btn" data-unswipe-btn data-listing-id="${listing.id}">↩ Bewertung zurückziehen</button>
+        </div>
+      </div>` : ''}
       <div class="list-card-title">${esc(listing.title || 'Inserat')}</div>
       ${cold  ? `<div class="list-card-price">${esc(cold)} <span style="font-size:.7rem;font-weight:400;color:var(--text2)">kalt</span></div>` : ''}
       ${total && total !== cold ? `<div class="list-card-price-warm">${esc(total)} warm</div>` : ''}
@@ -277,20 +340,37 @@ function buildListCard(listing, opts = {}) {
       ${swipe ? `<div class="swipe-badge ${swipe}">${swipeLabelMap[swipe]||swipe}</div>` : ''}
       <a class="list-card-link" href="${esc(listing.url)}" target="_blank" rel="noopener">Inserat öffnen →</a>
       ${listing.contacted ? '<div class="contacted-badge">📬 Angeschrieben</div>' : ''}
-      <button class="contact-btn ${listing.contacted ? 'active' : ''}" data-contact-btn data-listing-id="${listing.id}" data-contacted="${listing.contacted ? '1' : '0'}">
-        ${listing.contacted ? '✓ Angeschrieben' : '📬 Als angeschrieben markieren'}
-      </button>
-      <div class="contact-note-wrap" data-note-wrap>
-        <textarea class="contact-note" placeholder="Notiz (optional): Wann kontaktiert, Antwort, etc." data-note-text>${esc(listing.contact_note || '')}</textarea>
-        <div class="contact-note-actions">
-          <button class="contact-note-save" data-note-save>Speichern</button>
-          <button data-note-cancel>Abbrechen</button>
-        </div>
-      </div>
-      <button class="unswipe-btn" data-listing-id="${listing.id}">↩ Bewertung zurückziehen</button>
     </div>`;
 
   if (hasImg) div.querySelector('.list-card-img-area').addEventListener('click', () => lb.open(images));
+  const menuBtn = div.querySelector('[data-card-menu-btn]');
+  const menu = div.querySelector('[data-card-menu]');
+  menuBtn?.addEventListener('click', e => {
+    e.stopPropagation();
+    const opening = !menu.classList.contains('open');
+    document.querySelectorAll('.list-card-menu.open').forEach(m => m.classList.remove('open'));
+    menu.classList.toggle('open', opening);
+  });
+  menu?.addEventListener('click', e => e.stopPropagation());
+
+  div.querySelectorAll('[data-rate-action]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const action = btn.dataset.rateAction;
+      const r = await api('/api/listings/swipe', { method: 'POST', body: { listingId: listing.id, action } });
+      if (r.success) {
+        if (swipe) listing.my_swipe = action;
+        const labels = { like: '💚 Like gesetzt', superlike: '⭐ Super-Like gesetzt', dislike: '✕ Abgelehnt' };
+        const badge = div.querySelector('.swipe-badge');
+        if (badge) {
+          badge.className = `swipe-badge ${action}`;
+          badge.textContent = swipeLabelMap[action] || action;
+        }
+        menu.classList.remove('open');
+        toast(labels[action] || '✓ Gespeichert');
+      }
+    });
+  });
+
   // Contact button wiring
   const contactBtn  = div.querySelector('[data-contact-btn]');
   const noteWrap    = div.querySelector('[data-note-wrap]');
@@ -334,8 +414,8 @@ function buildListCard(listing, opts = {}) {
   }
   if (noteCancel) noteCancel.addEventListener('click', () => noteWrap?.classList.remove('open'));
 
-  div.querySelector('.unswipe-btn').addEventListener('click', async () => {
-    const btn = div.querySelector('.unswipe-btn');
+  div.querySelector('[data-unswipe-btn]')?.addEventListener('click', async () => {
+    const btn = div.querySelector('[data-unswipe-btn]');
     btn.disabled = true; btn.textContent = '⏳ …';
     const r = await api(`/api/listings/swipe/${listing.id}`, { method: 'DELETE' });
     if (r.success) {
@@ -350,7 +430,7 @@ function buildListCard(listing, opts = {}) {
 
   // Hide unswipe button for archived cards (listing is offline anyway)
   if (opts.isArchive) {
-    div.querySelector('.unswipe-btn')?.remove();
+    div.querySelector('[data-unswipe-btn]')?.remove();
     // Add archive timestamp if available
     if (listing.archived_at) {
       const ts = document.createElement('div');
