@@ -5,10 +5,19 @@
   --accent: #e8c97a; --accent2: #c9a84c;
   --like: #5bdc8a; --dislike: #f05060; --superlike: #60b4f0;
   --r: 16px; --shadow: 0 8px 40px rgba(0,0,0,.5);
+
+  /* Fluid type scale – scales between mobile (360px) and desktop (1200px) viewports.
+     clamp(min, preferred, max) keeps text from overflowing on small screens
+     and from looking tiny on large ones, without separate per-breakpoint rules. */
+  --fs-display: clamp(1.35rem, 1.1rem + 1.1vw, 2rem);    /* big page titles */
+  --fs-title:   clamp(0.95rem, 0.85rem + 0.4vw, 1.15rem); /* card / section titles */
+  --fs-body:    clamp(0.82rem, 0.78rem + 0.18vw, 0.95rem);/* body text, descriptions */
+  --fs-small:   clamp(0.72rem, 0.69rem + 0.12vw, 0.82rem);/* meta, badges, captions */
+  --fs-tiny:    clamp(0.64rem, 0.62rem + 0.08vw, 0.72rem);/* tab labels, micro text */
 }
 *,*::before,*::after { box-sizing:border-box; margin:0; padding:0; }
 html,body { height:100%; overflow:hidden; }
-body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text); font-size:15px; line-height:1.5; -webkit-font-smoothing:antialiased; }
+body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text); font-size:clamp(14px, 13px + 0.3vw, 15px); line-height:1.5; -webkit-font-smoothing:antialiased; overflow-wrap:break-word; }
 input,select,button,textarea { font-family:inherit; }
 a { color:var(--accent); text-decoration:none; }
 
@@ -79,7 +88,7 @@ a { color:var(--accent); text-decoration:none; }
 .nav-user { font-size:.82rem;color:var(--text2); }
 
 .tab-bar { display:flex;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0; }
-.tab-nav { flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:9px 0;background:transparent;border:none;color:var(--text3);font-size:.62rem;font-weight:500;cursor:pointer;transition:color .2s;position:relative; }
+.tab-nav { flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:9px 0;background:transparent;border:none;color:var(--text3);font-size:var(--fs-tiny);font-weight:500;cursor:pointer;transition:color .2s;position:relative; }
 .tab-nav .tab-icon { font-size:1.15rem; }
 .tab-nav.active { color:var(--accent); }
 .tab-nav.active::after { content:'';position:absolute;bottom:0;left:50%;transform:translateX(-50%);width:22px;height:2px;background:var(--accent);border-radius:2px; }
@@ -87,8 +96,8 @@ a { color:var(--accent); text-decoration:none; }
 .view { display:none;flex:1;overflow:hidden;flex-direction:column; }
 .view.active { display:flex; }
 .view-content { flex:1;overflow-y:auto;padding:18px;scrollbar-width:thin;scrollbar-color:var(--bg3) transparent; }
-.view-title { font-family:'Fraunces',serif;font-size:1.5rem;font-weight:700;margin-bottom:3px; }
-.view-subtitle { font-size:.85rem;color:var(--text2);margin-bottom:20px; }
+.view-title { font-family:'Fraunces',serif;font-size:var(--fs-display);font-weight:700;margin-bottom:3px; }
+.view-subtitle { font-size:var(--fs-body);color:var(--text2);margin-bottom:20px; }
 
 /* ── Swipe view ──────────────────────────────────────── */
 #view-swipe { background:var(--bg); }
@@ -122,7 +131,7 @@ a { color:var(--accent); text-decoration:none; }
 
 .card-body { padding:13px 15px 15px; }
 .card-platform { display:inline-block;font-size:.68rem;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:var(--accent);background:rgba(232,201,122,.1);border-radius:6px;padding:2px 7px;margin-bottom:5px; }
-.card-title { font-family:'Fraunces',serif;font-size:1.02rem;font-weight:700;margin-bottom:8px;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden; }
+.card-title { font-family:'Fraunces',serif;font-size:var(--fs-title);font-weight:700;margin-bottom:8px;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden; }
 
 .card-price-row { display:flex;align-items:center;gap:7px;margin-bottom:8px;flex-wrap:wrap; }
 .card-price-main { font-family:'Fraunces',serif;font-size:1.1rem;font-weight:700; }
@@ -135,7 +144,7 @@ a { color:var(--accent); text-decoration:none; }
 .card-tags { display:flex;flex-wrap:wrap;gap:4px;margin-bottom:7px; }
 .card-tag { font-size:.68rem;color:var(--text3);border:1px solid var(--border);border-radius:20px;padding:1px 7px; }
 
-.card-desc { font-size:.78rem;color:var(--text2);line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden; }
+.card-desc { font-size:var(--fs-small);color:var(--text2);line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden; }
 .card-link { display:block;text-align:right;font-size:.75rem;color:var(--accent);margin-top:7px;opacity:.7; }
 .card-link:hover { opacity:1; }
 
@@ -182,7 +191,7 @@ a { color:var(--accent); text-decoration:none; }
 .list-card-offline-badge { position:absolute;top:6px;left:6px;background:rgba(240,80,96,.8);border-radius:6px;padding:2px 7px;font-size:.68rem;color:#fff;font-weight:600; }
 
 .list-card-body { padding:11px 13px 13px; }
-.list-card-title { font-family:'Fraunces',serif;font-size:.92rem;font-weight:700;margin-bottom:5px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden; }
+.list-card-title { font-family:'Fraunces',serif;font-size:var(--fs-title);font-weight:700;margin-bottom:5px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden; }
 .list-card-price { font-size:.85rem;font-weight:600;color:var(--accent);margin-bottom:2px; }
 .list-card-price-warm { font-size:.73rem;color:var(--text2);margin-bottom:5px; }
 .list-card-meta { font-size:.75rem;color:var(--text2);display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px; }
@@ -225,7 +234,7 @@ a { color:var(--accent); text-decoration:none; }
 .tier-gespalten   { background:rgba(232,201,122,.1);color:var(--accent); }
 .tier-abgelehnt   { background:rgba(240,80,96,.1);color:var(--dislike); }
 
-.group-listing-card { background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:13px;margin-bottom:9px;display:flex;gap:12px;align-items:flex-start; }
+.group-listing-card { background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:13px;padding-right:38px;margin-bottom:9px;display:flex;gap:12px;align-items:flex-start;position:relative; }
 .group-listing-img { width:72px;height:60px;object-fit:cover;border-radius:8px;flex-shrink:0;background:var(--bg3); }
 .group-listing-img-placeholder { width:72px;height:60px;border-radius:8px;flex-shrink:0;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:1.4rem; }
 .group-listing-info { flex:1;min-width:0; }
@@ -438,3 +447,110 @@ a { color:var(--accent); text-decoration:none; }
 .list-card.archived { opacity:.85; }
 .list-card.archived:hover { opacity:1; }
 .archive-ts { font-size:.68rem; color:var(--text3); margin-bottom:5px; }
+
+/* ══════════════════════════════════════════════════════════
+   MINI ACTION BUTTONS (Undo / Skip) – flank the main swipe buttons
+══════════════════════════════════════════════════════════ */
+.action-btn-mini {
+  width:40px; height:40px; border-radius:50%; border:1.5px solid var(--border);
+  background:transparent; color:var(--text2); font-size:1rem; cursor:pointer;
+  display:flex; align-items:center; justify-content:center;
+  transition:transform .15s, box-shadow .15s, background .2s, border-color .2s, opacity .2s;
+  flex-shrink:0;
+}
+.action-btn-mini:hover { transform:scale(1.08); }
+.action-btn-mini.undo  { border-color:rgba(167,139,250,.35); color:#a78bfa; }
+.action-btn-mini.undo:hover { background:rgba(167,139,250,.12); box-shadow:0 2px 14px rgba(167,139,250,.25); }
+.action-btn-mini.skip  { border-color:rgba(155,152,150,.35); color:var(--text2); }
+.action-btn-mini.skip:hover { background:rgba(255,255,255,.06); box-shadow:0 2px 14px rgba(0,0,0,.2); }
+.action-btn-mini:disabled { opacity:.3; cursor:default; transform:none; }
+.action-btn-mini:disabled:hover { background:transparent; box-shadow:none; }
+
+/* ══════════════════════════════════════════════════════════
+   "SKIP" SWIPE DIRECTION – downward fly + grey overlay badge
+══════════════════════════════════════════════════════════ */
+.swipe-card.fly-down {
+  transition:transform .4s cubic-bezier(.4,0,.2,1), opacity .4s;
+  transform:translateY(120%) scale(.92) !important; opacity:0;
+}
+.card-overlay-badge.badge-skip {
+  bottom:18px; left:50%; transform:translateX(-50%);
+  color:var(--text2); border-color:var(--text2); top:auto;
+}
+
+/* ══════════════════════════════════════════════════════════
+   THREE-DOT CARD MENU (replaces inline contact/unswipe buttons)
+══════════════════════════════════════════════════════════ */
+.card-menu-btn {
+  position:absolute; top:8px; right:8px; z-index:5;
+  width:30px; height:30px; border-radius:50%;
+  background:rgba(0,0,0,.55); border:none; color:#fff;
+  font-size:1.1rem; line-height:1; cursor:pointer;
+  display:flex; align-items:center; justify-content:center;
+  backdrop-filter:blur(3px); transition:background .15s;
+}
+.card-menu-btn:hover { background:rgba(0,0,0,.75); }
+
+/* Variant for cards on a dark card-background (group view) rather than a photo —
+   the default dark/blurred button has too little contrast there, so use a
+   lighter, bordered version instead. */
+.group-card-menu-btn {
+  background:var(--bg3); border:1px solid var(--border); color:var(--text2);
+  backdrop-filter:none;
+}
+.group-card-menu-btn:hover { background:var(--bg2); color:var(--text); border-color:rgba(255,255,255,.18); }
+
+.card-menu-section-label {
+  font-size:var(--fs-tiny); font-weight:600; text-transform:uppercase;
+  letter-spacing:.5px; color:var(--text3); padding:7px 12px 3px;
+}
+.card-menu-divider { height:1px; background:var(--border); margin:4px 6px; }
+
+.card-menu {
+  position:absolute; top:42px; right:8px; z-index:20;
+  background:var(--bg2); border:1px solid var(--border); border-radius:10px;
+  padding:5px; min-width:200px; box-shadow:var(--shadow);
+  display:flex; flex-direction:column; gap:2px;
+  animation:fadeIn .15s ease;
+}
+.card-menu button {
+  background:transparent; border:none; border-radius:7px;
+  padding:9px 12px; font-size:var(--fs-small); color:var(--text2);
+  cursor:pointer; text-align:left; transition:background .12s, color .12s;
+  white-space:nowrap;
+}
+.card-menu button:hover { background:var(--bg3); color:var(--text); }
+
+/* ══════════════════════════════════════════════════════════
+   "MEHR" MENU (consolidates Jobs / Archive / Settings)
+══════════════════════════════════════════════════════════ */
+.more-menu { display:flex; flex-direction:column; gap:10px; }
+.more-menu-row {
+  display:flex; align-items:center; gap:14px;
+  background:var(--bg2); border:1px solid var(--border); border-radius:14px;
+  padding:16px; cursor:pointer; text-align:left; width:100%;
+  transition:border-color .2s, transform .15s;
+}
+.more-menu-row:hover { border-color:rgba(255,255,255,.18); transform:translateY(-1px); }
+.more-menu-icon { font-size:1.6rem; flex-shrink:0; }
+.more-menu-text { flex:1; display:flex; flex-direction:column; gap:2px; min-width:0; }
+.more-menu-title { font-family:'Fraunces',serif; font-size:var(--fs-title); font-weight:700; color:var(--text); }
+.more-menu-sub { font-size:var(--fs-small); color:var(--text2); }
+.more-menu-arrow { font-size:1.4rem; color:var(--text3); flex-shrink:0; }
+
+/* ══════════════════════════════════════════════════════════
+   RESPONSIVE SAFETY NET — narrow phones (≤380px)
+   Tightens paddings/gaps so nothing overflows horizontally,
+   on top of the fluid clamp() scale already applied above.
+══════════════════════════════════════════════════════════ */
+@media (max-width: 380px) {
+  .view-content       { padding:14px; }
+  .card-body           { padding:11px 12px 13px; }
+  .swipe-actions       { gap:10px; padding:10px 10px 14px; }
+  .action-btn          { width:52px; height:52px; }
+  .action-btn.like     { width:62px; height:62px; }
+  .action-btn-mini     { width:34px; height:34px; }
+  .listings-grid       { grid-template-columns:repeat(auto-fill, minmax(150px,1fr)); gap:9px; }
+  .groups-grid         { grid-template-columns:1fr; }
+  .nav-user            { display:none; } /* save space on the narrowest screens */
+}

@@ -87,9 +87,7 @@
     <button class="tab-nav"        data-view="add">     <span class="tab-icon">➕</span><span>Hinzufügen</span></button>
     <button class="tab-nav"        data-view="rated">   <span class="tab-icon">💚</span><span>Bewertet</span></button>
     <button class="tab-nav"        data-view="groups">  <span class="tab-icon">👥</span><span>Gruppen</span></button>
-    <button class="tab-nav"        data-view="jobs">    <span class="tab-icon">📡</span><span>Suchagenten</span></button>
-    <button class="tab-nav"        data-view="archive"> <span class="tab-icon">🗃️</span><span>Archiv</span></button>
-    <button class="tab-nav"        data-view="settings"><span class="tab-icon">⚙️</span><span>Profil</span></button>
+    <button class="tab-nav"        data-view="more">    <span class="tab-icon">⋯</span><span>Mehr</span></button>
   </div>
 
   <!-- ── SWIPE ─────────────────────────────────────── -->
@@ -105,9 +103,11 @@
       </div>
     </div>
     <div class="swipe-actions" id="swipe-actions" style="display:none">
-      <button class="action-btn dislike"   id="btn-dislike"   title="Nein (←)">✕</button>
-      <button class="action-btn superlike" id="btn-superlike" title="Super! (↑)">⭐</button>
-      <button class="action-btn like"      id="btn-like"      title="Ja! (→)">♥</button>
+      <button class="action-btn-mini undo"  id="btn-undo"     title="Letzte Aktion zurücknehmen" disabled>↩</button>
+      <button class="action-btn dislike"    id="btn-dislike"  title="Nein (←)">✕</button>
+      <button class="action-btn superlike"  id="btn-superlike" title="Super! (↑)">⭐</button>
+      <button class="action-btn like"       id="btn-like"     title="Ja! (→)">♥</button>
+      <button class="action-btn-mini skip"  id="btn-skip"     title="Überspringen – später nochmal anzeigen">⏭</button>
     </div>
   </div>
 
@@ -180,9 +180,44 @@
     </div>
   </div>
 
+  <!-- ── MORE (Mehr) ──────────────────────────────── -->
+  <div id="view-more" class="view">
+    <div class="view-content">
+      <h2 class="view-title">Mehr</h2>
+      <p class="view-subtitle">Weitere Bereiche der App.</p>
+      <div class="more-menu">
+        <button class="more-menu-row" data-goto="jobs">
+          <span class="more-menu-icon">📡</span>
+          <span class="more-menu-text">
+            <span class="more-menu-title">Suchagenten</span>
+            <span class="more-menu-sub">Automatisch neue Inserate finden</span>
+          </span>
+          <span class="more-menu-arrow">›</span>
+        </button>
+        <button class="more-menu-row" data-goto="archive">
+          <span class="more-menu-icon">🗃️</span>
+          <span class="more-menu-text">
+            <span class="more-menu-title">Archiv</span>
+            <span class="more-menu-sub">Offline gegangene Inserate</span>
+          </span>
+          <span class="more-menu-arrow">›</span>
+        </button>
+        <button class="more-menu-row" data-goto="settings">
+          <span class="more-menu-icon">⚙️</span>
+          <span class="more-menu-text">
+            <span class="more-menu-title">Profil</span>
+            <span class="more-menu-sub">Account, Statistiken, Benachrichtigungen</span>
+          </span>
+          <span class="more-menu-arrow">›</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- ── JOBS (Suchagenten) ─────────────────────────── -->
   <div id="view-jobs" class="view">
     <div class="view-content">
+      <button class="btn-ghost back-btn" data-back-to-more>← Mehr</button>
       <h2 class="view-title">Suchagenten</h2>
       <p class="view-subtitle">Suchergebnis-URL eintragen – neue Inserate werden automatisch geladen.</p>
       <div class="card-form">
@@ -241,6 +276,7 @@
   <!-- ── ARCHIVE ──────────────────────────────────────── -->
   <div id="view-archive" class="view">
     <div class="view-content">
+      <button class="btn-ghost back-btn" data-back-to-more>← Mehr</button>
       <div class="rated-header">
         <div>
           <h2 class="view-title">Archiv</h2>
@@ -266,6 +302,7 @@
   <!-- ── SETTINGS ──────────────────────────────────── -->
   <div id="view-settings" class="view">
     <div class="view-content">
+      <button class="btn-ghost back-btn" data-back-to-more>← Mehr</button>
       <h2 class="view-title">Profil</h2>
 
       <!-- Account card -->

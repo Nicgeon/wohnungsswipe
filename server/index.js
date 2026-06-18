@@ -104,7 +104,7 @@ async function initDb() {
       id         INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id    INTEGER,
       listing_id INTEGER,
-      action     TEXT CHECK(action IN ('like','dislike','superlike')),
+      action     TEXT CHECK(action IN ('like','dislike','superlike','skip')),
       swiped_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(user_id, listing_id)
     );
@@ -163,6 +163,27 @@ async function initDb() {
   migrate("ALTER TABLE users    ADD COLUMN notify_new    INTEGER DEFAULT 1");
   migrate("ALTER TABLE search_jobs ADD COLUMN visibility    TEXT DEFAULT 'global'");
   migrate("ALTER TABLE search_jobs ADD COLUMN visibility_id INTEGER");
+
+  // Migrate swipes table CHECK constraint to allow 'skip' (SQLite needs table rebuild for this)
+  try {
+    const tableInfo = dbGet("SELECT sql FROM sqlite_master WHERE type='table' AND name='swipes'");
+    if (tableInfo && tableInfo.sql && !tableInfo.sql.includes("'skip'")) {
+      db.run(`
+        CREATE TABLE swipes_new (
+          id         INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id    INTEGER,
+          listing_id INTEGER,
+          action     TEXT CHECK(action IN ('like','dislike','superlike','skip')),
+          swiped_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(user_id, listing_id)
+        );
+        INSERT INTO swipes_new SELECT * FROM swipes;
+        DROP TABLE swipes;
+        ALTER TABLE swipes_new RENAME TO swipes;
+      `);
+      console.log('[Migration] swipes-Tabelle auf "skip"-Aktion erweitert');
+    }
+  } catch (e) { console.error('[Migration] swipes table:', e.message); }
 
   saveDb();
 }
@@ -452,14 +473,17 @@ app.get('/api/listings/swipe', requireAuth, (req, res) => {
   //  (b) added by a job with visibility='global'
   //  (c) added by a job with visibility='private' AND added_by = this user
   //  (d) added by a job with visibility='group'   AND user is member of that group
+  // Skipped listings ('skip' action) stay in the queue but are sorted to the end,
+  // so they resurface after everything else has been swiped.
   const listings = dbAll(`
-    SELECT DISTINCT l.* FROM listings l
+    SELECT DISTINCT l.*, sw.action as _skip_marker FROM listings l
+    LEFT JOIN swipes sw ON sw.listing_id = l.id AND sw.user_id = ? AND sw.action = 'skip'
     LEFT JOIN search_jobs j ON l.added_by = j.added_by AND j.id = (
       SELECT id FROM search_jobs WHERE added_by = l.added_by
         AND visibility != 'global' LIMIT 1
     )
     WHERE l.status = 'active'
-    AND l.id NOT IN (SELECT listing_id FROM swipes WHERE user_id=?)
+    AND l.id NOT IN (SELECT listing_id FROM swipes WHERE user_id=? AND action != 'skip')
     AND (
       -- manually added or job is global (default)
       l.id IN (
@@ -491,14 +515,14 @@ app.get('/api/listings/swipe', requireAuth, (req, res) => {
         WHERE sj.visibility != 'global'
       )
     )
-    ORDER BY l.added_at DESC
-  `, [uid, uid, uid, uid]);
+    ORDER BY (CASE WHEN sw.action = 'skip' THEN 1 ELSE 0 END), l.added_at DESC
+  `, [uid, uid, uid, uid, uid]);
   res.json({ listings });
 });
 
 app.post('/api/listings/swipe', requireAuth, async (req, res) => {
   const { listingId, action } = req.body;
-  if (!['like','dislike','superlike'].includes(action))
+  if (!['like','dislike','superlike','skip'].includes(action))
     return res.status(400).json({ error: 'Ungültige Aktion' });
   try { dbRun('INSERT OR REPLACE INTO swipes (user_id,listing_id,action) VALUES (?,?,?)',
     [req.session.userId, listingId, action]); }
@@ -506,7 +530,7 @@ app.post('/api/listings/swipe', requireAuth, async (req, res) => {
   saveDb();
 
   // Check for group matches if this was a positive action
-  if (action !== 'dislike') {
+  if (action === 'like' || action === 'superlike') {
     const groups = dbAll(`
       SELECT DISTINCT gm.group_id FROM group_members gm
       WHERE gm.user_id=?
@@ -518,6 +542,16 @@ app.post('/api/listings/swipe', requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
+// Undo the most recent swipe action by this user (for "Sofort-Undo" button)
+app.post('/api/listings/swipe/undo-last', requireAuth, (req, res) => {
+  const last = dbGet('SELECT * FROM swipes WHERE user_id=? ORDER BY swiped_at DESC, id DESC LIMIT 1', [req.session.userId]);
+  if (!last) return res.status(404).json({ error: 'Keine letzte Aktion vorhanden' });
+  dbRun('DELETE FROM swipes WHERE id=?', [last.id]);
+  saveDb();
+  const listing = dbGet('SELECT * FROM listings WHERE id=?', [last.listing_id]);
+  res.json({ success: true, listing, undoneAction: last.action });
+});
+
 app.delete('/api/listings/swipe/:id', requireAuth, (req, res) => {
   dbRun('DELETE FROM swipes WHERE user_id=? AND listing_id=?', [req.session.userId, req.params.id]);
   saveDb();
@@ -527,7 +561,8 @@ app.delete('/api/listings/swipe/:id', requireAuth, (req, res) => {
 app.get('/api/listings/rated', requireAuth, (req, res) => {
   const listings = dbAll(`
     SELECT l.*, s.action as my_swipe,
-      CASE WHEN c.id IS NOT NULL THEN 1 ELSE 0 END as contacted
+      CASE WHEN c.id IS NOT NULL THEN 1 ELSE 0 END as contacted,
+      c.note as contact_note
     FROM listings l
     JOIN swipes s ON l.id=s.listing_id AND s.user_id=?
     LEFT JOIN contacts c ON c.listing_id=l.id AND c.user_id=? AND c.group_id IS NULL
@@ -569,7 +604,8 @@ app.get('/api/archive', requireAuth, (req, res) => {
   const listings = dbAll(`
     SELECT l.*, s.action as my_swipe,
       an.archived_at, an.reason as archive_reason,
-      CASE WHEN c.id IS NOT NULL THEN 1 ELSE 0 END as contacted
+      CASE WHEN c.id IS NOT NULL THEN 1 ELSE 0 END as contacted,
+      c.note as contact_note
     FROM listings l
     JOIN swipes s ON l.id=s.listing_id AND s.user_id=?
     LEFT JOIN archive_notes an ON an.listing_id=l.id
