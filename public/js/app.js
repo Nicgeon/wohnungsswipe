@@ -854,7 +854,22 @@ async function openGroupDetail(group) {
   window.__toast = toast;
   window.__lb    = lb;
 
-  // Wire up the unified three-dot menu (event delegation on the detail container)
+  // ── Event delegation for the three-dot menu ──────────────────────────────
+  // IMPORTANT: openGroupDetail() can be called multiple times (after re-rate,
+  // contact-mark etc.). We must remove the previous click listeners before
+  // adding new ones, otherwise they accumulate and fight each other
+  // (old listeners call closeAllCardMenus() and immediately close the menu
+  // that the new listener just opened).
+  //
+  // We use an AbortController: each call aborts the previous controller,
+  // which removes all listeners registered with that signal.
+  if (window.__groupDetailAbort) {
+    window.__groupDetailAbort.abort();
+  }
+  const abortCtrl = new AbortController();
+  window.__groupDetailAbort = abortCtrl;
+  const sig = abortCtrl.signal;
+
   const detailEl = $id('group-detail-content');
 
   detailEl.addEventListener('click', async e => {
@@ -941,17 +956,22 @@ async function openGroupDetail(group) {
 
     // Click elsewhere inside the panel closes any open menu
     closeAllCardMenus();
-  });
+  }, { signal: sig });
 
-  // Outside-click also closes any open menu
+  // Outside-click closes any open menu – also cleaned up via AbortController
   document.addEventListener('click', e => {
     if (!e.target.closest('[data-menu-toggle]') && !e.target.closest('.card-menu')) {
       closeAllCardMenus();
     }
-  });
+  }, { signal: sig });
 }
 
 $id('back-to-groups').addEventListener('click', () => {
+  // Clean up group-detail event listeners
+  if (window.__groupDetailAbort) {
+    window.__groupDetailAbort.abort();
+    window.__groupDetailAbort = null;
+  }
   $id('group-detail').style.display = 'none';
   $id('groups-main').style.display  = '';
   $id('group-detail-content').innerHTML = '';
