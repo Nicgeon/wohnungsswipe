@@ -1190,13 +1190,23 @@ async function loadSettings() {
       new Date(me.created_at).toLocaleDateString('de-DE',{year:'numeric',month:'long',day:'numeric'});
   $id('settings-username').value  = me.username||'';
   $id('settings-email').value     = me.email||'';
-  clr('settings-username-error','settings-username-ok','settings-email-error','settings-email-ok','settings-pw-error','settings-pw-ok','notify-ok');
+  clr('settings-username-error','settings-username-ok','settings-email-error','settings-email-ok','settings-pw-error','settings-pw-ok','notify-ok','ntfy-ok');
   $id('settings-pw-current').value = $id('settings-pw-new').value = $id('settings-pw-confirm').value = '';
 
   // Notification toggles
   $id('notify-email').checked = !!me.notify_email;
   $id('notify-match').checked = !!me.notify_match;
   $id('notify-new').checked   = !!me.notify_new;
+
+  // ntfy fields
+  $id('ntfy-topic').value  = me.ntfy_topic  || '';
+  $id('ntfy-server').value = me.ntfy_server || '';
+
+  // Digest interval buttons
+  const interval = me.notify_digest_interval || 'instant';
+  document.querySelectorAll('.digest-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.interval === interval);
+  });
 
   // Stats
   const s = await api('/api/auth/stats');
@@ -1246,12 +1256,39 @@ $id('save-password-btn').addEventListener('click', async () => {
   $id(id).addEventListener('change', saveNotifySettings);
 });
 
+// Digest interval buttons
+document.querySelectorAll('.digest-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.digest-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    saveNotifySettings();
+  });
+});
+
+// ntfy save button
+$id('save-ntfy-btn').addEventListener('click', async () => {
+  clr('ntfy-ok');
+  const d = await api('/api/user/notifications', { method:'PUT', body:{
+    notify_email: $id('notify-email').checked ? 1 : 0,
+    notify_push:  1,
+    notify_match: $id('notify-match').checked ? 1 : 0,
+    notify_new:   $id('notify-new').checked   ? 1 : 0,
+    notify_digest_interval: document.querySelector('.digest-btn.active')?.dataset.interval || 'instant',
+    ntfy_topic:  $id('ntfy-topic').value.trim(),
+    ntfy_server: $id('ntfy-server').value.trim(),
+  }});
+  if (d.success) { setOk('ntfy-ok','✓ Gespeichert'); toast('✅ ntfy gespeichert'); }
+});
+
 async function saveNotifySettings() {
   const d = await api('/api/user/notifications', { method:'PUT', body:{
     notify_email: $id('notify-email').checked ? 1 : 0,
     notify_push:  1,
     notify_match: $id('notify-match').checked ? 1 : 0,
     notify_new:   $id('notify-new').checked   ? 1 : 0,
+    notify_digest_interval: document.querySelector('.digest-btn.active')?.dataset.interval || 'instant',
+    ntfy_topic:  $id('ntfy-topic').value.trim(),
+    ntfy_server: $id('ntfy-server').value.trim(),
   }});
   if (d.success) setOk('notify-ok','✓ Gespeichert');
 }

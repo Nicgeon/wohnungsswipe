@@ -376,36 +376,81 @@
 
       <!-- Notifications -->
       <div class="settings-section">
-        <div class="section-label">Benachrichtigungen</div>
+        <div class="section-label">Benachrichtigungen – Kanäle</div>
 
+        <!-- Browser Push -->
         <div class="notify-row">
           <div class="notify-info">
-            <span class="notify-label">🔔 Browser-Benachrichtigungen</span>
+            <span class="notify-label">🔔 Browser-Push</span>
             <span class="notify-sub" id="push-status-text">Nicht aktiviert</span>
           </div>
           <button class="btn-secondary compact" id="push-toggle-btn">Aktivieren</button>
         </div>
 
-        <div class="toggle-list">
+        <!-- ntfy -->
+        <div class="notify-row" style="align-items:flex-start;flex-direction:column;gap:8px">
+          <div class="notify-info">
+            <span class="notify-label">📲 ntfy (Mobile Push)</span>
+            <span class="notify-sub">Topic aus der ntfy-App eintragen</span>
+          </div>
+          <div class="inline-row" style="width:100%">
+            <div class="field-group" style="flex:1">
+              <input type="text" id="ntfy-topic" placeholder="mein-topic-name" />
+            </div>
+            <button class="btn-secondary compact" id="save-ntfy-btn">Speichern</button>
+          </div>
+          <div class="field-group" style="width:100%">
+            <label>Server (leer lassen für ntfy.sh)</label>
+            <input type="url" id="ntfy-server" placeholder="https://ntfy.sh" />
+          </div>
+          <p class="form-success" id="ntfy-ok"></p>
+          <p class="notify-sub" style="font-size:.72rem;color:var(--text3)">
+            <a href="https://ntfy.sh" target="_blank" rel="noopener" style="color:var(--accent)">ntfy.sh</a>
+            installieren → Topic wählen → hier eintragen. Funktioniert auf iOS &amp; Android ohne Service-Worker.
+          </p>
+        </div>
+
+        <!-- Email -->
+        <div class="toggle-list" style="margin-top:4px">
           <label class="toggle-row">
             <span>📧 E-Mail-Benachrichtigungen</span>
             <input type="checkbox" id="notify-email" class="toggle-cb" />
-            <span class="toggle-switch"></span>
-          </label>
-          <label class="toggle-row">
-            <span>🎉 Match in Gruppe</span>
-            <input type="checkbox" id="notify-match" class="toggle-cb" />
-            <span class="toggle-switch"></span>
-          </label>
-          <label class="toggle-row">
-            <span>📡 Neue Inserate vom Suchagenten</span>
-            <input type="checkbox" id="notify-new" class="toggle-cb" />
             <span class="toggle-switch"></span>
           </label>
         </div>
         <p class="notify-hint" id="email-config-hint" style="display:none">
           ⚠️ E-Mail-Versand ist nicht konfiguriert. Setze die SMTP_* Umgebungsvariablen im Docker-Container.
         </p>
+      </div>
+
+      <div class="settings-section">
+        <div class="section-label">Benachrichtigungen – Ereignisse</div>
+        <div class="toggle-list">
+          <label class="toggle-row">
+            <span>🎉 Match in Gruppe</span>
+            <span class="toggle-sub-hint">Immer sofort – auch bei Digest</span>
+            <input type="checkbox" id="notify-match" class="toggle-cb" />
+            <span class="toggle-switch"></span>
+          </label>
+          <label class="toggle-row">
+            <span>📡 Neue Inserate</span>
+            <input type="checkbox" id="notify-new" class="toggle-cb" />
+            <span class="toggle-switch"></span>
+          </label>
+        </div>
+
+        <!-- Digest interval -->
+        <div class="digest-row" id="digest-row">
+          <span class="notify-label">⏱ Sammelbenachrichtigung (Digest)</span>
+          <span class="notify-sub">Mehrere Treffer werden gesammelt und zusammen verschickt</span>
+          <div class="digest-options" id="digest-options">
+            <button class="digest-btn active" data-interval="instant">Sofort</button>
+            <button class="digest-btn" data-interval="15min">15 Min.</button>
+            <button class="digest-btn" data-interval="1h">1 Std.</button>
+            <button class="digest-btn" data-interval="6h">6 Std.</button>
+            <button class="digest-btn" data-interval="daily">Täglich</button>
+          </div>
+        </div>
         <p class="form-success" id="notify-ok"></p>
       </div>
 

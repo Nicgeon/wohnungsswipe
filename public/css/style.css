@@ -554,3 +554,30 @@ a { color:var(--accent); text-decoration:none; }
   .groups-grid         { grid-template-columns:1fr; }
   .nav-user            { display:none; } /* save space on the narrowest screens */
 }
+
+/* ── Digest interval picker ────────────────────────────── */
+.digest-row {
+  display:flex; flex-direction:column; gap:8px;
+  padding-top:6px;
+}
+.digest-options {
+  display:flex; flex-wrap:wrap; gap:6px;
+}
+.digest-btn {
+  background:var(--bg3); border:1px solid var(--border);
+  border-radius:20px; padding:5px 14px;
+  font-size:var(--fs-small); color:var(--text2);
+  cursor:pointer; transition:all .15s;
+  white-space:nowrap;
+}
+.digest-btn:hover { border-color:rgba(255,255,255,.2); color:var(--text); }
+.digest-btn.active {
+  background:rgba(232,201,122,.12); border-color:var(--accent);
+  color:var(--accent); font-weight:600;
+}
+
+/* ── Toggle sub-hint (small text beside a toggle label) ── */
+.toggle-sub-hint {
+  font-size:var(--fs-tiny); color:var(--text3);
+  margin-left:auto; margin-right:10px; white-space:nowrap;
+}
