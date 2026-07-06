@@ -64,10 +64,13 @@ async function initDb() {
       created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
       reset_token   TEXT,
       reset_expires DATETIME,
-      notify_email  INTEGER DEFAULT 1,
-      notify_push   INTEGER DEFAULT 1,
-      notify_match  INTEGER DEFAULT 1,
-      notify_new    INTEGER DEFAULT 1
+      notify_email           INTEGER DEFAULT 1,
+      notify_push            INTEGER DEFAULT 1,
+      notify_match           INTEGER DEFAULT 1,
+      notify_new             INTEGER DEFAULT 1,
+      notify_digest_interval TEXT    DEFAULT 'instant',
+      ntfy_topic             TEXT    DEFAULT '',
+      ntfy_server            TEXT    DEFAULT ''
     );
     CREATE TABLE IF NOT EXISTS groups_table (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -104,7 +107,7 @@ async function initDb() {
       id         INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id    INTEGER,
       listing_id INTEGER,
-      action     TEXT CHECK(action IN ('like','dislike','superlike')),
+      action     TEXT CHECK(action IN ('like','dislike','superlike','skip')),
       swiped_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(user_id, listing_id)
     );
@@ -141,6 +144,15 @@ async function initDb() {
       contacted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(listing_id, user_id, group_id)
     );
+    CREATE TABLE IF NOT EXISTS notification_queue (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id      INTEGER NOT NULL,
+      type         TEXT NOT NULL,
+      title        TEXT NOT NULL,
+      body         TEXT NOT NULL,
+      url          TEXT DEFAULT '/',
+      created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
     CREATE TABLE IF NOT EXISTS archive_notes (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
       listing_id  INTEGER UNIQUE NOT NULL,
@@ -160,9 +172,33 @@ async function initDb() {
   migrate("ALTER TABLE users    ADD COLUMN notify_email  INTEGER DEFAULT 1");
   migrate("ALTER TABLE users    ADD COLUMN notify_push   INTEGER DEFAULT 1");
   migrate("ALTER TABLE users    ADD COLUMN notify_match  INTEGER DEFAULT 1");
-  migrate("ALTER TABLE users    ADD COLUMN notify_new    INTEGER DEFAULT 1");
+  migrate("ALTER TABLE users    ADD COLUMN notify_new             INTEGER DEFAULT 1");
+  migrate("ALTER TABLE users    ADD COLUMN notify_digest_interval TEXT    DEFAULT 'instant'");
+  migrate("ALTER TABLE users    ADD COLUMN ntfy_topic             TEXT    DEFAULT ''");
+  migrate("ALTER TABLE users    ADD COLUMN ntfy_server            TEXT    DEFAULT ''");
   migrate("ALTER TABLE search_jobs ADD COLUMN visibility    TEXT DEFAULT 'global'");
   migrate("ALTER TABLE search_jobs ADD COLUMN visibility_id INTEGER");
+
+  // Migrate swipes table CHECK constraint to allow 'skip' (SQLite needs table rebuild for this)
+  try {
+    const tableInfo = dbGet("SELECT sql FROM sqlite_master WHERE type='table' AND name='swipes'");
+    if (tableInfo && tableInfo.sql && !tableInfo.sql.includes("'skip'")) {
+      db.run(`
+        CREATE TABLE swipes_new (
+          id         INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id    INTEGER,
+          listing_id INTEGER,
+          action     TEXT CHECK(action IN ('like','dislike','superlike','skip')),
+          swiped_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(user_id, listing_id)
+        );
+        INSERT INTO swipes_new SELECT * FROM swipes;
+        DROP TABLE swipes;
+        ALTER TABLE swipes_new RENAME TO swipes;
+      `);
+      console.log('[Migration] swipes-Tabelle auf "skip"-Aktion erweitert');
+    }
+  } catch (e) { console.error('[Migration] swipes table:', e.message); }
 
   saveDb();
 }
@@ -254,7 +290,7 @@ app.post('/api/auth/logout', (req, res) => { req.session.destroy(); res.json({ s
 
 app.get('/api/auth/me', (req, res) => {
   if (!req.session.userId) return res.json({ loggedIn: false });
-  const user = dbGet('SELECT id,username,email,created_at,notify_email,notify_push,notify_match,notify_new FROM users WHERE id=?', [req.session.userId]);
+  const user = dbGet('SELECT id,username,email,created_at,notify_email,notify_push,notify_match,notify_new,notify_digest_interval,ntfy_topic,ntfy_server FROM users WHERE id=?', [req.session.userId]);
   res.json(user ? { loggedIn: true, ...user } : { loggedIn: false });
 });
 
@@ -337,10 +373,16 @@ app.put('/api/user/password', requireAuth, async (req, res) => {
 });
 
 app.put('/api/user/notifications', requireAuth, (req, res) => {
-  const { notify_email, notify_push, notify_match, notify_new } = req.body;
-  dbRun('UPDATE users SET notify_email=?,notify_push=?,notify_match=?,notify_new=? WHERE id=?', [
+  const { notify_email, notify_push, notify_match, notify_new,
+          notify_digest_interval, ntfy_topic, ntfy_server } = req.body;
+  const validIntervals = ['instant','15min','1h','6h','daily'];
+  const interval = validIntervals.includes(notify_digest_interval) ? notify_digest_interval : 'instant';
+  dbRun('UPDATE users SET notify_email=?,notify_push=?,notify_match=?,notify_new=?,notify_digest_interval=?,ntfy_topic=?,ntfy_server=? WHERE id=?', [
     notify_email ? 1 : 0, notify_push ? 1 : 0,
     notify_match ? 1 : 0, notify_new  ? 1 : 0,
+    interval,
+    (ntfy_topic || '').trim().substring(0, 200),
+    (ntfy_server || '').trim().substring(0, 200),
     req.session.userId,
   ]);
   saveDb();
@@ -413,19 +455,22 @@ async function checkAndNotifyMatch(listingId, groupId) {
 
   for (const uid of memberIds) {
     const user = dbGet('SELECT * FROM users WHERE id=?', [uid]);
-    if (!user) continue;
+    if (!user || !user.notify_match) continue;
 
-    // Push notification
-    if (user.notify_push && user.notify_match) {
+    // Matches are always delivered immediately regardless of digest setting
+    // (matches are rare and time-sensitive)
+    if (user.notify_push) {
       await sendPushToUser(uid, {
-        title:  `🎉 Match in "${group.name}"!`,
-        body:   listing.title.substring(0, 80),
-        url:    '/?view=groups',
-        icon:   '/icon-192.png',
+        title: `🎉 Match in "${group.name}"!`,
+        body:  listing.title.substring(0, 80),
+        url:   '/?view=groups',
+        icon:  '/icon-192.png',
       });
     }
-    // Email notification
-    if (user.notify_email && user.notify_match) {
+    if (user.ntfy_topic) {
+      await sendNtfy(user, `🎉 Match in "${group.name}"!`, listing.title.substring(0, 80), 'groups');
+    }
+    if (user.notify_email) {
       await mailer.sendMatchMail(user.email, user.username, group.name, listing);
     }
   }
@@ -452,14 +497,17 @@ app.get('/api/listings/swipe', requireAuth, (req, res) => {
   //  (b) added by a job with visibility='global'
   //  (c) added by a job with visibility='private' AND added_by = this user
   //  (d) added by a job with visibility='group'   AND user is member of that group
+  // Skipped listings ('skip' action) stay in the queue but are sorted to the end,
+  // so they resurface after everything else has been swiped.
   const listings = dbAll(`
-    SELECT DISTINCT l.* FROM listings l
+    SELECT DISTINCT l.*, sw.action as _skip_marker FROM listings l
+    LEFT JOIN swipes sw ON sw.listing_id = l.id AND sw.user_id = ? AND sw.action = 'skip'
     LEFT JOIN search_jobs j ON l.added_by = j.added_by AND j.id = (
       SELECT id FROM search_jobs WHERE added_by = l.added_by
         AND visibility != 'global' LIMIT 1
     )
     WHERE l.status = 'active'
-    AND l.id NOT IN (SELECT listing_id FROM swipes WHERE user_id=?)
+    AND l.id NOT IN (SELECT listing_id FROM swipes WHERE user_id=? AND action != 'skip')
     AND (
       -- manually added or job is global (default)
       l.id IN (
@@ -491,14 +539,14 @@ app.get('/api/listings/swipe', requireAuth, (req, res) => {
         WHERE sj.visibility != 'global'
       )
     )
-    ORDER BY l.added_at DESC
-  `, [uid, uid, uid, uid]);
+    ORDER BY (CASE WHEN sw.action = 'skip' THEN 1 ELSE 0 END), l.added_at DESC
+  `, [uid, uid, uid, uid, uid]);
   res.json({ listings });
 });
 
 app.post('/api/listings/swipe', requireAuth, async (req, res) => {
   const { listingId, action } = req.body;
-  if (!['like','dislike','superlike'].includes(action))
+  if (!['like','dislike','superlike','skip'].includes(action))
     return res.status(400).json({ error: 'Ungültige Aktion' });
   try { dbRun('INSERT OR REPLACE INTO swipes (user_id,listing_id,action) VALUES (?,?,?)',
     [req.session.userId, listingId, action]); }
@@ -506,7 +554,7 @@ app.post('/api/listings/swipe', requireAuth, async (req, res) => {
   saveDb();
 
   // Check for group matches if this was a positive action
-  if (action !== 'dislike') {
+  if (action === 'like' || action === 'superlike') {
     const groups = dbAll(`
       SELECT DISTINCT gm.group_id FROM group_members gm
       WHERE gm.user_id=?
@@ -518,6 +566,16 @@ app.post('/api/listings/swipe', requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
+// Undo the most recent swipe action by this user (for "Sofort-Undo" button)
+app.post('/api/listings/swipe/undo-last', requireAuth, (req, res) => {
+  const last = dbGet('SELECT * FROM swipes WHERE user_id=? ORDER BY swiped_at DESC, id DESC LIMIT 1', [req.session.userId]);
+  if (!last) return res.status(404).json({ error: 'Keine letzte Aktion vorhanden' });
+  dbRun('DELETE FROM swipes WHERE id=?', [last.id]);
+  saveDb();
+  const listing = dbGet('SELECT * FROM listings WHERE id=?', [last.listing_id]);
+  res.json({ success: true, listing, undoneAction: last.action });
+});
+
 app.delete('/api/listings/swipe/:id', requireAuth, (req, res) => {
   dbRun('DELETE FROM swipes WHERE user_id=? AND listing_id=?', [req.session.userId, req.params.id]);
   saveDb();
@@ -527,7 +585,8 @@ app.delete('/api/listings/swipe/:id', requireAuth, (req, res) => {
 app.get('/api/listings/rated', requireAuth, (req, res) => {
   const listings = dbAll(`
     SELECT l.*, s.action as my_swipe,
-      CASE WHEN c.id IS NOT NULL THEN 1 ELSE 0 END as contacted
+      CASE WHEN c.id IS NOT NULL THEN 1 ELSE 0 END as contacted,
+      c.note as contact_note
     FROM listings l
     JOIN swipes s ON l.id=s.listing_id AND s.user_id=?
     LEFT JOIN contacts c ON c.listing_id=l.id AND c.user_id=? AND c.group_id IS NULL
@@ -569,7 +628,8 @@ app.get('/api/archive', requireAuth, (req, res) => {
   const listings = dbAll(`
     SELECT l.*, s.action as my_swipe,
       an.archived_at, an.reason as archive_reason,
-      CASE WHEN c.id IS NOT NULL THEN 1 ELSE 0 END as contacted
+      CASE WHEN c.id IS NOT NULL THEN 1 ELSE 0 END as contacted,
+      c.note as contact_note
     FROM listings l
     JOIN swipes s ON l.id=s.listing_id AND s.user_id=?
     LEFT JOIN archive_notes an ON an.listing_id=l.id
@@ -821,22 +881,22 @@ async function runJob(job) {
     saveDb();
     console.log(`[Poller] ${job.label}: ${newCount} neue (${totalFound} auf Seite)`);
 
-    // Notify subscribed users about new listings
+    // Queue notifications for subscribed users
     if (newCount > 0) {
       const users = dbAll('SELECT * FROM users WHERE notify_new=1');
       for (const user of users) {
-        if (user.notify_push) {
-          await sendPushToUser(user.id, {
-            title: `📡 ${newCount} neue Inserate`,
-            body:  job.label,
-            url:   '/',
-            icon:  '/icon-192.png',
-          });
-        }
-        if (user.notify_email) {
-          await mailer.sendNewListingsMail(user.email, user.username, newCount, job.label);
-        }
+        dbRun(
+          "INSERT INTO notification_queue (user_id,type,title,body,url) VALUES (?,?,?,?,?)",
+          [user.id, 'new_listings',
+           `📡 ${newCount} neue Inserate`,
+           job.label,
+           '/']
+        );
       }
+      saveDb();
+      console.log(`[Notify] ${newCount} neue Inserate gequeued für ${users.length} Nutzer`);
+      // Flush immediately for users with 'instant' digest
+      await flushNotificationQueue('instant');
     }
   } catch (err) {
     console.error(`[Poller] Fehler bei ${job.label}: ${err.message}`);
@@ -861,6 +921,125 @@ async function runStatusCheck() {
   console.log(`[Status] ${offline||0} offline, ${reserved||0} reserviert`);
 }
 
+// ── ntfy helper ───────────────────────────────────────────
+// HTTP headers only allow ASCII (RFC 7230). Emojis must be stripped from
+// Title/Message headers and expressed via ntfy's X-Tags field instead.
+const EMOJI_NTFY_TAGS = {
+  '🎉': 'tada',
+  '📡': 'satellite',
+  '📬': 'mailbox',
+  '💚': 'green_heart',
+  '⭐': 'star',
+};
+
+function stripEmojis(str) {
+  // Remove emoji and all non-ASCII characters so strings are safe for HTTP headers.
+  // We keep the \x80-\xFF range (latin-1 supplement) out as well since some HTTP
+  // implementations and intermediary proxies reject anything above 0x7E in headers.
+  return str
+    .replace(/[^\x20-\x7E]/g, '')  // strip non-printable-ASCII
+    .replace(/\s+/g, ' ')          // collapse any leftover whitespace gaps
+    .trim();
+}
+
+function extractNtfyTags(str) {
+  const tags = [];
+  for (const [emoji, tag] of Object.entries(EMOJI_NTFY_TAGS)) {
+    if (str.includes(emoji)) tags.push(tag);
+  }
+  return tags;
+}
+
+async function sendNtfy(user, title, body, view = '') {
+  if (!user.ntfy_topic) return;
+  const server    = (user.ntfy_server || '').trim() || 'https://ntfy.sh';
+  const url       = `${server}/${encodeURIComponent(user.ntfy_topic)}`;
+  const safeTitle = stripEmojis(title) || 'WohnungsSwipe';
+  const safeBody  = stripEmojis(body)  || stripEmojis(title) || '';
+  const tags      = extractNtfyTags(title + ' ' + body);
+
+  try {
+    await fetch(url, {
+      method:  'POST',
+      headers: {
+        'Title':         safeTitle,
+        'Content-Type':  'text/plain; charset=utf-8',
+        ...(tags.length ? { 'Tags': tags.join(',') } : {}),
+        ...(view ? { 'Click': `${process.env.BASE_URL || 'http://localhost:3000'}` } : {}),
+      },
+      body: safeBody,
+      timeout: 8000,
+    });
+    console.log(`[ntfy] Sent to ${user.ntfy_topic}: ${safeTitle}`);
+  } catch (e) {
+    console.warn(`[ntfy] Failed for user ${user.id}: ${e.message}`);
+  }
+}
+
+// ── Digest flush ───────────────────────────────────────────
+// intervalKey: 'instant' | '15min' | '1h' | '6h' | 'daily'
+// Flushes queued notifications for users whose digest_interval matches
+async function flushNotificationQueue(intervalKey) {
+  const users = intervalKey === 'all'
+    ? dbAll("SELECT * FROM users")
+    : dbAll("SELECT * FROM users WHERE notify_digest_interval=?", [intervalKey]);
+
+  for (const user of users) {
+    const items = dbAll(
+      "SELECT * FROM notification_queue WHERE user_id=? ORDER BY created_at ASC",
+      [user.id]
+    );
+    if (!items.length) continue;
+
+    // Group items by type for a combined message
+    const newListingItems = items.filter(i => i.type === 'new_listings');
+    const otherItems      = items.filter(i => i.type !== 'new_listings');
+
+    // Build digest payload
+    let pushTitle, pushBody;
+    if (newListingItems.length === 1) {
+      pushTitle = newListingItems[0].title;
+      pushBody  = newListingItems[0].body;
+    } else if (newListingItems.length > 1) {
+      const total = newListingItems.reduce((s, i) => {
+        const n = parseInt(i.title.match(/\d+/)?.[0] || '0');
+        return s + n;
+      }, 0);
+      const sources = [...new Set(newListingItems.map(i => i.body))];
+      pushTitle = `📡 ${total} neue Inserate`;
+      pushBody  = sources.slice(0, 3).join(', ') + (sources.length > 3 ? ` +${sources.length - 3} weitere` : '');
+    }
+
+    if (pushTitle && (newListingItems.length || otherItems.length)) {
+      // Browser push
+      if (user.notify_push) {
+        await sendPushToUser(user.id, { title: pushTitle, body: pushBody, url: '/', icon: '/icon-192.png' });
+      }
+      // ntfy
+      if (user.ntfy_topic) {
+        await sendNtfy(user, pushTitle, pushBody);
+      }
+      // Email – only send digest email if there are enough items to justify it
+      if (user.notify_email && user.notify_new) {
+        const totalCount = newListingItems.reduce((s, i) => {
+          return s + parseInt(i.title.match(/\d+/)?.[0] || '0');
+        }, 0);
+        const sources = [...new Set(newListingItems.map(i => i.body))];
+        if (totalCount > 0) {
+          await mailer.sendNewListingsMail(
+            user.email, user.username, totalCount, sources.join(', ')
+          );
+        }
+      }
+    }
+
+    // Delete flushed items
+    dbRun("DELETE FROM notification_queue WHERE user_id=?", [user.id]);
+    saveDb();
+    console.log(`[Digest] Flushed ${items.length} notifications for user ${user.username} (interval: ${user.notify_digest_interval})`);
+  }
+}
+
 // ── Scheduler ─────────────────────────────────────────────
 function startScheduler() {
   // Search jobs: check every 60s
@@ -875,6 +1054,12 @@ function startScheduler() {
 
   // Status check: every 6 hours
   setTimeout(() => { runStatusCheck(); setInterval(runStatusCheck, 6 * 60 * 60 * 1000); }, 5 * 60 * 1000);
+
+  // Digest flush timers
+  setInterval(() => flushNotificationQueue('15min'), 15 * 60 * 1000);
+  setInterval(() => flushNotificationQueue('1h'),    60 * 60 * 1000);
+  setInterval(() => flushNotificationQueue('6h'),     6 * 60 * 60 * 1000);
+  setInterval(() => flushNotificationQueue('daily'), 24 * 60 * 60 * 1000);
 
   console.log('[Scheduler] Gestartet (erster Poll in 15s, erster Status-Check in 5min)');
 }

@@ -7,6 +7,7 @@ const state = {
   groups:     [],
   swipeQueue: [],
   ratedFilter: 'all',
+  lastSwipe:  null, // { listing, action } – powers the "Sofort-Undo" button
 };
 
 // ── Helpers ───────────────────────────────────────────────
@@ -67,11 +68,17 @@ function showScreen(id) {
   $id(id).classList.add('active');
 }
 
-function showView(name) {
+const SUB_VIEWS = new Set(['jobs', 'archive', 'settings']);
+
+function showView(name, isSubNav = false) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.querySelectorAll('.tab-nav').forEach(b => b.classList.remove('active'));
   $id(`view-${name}`).classList.add('active');
-  document.querySelector(`.tab-nav[data-view="${name}"]`).classList.add('active');
+
+  // Sub-views (jobs/archive/settings) keep the "Mehr" tab highlighted
+  const tabKey = SUB_VIEWS.has(name) ? 'more' : name;
+  document.querySelector(`.tab-nav[data-view="${tabKey}"]`)?.classList.add('active');
+
   if (name === 'swipe')    loadSwipeQueue();
   if (name === 'rated')    loadRated();
   if (name === 'groups')   loadGroups();
@@ -82,6 +89,14 @@ function showView(name) {
 
 document.querySelectorAll('.tab-nav').forEach(btn =>
   btn.addEventListener('click', () => showView(btn.dataset.view))
+);
+
+// "Mehr" sub-menu navigation
+document.querySelectorAll('[data-goto]').forEach(btn =>
+  btn.addEventListener('click', () => showView(btn.dataset.goto, true))
+);
+document.querySelectorAll('[data-back-to-more]').forEach(btn =>
+  btn.addEventListener('click', () => showView('more', true))
 );
 
 // ══════════════════════════════════════════════════════════
@@ -250,6 +265,7 @@ function buildListCard(listing, opts = {}) {
   const total  = (listing.price      || '').trim();
   const swipe  = listing.my_swipe;
   const swipeLabelMap = { like:'♥ Like', superlike:'⭐ Super-Like', dislike:'✕ Nein' };
+  const cardUid = `lc_${listing.id}_${Math.random().toString(36).slice(2,7)}`;
 
   const div = document.createElement('div');
   div.className = 'list-card';
@@ -262,6 +278,11 @@ function buildListCard(listing, opts = {}) {
       ${images.length > 1 ? `<span class="list-card-photo-badge">📷 ${images.length}</span>` : ''}
       ${listing.status === 'offline'   ? `<span class="list-card-offline-badge">Offline</span>` : ''}
       ${listing.status === 'reserved'  ? `<span class="list-card-offline-badge" style="background:rgba(240,200,60,.8)">Reserviert</span>` : ''}
+      <button class="card-menu-btn" data-menu-toggle title="Optionen">⋮</button>
+      <div class="card-menu" data-menu style="display:none">
+        ${!opts.isArchive ? `<button data-menu-action="unswipe">↩ Bewertung zurückziehen</button>` : ''}
+        <button data-menu-action="contact-toggle">${listing.contacted ? '✓ Angeschrieben (Notiz bearbeiten)' : '📬 Als angeschrieben markieren'}</button>
+      </div>
     </div>
     <div class="list-card-body">
       <div class="list-card-title">${esc(listing.title || 'Inserat')}</div>
@@ -275,11 +296,8 @@ function buildListCard(listing, opts = {}) {
       ${tags.length ? `<div class="list-card-tags">${tags.map(t=>`<span class="list-card-tag">${esc(t)}</span>`).join('')}</div>` : ''}
       ${opts.matchInfo ? `<div class="match-count" style="font-size:.76rem;color:var(--like);margin-bottom:5px">${esc(opts.matchInfo)}</div>` : ''}
       ${swipe ? `<div class="swipe-badge ${swipe}">${swipeLabelMap[swipe]||swipe}</div>` : ''}
+      ${listing.contacted ? `<div class="contacted-badge">📬 Angeschrieben${listing.contact_note ? ' · ' + esc(listing.contact_note.substring(0,40)) : ''}</div>` : ''}
       <a class="list-card-link" href="${esc(listing.url)}" target="_blank" rel="noopener">Inserat öffnen →</a>
-      ${listing.contacted ? '<div class="contacted-badge">📬 Angeschrieben</div>' : ''}
-      <button class="contact-btn ${listing.contacted ? 'active' : ''}" data-contact-btn data-listing-id="${listing.id}" data-contacted="${listing.contacted ? '1' : '0'}">
-        ${listing.contacted ? '✓ Angeschrieben' : '📬 Als angeschrieben markieren'}
-      </button>
       <div class="contact-note-wrap" data-note-wrap>
         <textarea class="contact-note" placeholder="Notiz (optional): Wann kontaktiert, Antwort, etc." data-note-text>${esc(listing.contact_note || '')}</textarea>
         <div class="contact-note-actions">
@@ -287,81 +305,99 @@ function buildListCard(listing, opts = {}) {
           <button data-note-cancel>Abbrechen</button>
         </div>
       </div>
-      <button class="unswipe-btn" data-listing-id="${listing.id}">↩ Bewertung zurückziehen</button>
     </div>`;
 
-  if (hasImg) div.querySelector('.list-card-img-area').addEventListener('click', () => lb.open(images));
-  // Contact button wiring
-  const contactBtn  = div.querySelector('[data-contact-btn]');
-  const noteWrap    = div.querySelector('[data-note-wrap]');
-  const noteText    = div.querySelector('[data-note-text]');
-  const noteSave    = div.querySelector('[data-note-save]');
-  const noteCancel  = div.querySelector('[data-note-cancel]');
-
-  if (contactBtn) {
-    contactBtn.addEventListener('click', async () => {
-      const isContacted = contactBtn.dataset.contacted === '1';
-      if (!isContacted) {
-        // Mark as contacted + show note field
-        const r = await api('/api/contacts', { method: 'POST', body: {
-          listingId: listing.id,
-          groupId: opts.groupId || null,
-          note: noteText?.value || '',
-        }});
-        if (r.success) {
-          contactBtn.textContent    = '✓ Angeschrieben';
-          contactBtn.dataset.contacted = '1';
-          contactBtn.classList.add('active');
-          noteWrap?.classList.add('open');
-          toast('📬 Als angeschrieben markiert');
-        }
-      } else {
-        // Toggle note panel
-        noteWrap?.classList.toggle('open');
-      }
-    });
-  }
-
-  if (noteSave) {
-    noteSave.addEventListener('click', async () => {
-      await api(`/api/contacts/${listing.id}`, { method: 'PATCH', body: {
-        note: noteText?.value || '',
-        groupId: opts.groupId || null,
-      }});
-      noteWrap?.classList.remove('open');
-      toast('✓ Notiz gespeichert');
-    });
-  }
-  if (noteCancel) noteCancel.addEventListener('click', () => noteWrap?.classList.remove('open'));
-
-  div.querySelector('.unswipe-btn').addEventListener('click', async () => {
-    const btn = div.querySelector('.unswipe-btn');
-    btn.disabled = true; btn.textContent = '⏳ …';
-    const r = await api(`/api/listings/swipe/${listing.id}`, { method: 'DELETE' });
-    if (r.success) {
-      div.style.opacity = '0'; div.style.transition = 'opacity .3s';
-      setTimeout(() => div.remove(), 280);
-      toast('↩ Bewertung zurückgezogen');
-      state.swipeQueue = [];
-    } else {
-      btn.disabled = false; btn.textContent = '↩ Bewertung zurückziehen';
-    }
+  if (hasImg) div.querySelector('.list-card-img-area').addEventListener('click', e => {
+    if (e.target.closest('[data-menu-toggle]') || e.target.closest('[data-menu]')) return;
+    lb.open(images);
   });
 
-  // Hide unswipe button for archived cards (listing is offline anyway)
-  if (opts.isArchive) {
-    div.querySelector('.unswipe-btn')?.remove();
-    // Add archive timestamp if available
-    if (listing.archived_at) {
-      const ts = document.createElement('div');
-      ts.className = 'archive-ts';
-      const d = new Date(listing.archived_at + 'Z');
-      ts.textContent = `📦 Archiviert ${d.toLocaleDateString('de-DE', { day:'2-digit', month:'2-digit', year:'numeric' })}`;
-      div.querySelector('.list-card-body')?.prepend(ts);
-    }
+  // ── Three-dot menu wiring ──
+  const menuBtn  = div.querySelector('[data-menu-toggle]');
+  const menu     = div.querySelector('[data-menu]');
+  const noteWrap = div.querySelector('[data-note-wrap]');
+  const noteText = div.querySelector('[data-note-text]');
+
+  menuBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    closeAllCardMenus(menu);
+    menu.style.display = menu.style.display === 'none' ? '' : 'none';
+  });
+
+  menu.querySelectorAll('[data-menu-action]').forEach(btn => {
+    btn.addEventListener('click', async e => {
+      e.stopPropagation();
+      menu.style.display = 'none';
+      const action = btn.dataset.menuAction;
+
+      if (action === 'unswipe') {
+        const r = await api(`/api/listings/swipe/${listing.id}`, { method: 'DELETE' });
+        if (r.success) {
+          div.style.opacity = '0'; div.style.transition = 'opacity .3s';
+          setTimeout(() => div.remove(), 280);
+          toast('↩ Bewertung zurückgezogen');
+          state.swipeQueue = [];
+        }
+      } else if (action === 'contact-toggle') {
+        if (!listing.contacted) {
+          const r = await api('/api/contacts', { method: 'POST', body: {
+            listingId: listing.id, groupId: opts.groupId || null, note: '',
+          }});
+          if (r.success) {
+            listing.contacted = true;
+            toast('📬 Als angeschrieben markiert');
+            noteWrap.classList.add('open');
+            btn.textContent = '✓ Angeschrieben (Notiz bearbeiten)';
+            // Insert contacted badge if not already present
+            if (!div.querySelector('.contacted-badge')) {
+              const badge = document.createElement('div');
+              badge.className = 'contacted-badge';
+              badge.textContent = '📬 Angeschrieben';
+              div.querySelector('.swipe-badge')?.insertAdjacentElement('afterend', badge)
+                ?? div.querySelector('.list-card-link').insertAdjacentElement('beforebegin', badge);
+            }
+          }
+        } else {
+          noteWrap.classList.toggle('open');
+        }
+      }
+    });
+  });
+
+  div.querySelector('[data-note-save]')?.addEventListener('click', async () => {
+    await api(`/api/contacts/${listing.id}`, { method: 'PATCH', body: {
+      note: noteText?.value || '', groupId: opts.groupId || null,
+    }});
+    noteWrap.classList.remove('open');
+    toast('✓ Notiz gespeichert');
+    const badge = div.querySelector('.contacted-badge');
+    if (badge) badge.textContent = '📬 Angeschrieben' + (noteText.value ? ' · ' + noteText.value.substring(0,40) : '');
+  });
+  div.querySelector('[data-note-cancel]')?.addEventListener('click', () => noteWrap.classList.remove('open'));
+
+  // Archive timestamp
+  if (opts.isArchive && listing.archived_at) {
+    const ts = document.createElement('div');
+    ts.className = 'archive-ts';
+    const d = new Date(listing.archived_at + 'Z');
+    ts.textContent = `📦 Archiviert ${d.toLocaleDateString('de-DE', { day:'2-digit', month:'2-digit', year:'numeric' })}`;
+    div.querySelector('.list-card-body')?.prepend(ts);
   }
+
   return div;
 }
+
+// Close all open card menus except the one passed in (or all if omitted)
+function closeAllCardMenus(except = null) {
+  document.querySelectorAll('.card-menu').forEach(m => {
+    if (m !== except) m.style.display = 'none';
+  });
+}
+document.addEventListener('click', e => {
+  if (!e.target.closest('[data-menu-toggle]') && !e.target.closest('[data-menu]')) {
+    closeAllCardMenus();
+  }
+});
 
 // ══════════════════════════════════════════════════════════
 //  SWIPE ENGINE
@@ -369,6 +405,7 @@ function buildListCard(listing, opts = {}) {
 async function loadSwipeQueue() {
   const d = await api('/api/listings/swipe');
   state.swipeQueue = d.listings || [];
+  updateUndoButton();
   renderStack();
 }
 
@@ -410,12 +447,12 @@ function renderStack() {
   // Now assign correct position classes with a clean transition
   // Use requestAnimationFrame to ensure DOM is updated before adding transitions
   requestAnimationFrame(() => {
-    const cards = Array.from(stack.querySelectorAll('.swipe-card:not(.fly-left):not(.fly-right):not(.fly-up)'));
+    const cards = Array.from(stack.querySelectorAll('.swipe-card:not(.fly-left):not(.fly-right):not(.fly-up):not(.fly-down)'));
 
     // Sort cards so top of queue = last in DOM (highest z-index via position)
     // card at index 0 in queue = card-top, index 1 = card-behind-1, etc.
     top3.forEach((listing, qIdx) => {
-      const card = stack.querySelector(`.swipe-card[data-id="${listing.id}"]:not(.fly-left):not(.fly-right):not(.fly-up)`);
+      const card = stack.querySelector(`.swipe-card[data-id="${listing.id}"]:not(.fly-left):not(.fly-right):not(.fly-up):not(.fly-down)`);
       if (!card) return;
 
       const wasTop = card.classList.contains('card-top');
@@ -468,7 +505,7 @@ function attachDrag(card, listing) {
 
   function start(x, y) {
     // Ignore if another card is flying
-    if (document.querySelector('.fly-left, .fly-right, .fly-up')) return;
+    if (document.querySelector('.fly-left, .fly-right, .fly-up, .fly-down')) return;
     sx = x; sy = y; cx = x; cy = y; dragging = true;
     card.style.transition = 'none';
     card.style.zIndex     = '10';
@@ -527,7 +564,7 @@ function attachDrag(card, listing) {
 
 async function doSwipe(listing, action) {
   const card = $id('card-stack').querySelector(`.swipe-card[data-id="${listing.id}"]`);
-  if (!card || card.classList.contains('fly-left') || card.classList.contains('fly-right') || card.classList.contains('fly-up')) return;
+  if (!card || card.classList.contains('fly-left') || card.classList.contains('fly-right') || card.classList.contains('fly-up') || card.classList.contains('fly-down')) return;
 
   // Detach drag immediately
   if (_dragCleanup) { _dragCleanup(); _dragCleanup = null; }
@@ -539,14 +576,31 @@ async function doSwipe(listing, action) {
   // Force reflow so transition picks up the current (possibly translated) position
   void card.offsetWidth;
 
-  card.classList.add(action === 'like' ? 'fly-right' : action === 'dislike' ? 'fly-left' : 'fly-up');
-  toast({ like: '💚 Gefällt dir!', dislike: '✕ Übersprungen', superlike: '⭐ Super-Like!' }[action]);
+  const flyClass = { like: 'fly-right', dislike: 'fly-left', superlike: 'fly-up', skip: 'fly-down' }[action];
+  card.classList.add(flyClass);
+
+  const toastMsg = {
+    like:      '💚 Gefällt dir!',
+    dislike:   '✕ Abgelehnt',
+    superlike: '⭐ Super-Like!',
+    skip:      '⏭ Übersprungen – kommt später wieder',
+  }[action];
+  toast(toastMsg);
 
   // Fire API in background
   api('/api/listings/swipe', { method: 'POST', body: { listingId: listing.id, action } });
 
-  // Remove from queue immediately so renderStack knows what's next
+  // Track for the undo button (always remembers the most recent swipe in this session)
+  state.lastSwipe = { listing, action };
+  updateUndoButton();
+
+  // Remove from queue immediately so renderStack knows what's next.
+  // Skipped listings get pushed to the back of the queue instead of removed entirely,
+  // so they resurface once everything else has been swiped (matches server-side ordering).
   state.swipeQueue = state.swipeQueue.filter(l => l.id !== listing.id);
+  if (action === 'skip') {
+    state.swipeQueue.push(listing);
+  }
 
   // Trigger stack update right away – the flying card is still in DOM
   // renderStack will skip it because it has fly-* class
@@ -556,19 +610,61 @@ async function doSwipe(listing, action) {
   setTimeout(() => { card.remove(); }, 420);
 }
 
+function updateUndoButton() {
+  const btn = $id('btn-undo');
+  if (!btn) return;
+  btn.disabled = !state.lastSwipe;
+}
+
+async function undoLastSwipe() {
+  if (!state.lastSwipe) return;
+  const btn = $id('btn-undo');
+  btn.disabled = true;
+
+  const r = await api('/api/listings/swipe/undo-last', { method: 'POST' });
+  if (!r.success) {
+    toast('⚠️ Nichts zum Zurücknehmen');
+    return;
+  }
+
+  const { listing, action } = state.lastSwipe;
+  toast('↩ Zurückgenommen: ' + (listing.title || 'Inserat').substring(0, 40));
+
+  // If it was pushed to the back of the queue as a skip, remove that duplicate
+  if (action === 'skip') {
+    state.swipeQueue = state.swipeQueue.filter(l => l.id !== listing.id);
+  }
+  // Put the listing back at the very front so the user sees it again immediately
+  state.swipeQueue.unshift(r.listing || listing);
+
+  state.lastSwipe = null;
+  updateUndoButton();
+  renderStack();
+}
+
 $id('btn-like').onclick      = () => state.swipeQueue[0] && doSwipe(state.swipeQueue[0], 'like');
 $id('btn-dislike').onclick   = () => state.swipeQueue[0] && doSwipe(state.swipeQueue[0], 'dislike');
 $id('btn-superlike').onclick = () => state.swipeQueue[0] && doSwipe(state.swipeQueue[0], 'superlike');
+$id('btn-skip').onclick      = () => state.swipeQueue[0] && doSwipe(state.swipeQueue[0], 'skip');
+$id('btn-undo').onclick      = () => undoLastSwipe();
 
 document.addEventListener('keydown', e => {
   if (!state.user) return;
   if ($id('lightbox').style.display !== 'none') return;
   if (document.querySelector('.modal[style*="flex"]')) return;
   if (!$id('view-swipe').classList.contains('active')) return;
+
+  // Undo works even if the queue looks empty (e.g. right after the last card was swiped)
+  if (e.key === 'Backspace' || (e.key.toLowerCase() === 'z' && !e.ctrlKey && !e.metaKey)) {
+    if (state.lastSwipe) { e.preventDefault(); undoLastSwipe(); }
+    return;
+  }
+
   if (!state.swipeQueue.length) return;
   if (e.key === 'ArrowLeft')  { e.preventDefault(); doSwipe(state.swipeQueue[0], 'dislike'); }
   if (e.key === 'ArrowRight') { e.preventDefault(); doSwipe(state.swipeQueue[0], 'like'); }
   if (e.key === 'ArrowUp')    { e.preventDefault(); doSwipe(state.swipeQueue[0], 'superlike'); }
+  if (e.key === 'ArrowDown')  { e.preventDefault(); doSwipe(state.swipeQueue[0], 'skip'); }
 });
 
 // ══════════════════════════════════════════════════════════
@@ -695,6 +791,18 @@ async function openGroupDetail(group) {
       const curRating = r.my_swipe || '';
       return `
         <div class="group-listing-card" data-listing-id="${r.id}">
+          <button class="card-menu-btn group-card-menu-btn" data-menu-toggle title="Optionen">⋮</button>
+          <div class="card-menu" data-menu style="display:none">
+            <div class="card-menu-section-label">Bewertung ändern</div>
+            <button data-rerate-action="like"      data-listing="${r.id}">♥ Like</button>
+            <button data-rerate-action="superlike" data-listing="${r.id}">⭐ Super-Like</button>
+            <button data-rerate-action="dislike"   data-listing="${r.id}">✕ Nein</button>
+            <button data-rerate-action="remove"    data-listing="${r.id}">↩ Zurückziehen</button>
+            <div class="card-menu-divider"></div>
+            <button data-contact-toggle data-listing="${r.id}">
+              ${r.group_contacted ? '✓ Angeschrieben (Notiz bearbeiten)' : '📬 Als angeschrieben markieren'}
+            </button>
+          </div>
           ${hasImg
             ? `<img class="group-listing-img" src="${esc(imgs[0])}" onclick="window.__lb && window.__lb.open(${JSON.stringify(imgs).replace(/"/g,'&quot;')})" style="cursor:pointer" />`
             : `<div class="group-listing-img-placeholder">🏠</div>`}
@@ -707,20 +815,17 @@ async function openGroupDetail(group) {
               ${r.location ? `📍 ${esc(r.location)}` : ''}
             </div>
             <div class="vote-chips">${voteChips}</div>
-            <div class="rerate-row">
-              <button class="rerate-btn ${curRating}" data-rerate data-listing="${r.id}" data-current="${curRating}">
-                ${rateLabel[curRating]}
-              </button>
-              <div class="rerate-menu" style="display:none" data-menu="${r.id}">
-                <button data-action="like"      data-listing="${r.id}">♥ Like</button>
-                <button data-action="superlike" data-listing="${r.id}">⭐ Super-Like</button>
-                <button data-action="dislike"   data-listing="${r.id}">✕ Nein</button>
-                <button data-action="remove"    data-listing="${r.id}">↩ Zurückziehen</button>
+            ${myChip}
+            <div class="contacted-badge" data-contacted-badge style="${r.group_contacted ? '' : 'display:none'}">
+              📬 Angeschrieben<span data-contacted-note>${r.group_contact_note ? ' · ' + esc(r.group_contact_note.substring(0,40)) : ''}</span>
+            </div>
+            <div class="contact-note-wrap" data-note-wrap>
+              <textarea class="contact-note" placeholder="Notiz (optional): Wann kontaktiert, Antwort, etc." data-note-text>${esc(r.group_contact_note || '')}</textarea>
+              <div class="contact-note-actions">
+                <button class="contact-note-save" data-note-save data-listing="${r.id}">Speichern</button>
+                <button data-note-cancel>Abbrechen</button>
               </div>
             </div>
-            ${r.group_contacted
-              ? `<div class="contacted-badge" style="display:inline-flex;margin-top:4px">📬 Angeschrieben ${r.group_contact_note ? '· ' + esc(r.group_contact_note.substring(0,40)) : ''}</div>`
-              : `<button class="contact-btn" style="margin-top:5px;justify-content:flex-start" onclick="markGroupContacted(${r.id},${group.id},this)">📬 Als angeschrieben markieren</button>`}
             <a href="${esc(r.url)}" target="_blank" rel="noopener" style="font-size:.73rem;color:var(--accent);display:block;margin-top:5px">Inserat öffnen →</a>
           </div>
         </div>`;
@@ -749,31 +854,43 @@ async function openGroupDetail(group) {
   window.__toast = toast;
   window.__lb    = lb;
 
-  // Wire up re-rate buttons (event delegation on the detail container)
+  // ── Event delegation for the three-dot menu ──────────────────────────────
+  // IMPORTANT: openGroupDetail() can be called multiple times (after re-rate,
+  // contact-mark etc.). We must remove the previous click listeners before
+  // adding new ones, otherwise they accumulate and fight each other
+  // (old listeners call closeAllCardMenus() and immediately close the menu
+  // that the new listener just opened).
+  //
+  // We use an AbortController: each call aborts the previous controller,
+  // which removes all listeners registered with that signal.
+  if (window.__groupDetailAbort) {
+    window.__groupDetailAbort.abort();
+  }
+  const abortCtrl = new AbortController();
+  window.__groupDetailAbort = abortCtrl;
+  const sig = abortCtrl.signal;
+
   const detailEl = $id('group-detail-content');
 
   detailEl.addEventListener('click', async e => {
-    // Toggle rerate menu open/close
-    const rerateBtn = e.target.closest('[data-rerate]');
-    if (rerateBtn) {
+    // Open/close the menu
+    const menuToggle = e.target.closest('[data-menu-toggle]');
+    if (menuToggle) {
       e.stopPropagation();
-      const lid  = rerateBtn.dataset.listing;
-      const menu = detailEl.querySelector(`[data-menu="${lid}"]`);
-      if (!menu) return;
-      // Close any other open menus first
-      detailEl.querySelectorAll('.rerate-menu').forEach(m => {
-        if (m !== menu) m.style.display = 'none';
-      });
+      const menu = menuToggle.nextElementSibling;
+      closeAllCardMenus(menu);
       menu.style.display = menu.style.display === 'none' ? '' : 'none';
       return;
     }
 
-    // Handle action choice from menu
-    const actionBtn = e.target.closest('[data-action]');
-    if (actionBtn) {
+    // Re-rate action chosen from the menu
+    const rerateBtn = e.target.closest('[data-rerate-action]');
+    if (rerateBtn) {
       e.stopPropagation();
-      const action = actionBtn.dataset.action;
-      const lid    = parseInt(actionBtn.dataset.listing);
+      const action = rerateBtn.dataset.rerateAction;
+      const lid    = parseInt(rerateBtn.dataset.listing);
+      const menu   = rerateBtn.closest('.card-menu');
+      menu.style.display = 'none';
 
       if (action === 'remove') {
         await api(`/api/listings/swipe/${lid}`, { method: 'DELETE' });
@@ -784,35 +901,77 @@ async function openGroupDetail(group) {
         toast(labels[action] || '✓ Gespeichert');
       }
 
-      // Update button label and style without full reload
-      const card    = detailEl.querySelector(`.group-listing-card[data-listing-id="${lid}"]`);
-      const btn     = card?.querySelector('[data-rerate]');
-      const menu    = card?.querySelector('.rerate-menu');
-      if (btn && menu) {
-        const newRating = action === 'remove' ? '' : action;
-        const rateLabel = { like:'♥ Like', superlike:'⭐ Super-Like', dislike:'✕ Nein', '':'Bewerten…' };
-        btn.textContent = rateLabel[newRating];
-        btn.className   = `rerate-btn ${newRating}`;
-        btn.dataset.current = newRating;
-        menu.style.display  = 'none';
-      }
-
       // Reload results after a short delay so tiers update
       setTimeout(() => openGroupDetail(group), 600);
       return;
     }
 
-    // Close menus when clicking elsewhere
-    detailEl.querySelectorAll('.rerate-menu').forEach(m => m.style.display = 'none');
-  });
+    // Contact toggle chosen from the menu
+    const contactToggle = e.target.closest('[data-contact-toggle]');
+    if (contactToggle) {
+      e.stopPropagation();
+      const lid    = parseInt(contactToggle.dataset.listing);
+      const card   = detailEl.querySelector(`.group-listing-card[data-listing-id="${lid}"]`);
+      const menu   = contactToggle.closest('.card-menu');
+      const badge  = card?.querySelector('[data-contacted-badge]');
+      const isContacted = badge && badge.style.display !== 'none';
+      menu.style.display = 'none';
 
-  // Also close menus on outside click
-  document.addEventListener('click', () => {
-    detailEl.querySelectorAll('.rerate-menu').forEach(m => m.style.display = 'none');
-  }, { once: false, capture: false });
+      if (!isContacted) {
+        const r = await api('/api/contacts', { method: 'POST', body: { listingId: lid, groupId: group.id, note: '' } });
+        if (r.success) {
+          toast('📬 Als angeschrieben markiert');
+          if (badge) badge.style.display = '';
+          contactToggle.textContent = '✓ Angeschrieben (Notiz bearbeiten)';
+          card?.querySelector('[data-note-wrap]')?.classList.add('open');
+        }
+      } else {
+        card?.querySelector('[data-note-wrap]')?.classList.toggle('open');
+      }
+      return;
+    }
+
+    // Save note
+    const noteSave = e.target.closest('[data-note-save]');
+    if (noteSave) {
+      e.stopPropagation();
+      const lid     = parseInt(noteSave.dataset.listing);
+      const card    = detailEl.querySelector(`.group-listing-card[data-listing-id="${lid}"]`);
+      const noteVal = card?.querySelector('[data-note-text]')?.value || '';
+      await api(`/api/contacts/${lid}`, { method: 'PATCH', body: { note: noteVal, groupId: group.id } });
+      card?.querySelector('[data-note-wrap]')?.classList.remove('open');
+      const noteSpan = card?.querySelector('[data-contacted-note]');
+      if (noteSpan) noteSpan.textContent = noteVal ? ' · ' + noteVal.substring(0, 40) : '';
+      toast('✓ Notiz gespeichert');
+      return;
+    }
+
+    // Cancel note edit
+    const noteCancel = e.target.closest('[data-note-cancel]');
+    if (noteCancel) {
+      e.stopPropagation();
+      noteCancel.closest('[data-note-wrap]')?.classList.remove('open');
+      return;
+    }
+
+    // Click elsewhere inside the panel closes any open menu
+    closeAllCardMenus();
+  }, { signal: sig });
+
+  // Outside-click closes any open menu – also cleaned up via AbortController
+  document.addEventListener('click', e => {
+    if (!e.target.closest('[data-menu-toggle]') && !e.target.closest('.card-menu')) {
+      closeAllCardMenus();
+    }
+  }, { signal: sig });
 }
 
 $id('back-to-groups').addEventListener('click', () => {
+  // Clean up group-detail event listeners
+  if (window.__groupDetailAbort) {
+    window.__groupDetailAbort.abort();
+    window.__groupDetailAbort = null;
+  }
   $id('group-detail').style.display = 'none';
   $id('groups-main').style.display  = '';
   $id('group-detail-content').innerHTML = '';
@@ -1051,13 +1210,23 @@ async function loadSettings() {
       new Date(me.created_at).toLocaleDateString('de-DE',{year:'numeric',month:'long',day:'numeric'});
   $id('settings-username').value  = me.username||'';
   $id('settings-email').value     = me.email||'';
-  clr('settings-username-error','settings-username-ok','settings-email-error','settings-email-ok','settings-pw-error','settings-pw-ok','notify-ok');
+  clr('settings-username-error','settings-username-ok','settings-email-error','settings-email-ok','settings-pw-error','settings-pw-ok','notify-ok','ntfy-ok');
   $id('settings-pw-current').value = $id('settings-pw-new').value = $id('settings-pw-confirm').value = '';
 
   // Notification toggles
   $id('notify-email').checked = !!me.notify_email;
   $id('notify-match').checked = !!me.notify_match;
   $id('notify-new').checked   = !!me.notify_new;
+
+  // ntfy fields
+  $id('ntfy-topic').value  = me.ntfy_topic  || '';
+  $id('ntfy-server').value = me.ntfy_server || '';
+
+  // Digest interval buttons
+  const interval = me.notify_digest_interval || 'instant';
+  document.querySelectorAll('.digest-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.interval === interval);
+  });
 
   // Stats
   const s = await api('/api/auth/stats');
@@ -1107,12 +1276,39 @@ $id('save-password-btn').addEventListener('click', async () => {
   $id(id).addEventListener('change', saveNotifySettings);
 });
 
+// Digest interval buttons
+document.querySelectorAll('.digest-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.digest-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    saveNotifySettings();
+  });
+});
+
+// ntfy save button
+$id('save-ntfy-btn').addEventListener('click', async () => {
+  clr('ntfy-ok');
+  const d = await api('/api/user/notifications', { method:'PUT', body:{
+    notify_email: $id('notify-email').checked ? 1 : 0,
+    notify_push:  1,
+    notify_match: $id('notify-match').checked ? 1 : 0,
+    notify_new:   $id('notify-new').checked   ? 1 : 0,
+    notify_digest_interval: document.querySelector('.digest-btn.active')?.dataset.interval || 'instant',
+    ntfy_topic:  $id('ntfy-topic').value.trim(),
+    ntfy_server: $id('ntfy-server').value.trim(),
+  }});
+  if (d.success) { setOk('ntfy-ok','✓ Gespeichert'); toast('✅ ntfy gespeichert'); }
+});
+
 async function saveNotifySettings() {
   const d = await api('/api/user/notifications', { method:'PUT', body:{
     notify_email: $id('notify-email').checked ? 1 : 0,
     notify_push:  1,
     notify_match: $id('notify-match').checked ? 1 : 0,
     notify_new:   $id('notify-new').checked   ? 1 : 0,
+    notify_digest_interval: document.querySelector('.digest-btn.active')?.dataset.interval || 'instant',
+    ntfy_topic:  $id('ntfy-topic').value.trim(),
+    ntfy_server: $id('ntfy-server').value.trim(),
   }});
   if (d.success) setOk('notify-ok','✓ Gespeichert');
 }
@@ -1177,20 +1373,8 @@ if ('serviceWorker' in navigator) {
 
 
 
-// Helper for group detail contact button (called from inline onclick)
-async function markGroupContacted(listingId, groupId, btn) {
-  const note = prompt('Notiz (optional): Wann kontaktiert, Antwort erhalten, etc.') || '';
-  const r = await api('/api/contacts', { method: 'POST', body: { listingId, groupId, note } });
-  if (r.success) {
-    const badge = document.createElement('div');
-    badge.className = 'contacted-badge';
-    badge.style.display = 'inline-flex';
-    badge.style.marginTop = '4px';
-    badge.textContent = '📬 Angeschrieben' + (note ? ' · ' + note.substring(0, 40) : '');
-    btn.replaceWith(badge);
-    toast('📬 Als angeschrieben markiert');
-  }
-}
+// (markGroupContacted prompt()-based helper removed — contact marking now
+//  lives inside the unified card-menu, wired directly in openGroupDetail())
 
 // ══════════════════════════════════════════════════════════
 //  ARCHIVE
