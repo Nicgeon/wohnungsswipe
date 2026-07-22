@@ -27,7 +27,10 @@ const BASE_URL = () => process.env.BASE_URL || 'http://localhost:3000';
 const FROM     = () => process.env.SMTP_FROM || `"WohnungsSwipe" <noreply@wohnungsswipe.local>`;
 
 // ── Template helper ───────────────────────────────────────
-function template(title, body) {
+function template(title, body, unsubToken = '') {
+  const unsubUrl = unsubToken
+    ? `${BASE_URL()}/api/notify/unsubscribe-email?token=${unsubToken}`
+    : `${BASE_URL()}/api/notify/unsubscribe-email`;
   return `<!DOCTYPE html>
 <html lang="de">
 <head><meta charset="UTF-8"><style>
@@ -50,7 +53,7 @@ function template(title, body) {
 <div class="wrap">
   <div class="head"><div class="logo">🏠 WohnungsSwipe</div></div>
   <div class="body">${body}</div>
-  <div class="foot">Du erhältst diese Mail weil du Benachrichtigungen aktiviert hast. <a href="${BASE_URL()}/api/notify/unsubscribe-email" style="color:#e8c97a">Abmelden</a></div>
+  <div class="foot">Du erhältst diese Mail weil du Benachrichtigungen aktiviert hast. <a href="${unsubUrl}" style="color:#e8c97a">Abmelden</a></div>
 </div>
 </body></html>`;
 }
@@ -74,7 +77,7 @@ async function sendMail({ to, subject, html }) {
 
 // ── Notification types ────────────────────────────────────
 
-async function sendPasswordResetMail(email, username, token) {
+async function sendPasswordResetMail(email, username, token, unsubToken='') {
   const link = `${BASE_URL()}/reset-password?token=${token}`;
   return sendMail({
     to:      email,
@@ -84,15 +87,15 @@ async function sendPasswordResetMail(email, username, token) {
       <p>Hallo ${username},<br>du hast eine Anfrage zum Zurücksetzen deines Passworts gestellt.</p>
       <a href="${link}" class="btn">Neues Passwort festlegen</a>
       <p style="font-size:0.82rem;color:#5a5855">Dieser Link ist 1 Stunde gültig. Falls du die Anfrage nicht gestellt hast, kannst du diese E-Mail ignorieren.</p>
-    `),
+    `, unsubToken),
   });
 }
 
-async function sendMatchMail(email, username, groupName, listing) {
+async function sendMatchMail(email, username, groupName, listing, unsubToken='') {
   const priceStr = listing.price_cold || listing.price || '';
   return sendMail({
     to:      email,
-    subject: `🎉 Match in "${groupName}" – ${listing.title.substring(0, 40)}`,
+    subject: `Match in "${groupName}" – ${listing.title.substring(0, 40)}`,
     html: template('Neues Match!', `
       <h2>🎉 Ihr habt einen Match!</h2>
       <p>Hallo ${username},<br>alle Mitglieder der Gruppe <strong>${groupName}</strong> mögen diese Wohnung:</p>
@@ -106,11 +109,11 @@ async function sendMatchMail(email, username, groupName, listing) {
         </div>
       </div>
       <a href="${BASE_URL()}" class="btn">In WohnungsSwipe öffnen →</a>
-    `),
+    `, unsubToken),
   });
 }
 
-async function sendNewListingsMail(email, username, count, searchLabel) {
+async function sendNewListingsMail(email, username, count, searchLabel, unsubToken='') {
   return sendMail({
     to:      email,
     subject: `📡 ${count} neue Inserate – ${searchLabel}`,
@@ -118,11 +121,11 @@ async function sendNewListingsMail(email, username, count, searchLabel) {
       <h2>Neue Inserate verfügbar!</h2>
       <p>Hallo ${username},<br>der Suchagent <strong>${searchLabel}</strong> hat <strong>${count} neue Inserate</strong> gefunden.</p>
       <a href="${BASE_URL()}" class="btn">Jetzt swipen →</a>
-    `),
+    `, unsubToken),
   });
 }
 
-async function sendPasswordChangedMail(email, username) {
+async function sendPasswordChangedMail(email, username, unsubToken='') {
   return sendMail({
     to:      email,
     subject: 'WohnungsSwipe – Passwort geändert',
@@ -130,7 +133,7 @@ async function sendPasswordChangedMail(email, username) {
       <h2>Dein Passwort wurde geändert</h2>
       <p>Hallo ${username},<br>dein Passwort wurde soeben erfolgreich geändert.</p>
       <p>Falls du das nicht warst, wende dich bitte sofort an den Administrator.</p>
-    `),
+    `, unsubToken),
   });
 }
 

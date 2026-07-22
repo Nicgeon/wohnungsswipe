@@ -581,3 +581,14 @@ a { color:var(--accent); text-decoration:none; }
   font-size:var(--fs-tiny); color:var(--text3);
   margin-left:auto; margin-right:10px; white-space:nowrap;
 }
+
+/* ── Tab notification badge ────────────────────────────── */
+.tab-icon { position:relative; display:inline-block; }
+.tab-badge {
+  position:absolute; top:-6px; right:-10px;
+  background:var(--dislike); color:#fff;
+  font-size:.55rem; font-weight:700; line-height:1;
+  padding:2px 4px; border-radius:20px;
+  min-width:14px; text-align:center;
+  pointer-events:none;
+}

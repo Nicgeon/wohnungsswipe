@@ -70,7 +70,9 @@ async function initDb() {
       notify_new             INTEGER DEFAULT 1,
       notify_digest_interval TEXT    DEFAULT 'instant',
       ntfy_topic             TEXT    DEFAULT '',
-      ntfy_server            TEXT    DEFAULT ''
+      ntfy_server            TEXT    DEFAULT '',
+      notify_threshold       INTEGER DEFAULT 1,
+      unsubscribe_token      TEXT    DEFAULT ''
     );
     CREATE TABLE IF NOT EXISTS groups_table (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -176,6 +178,8 @@ async function initDb() {
   migrate("ALTER TABLE users    ADD COLUMN notify_digest_interval TEXT    DEFAULT 'instant'");
   migrate("ALTER TABLE users    ADD COLUMN ntfy_topic             TEXT    DEFAULT ''");
   migrate("ALTER TABLE users    ADD COLUMN ntfy_server            TEXT    DEFAULT ''");
+  migrate("ALTER TABLE users    ADD COLUMN notify_threshold       INTEGER DEFAULT 1");
+  migrate("ALTER TABLE users    ADD COLUMN unsubscribe_token      TEXT    DEFAULT ''");
   migrate("ALTER TABLE search_jobs ADD COLUMN visibility    TEXT DEFAULT 'global'");
   migrate("ALTER TABLE search_jobs ADD COLUMN visibility_id INTEGER");
 
@@ -266,8 +270,9 @@ app.post('/api/auth/register', async (req, res) => {
   if (dbGet('SELECT id FROM users WHERE email=? OR username=?', [email.toLowerCase(), username]))
     return res.status(409).json({ error: 'Username oder E-Mail bereits vergeben' });
   const hash = await bcrypt.hash(password, 10);
-  const r    = dbRun('INSERT INTO users (username,email,password_hash) VALUES (?,?,?)',
-    [username.trim(), email.trim().toLowerCase(), hash]);
+  const unsubToken = require('crypto').randomBytes(24).toString('hex');
+  const r    = dbRun('INSERT INTO users (username,email,password_hash,unsubscribe_token) VALUES (?,?,?,?)',
+    [username.trim(), email.trim().toLowerCase(), hash, unsubToken]);
   saveDb();
   req.session.userId   = r.lastInsertRowid;
   req.session.username = username.trim();
@@ -290,7 +295,7 @@ app.post('/api/auth/logout', (req, res) => { req.session.destroy(); res.json({ s
 
 app.get('/api/auth/me', (req, res) => {
   if (!req.session.userId) return res.json({ loggedIn: false });
-  const user = dbGet('SELECT id,username,email,created_at,notify_email,notify_push,notify_match,notify_new,notify_digest_interval,ntfy_topic,ntfy_server FROM users WHERE id=?', [req.session.userId]);
+  const user = dbGet('SELECT id,username,email,created_at,notify_email,notify_push,notify_match,notify_new,notify_digest_interval,ntfy_topic,ntfy_server,notify_threshold FROM users WHERE id=?', [req.session.userId]);
   res.json(user ? { loggedIn: true, ...user } : { loggedIn: false });
 });
 
@@ -374,15 +379,17 @@ app.put('/api/user/password', requireAuth, async (req, res) => {
 
 app.put('/api/user/notifications', requireAuth, (req, res) => {
   const { notify_email, notify_push, notify_match, notify_new,
-          notify_digest_interval, ntfy_topic, ntfy_server } = req.body;
+          notify_digest_interval, ntfy_topic, ntfy_server, notify_threshold } = req.body;
   const validIntervals = ['instant','15min','1h','6h','daily'];
-  const interval = validIntervals.includes(notify_digest_interval) ? notify_digest_interval : 'instant';
-  dbRun('UPDATE users SET notify_email=?,notify_push=?,notify_match=?,notify_new=?,notify_digest_interval=?,ntfy_topic=?,ntfy_server=? WHERE id=?', [
+  const interval    = validIntervals.includes(notify_digest_interval) ? notify_digest_interval : 'instant';
+  const threshold   = Math.max(1, Math.min(100, parseInt(notify_threshold) || 1));
+  dbRun('UPDATE users SET notify_email=?,notify_push=?,notify_match=?,notify_new=?,notify_digest_interval=?,ntfy_topic=?,ntfy_server=?,notify_threshold=? WHERE id=?', [
     notify_email ? 1 : 0, notify_push ? 1 : 0,
     notify_match ? 1 : 0, notify_new  ? 1 : 0,
     interval,
     (ntfy_topic || '').trim().substring(0, 200),
     (ntfy_server || '').trim().substring(0, 200),
+    threshold,
     req.session.userId,
   ]);
   saveDb();
@@ -454,7 +461,7 @@ async function checkAndNotifyMatch(listingId, groupId) {
   console.log(`[Notify] Match! Gruppe "${group.name}" für Inserat "${listing.title}"`);
 
   for (const uid of memberIds) {
-    const user = dbGet('SELECT * FROM users WHERE id=?', [uid]);
+    const user = dbGet('SELECT id,username,email,notify_email,notify_push,notify_match,notify_new,ntfy_topic,ntfy_server,unsubscribe_token FROM users WHERE id=?', [uid]);
     if (!user || !user.notify_match) continue;
 
     // Matches are always delivered immediately regardless of digest setting
@@ -471,7 +478,7 @@ async function checkAndNotifyMatch(listingId, groupId) {
       await sendNtfy(user, `🎉 Match in "${group.name}"!`, listing.title.substring(0, 80), 'groups');
     }
     if (user.notify_email) {
-      await mailer.sendMatchMail(user.email, user.username, group.name, listing);
+      await mailer.sendMatchMail(user.email, user.username, group.name, listing, user.unsubscribe_token || '');
     }
   }
 }
@@ -981,8 +988,8 @@ async function sendNtfy(user, title, body, view = '') {
 // Flushes queued notifications for users whose digest_interval matches
 async function flushNotificationQueue(intervalKey) {
   const users = intervalKey === 'all'
-    ? dbAll("SELECT * FROM users")
-    : dbAll("SELECT * FROM users WHERE notify_digest_interval=?", [intervalKey]);
+    ? dbAll("SELECT id,username,email,notify_email,notify_push,notify_match,notify_new,notify_digest_interval,notify_threshold,ntfy_topic,ntfy_server,unsubscribe_token FROM users")
+    : dbAll("SELECT id,username,email,notify_email,notify_push,notify_match,notify_new,notify_digest_interval,notify_threshold,ntfy_topic,ntfy_server,unsubscribe_token FROM users WHERE notify_digest_interval=?", [intervalKey]);
 
   for (const user of users) {
     const items = dbAll(
@@ -993,6 +1000,18 @@ async function flushNotificationQueue(intervalKey) {
 
     // Group items by type for a combined message
     const newListingItems = items.filter(i => i.type === 'new_listings');
+
+    // Check threshold: count total new listings across all queued items
+    if (newListingItems.length) {
+      const totalQueued = newListingItems.reduce((s, i) => {
+        return s + parseInt(i.title.match(/\d+/)?.[0] || '1');
+      }, 0);
+      const threshold = user.notify_threshold || 1;
+      if (totalQueued < threshold) {
+        console.log(`[Digest] User ${user.username}: ${totalQueued}/${threshold} Inserate gequeued – warte auf Schwellenwert`);
+        continue; // don't flush yet
+      }
+    }
     const otherItems      = items.filter(i => i.type !== 'new_listings');
 
     // Build digest payload
@@ -1027,7 +1046,7 @@ async function flushNotificationQueue(intervalKey) {
         const sources = [...new Set(newListingItems.map(i => i.body))];
         if (totalCount > 0) {
           await mailer.sendNewListingsMail(
-            user.email, user.username, totalCount, sources.join(', ')
+            user.email, user.username, totalCount, sources.join(', '), user.unsubscribe_token || ''
           );
         }
       }

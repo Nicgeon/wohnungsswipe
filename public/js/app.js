@@ -68,7 +68,7 @@ function showScreen(id) {
   $id(id).classList.add('active');
 }
 
-const SUB_VIEWS = new Set(['jobs', 'archive', 'settings']);
+const SUB_VIEWS = new Set(['add', 'jobs', 'archive', 'settings']);
 
 function showView(name, isSubNav = false) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
@@ -406,7 +406,25 @@ async function loadSwipeQueue() {
   const d = await api('/api/listings/swipe');
   state.swipeQueue = d.listings || [];
   updateUndoButton();
+  // Show badge on tab if there are unswiped listings
+  updateSwipeBadge(state.swipeQueue.length);
   renderStack();
+}
+
+function updateSwipeBadge(count) {
+  const tab = document.querySelector('.tab-nav[data-view="swipe"]');
+  if (!tab) return;
+  let badge = tab.querySelector('.tab-badge');
+  if (count > 0) {
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.className = 'tab-badge';
+      tab.querySelector('.tab-icon').appendChild(badge);
+    }
+    badge.textContent = count > 99 ? '99+' : count;
+  } else if (badge) {
+    badge.remove();
+  }
 }
 
 function renderStack() {
@@ -1222,6 +1240,9 @@ async function loadSettings() {
   $id('ntfy-topic').value  = me.ntfy_topic  || '';
   $id('ntfy-server').value = me.ntfy_server || '';
 
+  // Threshold
+  $id('notify-threshold').value = me.notify_threshold || 1;
+
   // Digest interval buttons
   const interval = me.notify_digest_interval || 'instant';
   document.querySelectorAll('.digest-btn').forEach(btn => {
@@ -1294,21 +1315,23 @@ $id('save-ntfy-btn').addEventListener('click', async () => {
     notify_match: $id('notify-match').checked ? 1 : 0,
     notify_new:   $id('notify-new').checked   ? 1 : 0,
     notify_digest_interval: document.querySelector('.digest-btn.active')?.dataset.interval || 'instant',
-    ntfy_topic:  $id('ntfy-topic').value.trim(),
-    ntfy_server: $id('ntfy-server').value.trim(),
+    ntfy_topic:       $id('ntfy-topic').value.trim(),
+    ntfy_server:      $id('ntfy-server').value.trim(),
+    notify_threshold: parseInt($id('notify-threshold')?.value) || 1,
   }});
   if (d.success) { setOk('ntfy-ok','✓ Gespeichert'); toast('✅ ntfy gespeichert'); }
 });
 
 async function saveNotifySettings() {
   const d = await api('/api/user/notifications', { method:'PUT', body:{
-    notify_email: $id('notify-email').checked ? 1 : 0,
-    notify_push:  1,
-    notify_match: $id('notify-match').checked ? 1 : 0,
-    notify_new:   $id('notify-new').checked   ? 1 : 0,
+    notify_email:           $id('notify-email').checked ? 1 : 0,
+    notify_push:            1,
+    notify_match:           $id('notify-match').checked ? 1 : 0,
+    notify_new:             $id('notify-new').checked   ? 1 : 0,
     notify_digest_interval: document.querySelector('.digest-btn.active')?.dataset.interval || 'instant',
-    ntfy_topic:  $id('ntfy-topic').value.trim(),
-    ntfy_server: $id('ntfy-server').value.trim(),
+    ntfy_topic:             $id('ntfy-topic').value.trim(),
+    ntfy_server:            $id('ntfy-server').value.trim(),
+    notify_threshold:       parseInt($id('notify-threshold')?.value) || 1,
   }});
   if (d.success) setOk('notify-ok','✓ Gespeichert');
 }
