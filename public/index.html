@@ -471,6 +471,17 @@
         <p class="form-success" id="notify-ok"></p>
       </div>
 
+      <!-- Admin section (only visible for admins) -->
+      <div class="settings-section" id="admin-section" style="display:none">
+        <div class="section-label">⚙️ Administration</div>
+        <p style="font-size:var(--fs-small);color:var(--text2);margin-bottom:10px">Du bist Administrator. Du siehst alle Suchagenten und kannst Nutzerrechte verwalten.</p>
+        <button class="btn-secondary" id="admin-users-btn" style="width:100%;margin-bottom:8px">👥 Nutzerverwaltung</button>
+        <div id="admin-users-panel" style="display:none">
+          <div id="admin-users-list"></div>
+        </div>
+        <p class="form-success" id="admin-ok"></p>
+      </div>
+
       <button class="btn-danger" id="settings-logout-btn">Ausloggen</button>
     </div>
   </div>

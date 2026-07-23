@@ -72,7 +72,8 @@ async function initDb() {
       ntfy_topic             TEXT    DEFAULT '',
       ntfy_server            TEXT    DEFAULT '',
       notify_threshold       INTEGER DEFAULT 1,
-      unsubscribe_token      TEXT    DEFAULT ''
+      unsubscribe_token      TEXT    DEFAULT '',
+      is_admin               INTEGER DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS groups_table (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -180,6 +181,7 @@ async function initDb() {
   migrate("ALTER TABLE users    ADD COLUMN ntfy_server            TEXT    DEFAULT ''");
   migrate("ALTER TABLE users    ADD COLUMN notify_threshold       INTEGER DEFAULT 1");
   migrate("ALTER TABLE users    ADD COLUMN unsubscribe_token      TEXT    DEFAULT ''");
+  migrate("ALTER TABLE users    ADD COLUMN is_admin               INTEGER DEFAULT 0");
   migrate("ALTER TABLE search_jobs ADD COLUMN visibility    TEXT DEFAULT 'global'");
   migrate("ALTER TABLE search_jobs ADD COLUMN visibility_id INTEGER");
 
@@ -271,8 +273,10 @@ app.post('/api/auth/register', async (req, res) => {
     return res.status(409).json({ error: 'Username oder E-Mail bereits vergeben' });
   const hash = await bcrypt.hash(password, 10);
   const unsubToken = require('crypto').randomBytes(24).toString('hex');
-  const r    = dbRun('INSERT INTO users (username,email,password_hash,unsubscribe_token) VALUES (?,?,?,?)',
-    [username.trim(), email.trim().toLowerCase(), hash, unsubToken]);
+  // First user to register automatically becomes admin
+  const isFirstUser = !dbGet('SELECT id FROM users LIMIT 1');
+  const r    = dbRun('INSERT INTO users (username,email,password_hash,unsubscribe_token,is_admin) VALUES (?,?,?,?,?)',
+    [username.trim(), email.trim().toLowerCase(), hash, unsubToken, isFirstUser ? 1 : 0]);
   saveDb();
   req.session.userId   = r.lastInsertRowid;
   req.session.username = username.trim();
@@ -295,7 +299,7 @@ app.post('/api/auth/logout', (req, res) => { req.session.destroy(); res.json({ s
 
 app.get('/api/auth/me', (req, res) => {
   if (!req.session.userId) return res.json({ loggedIn: false });
-  const user = dbGet('SELECT id,username,email,created_at,notify_email,notify_push,notify_match,notify_new,notify_digest_interval,ntfy_topic,ntfy_server,notify_threshold FROM users WHERE id=?', [req.session.userId]);
+  const user = dbGet('SELECT id,username,email,created_at,notify_email,notify_push,notify_match,notify_new,notify_digest_interval,ntfy_topic,ntfy_server,notify_threshold,is_admin FROM users WHERE id=?', [req.session.userId]);
   res.json(user ? { loggedIn: true, ...user } : { loggedIn: false });
 });
 
@@ -808,9 +812,31 @@ app.get('/api/groups/:id/results', requireAuth, (req, res) => {
 });
 
 // ── Search Jobs ────────────────────────────────────────────
-app.get('/api/jobs', requireAuth, (req, res) =>
-  res.json({ jobs: dbAll('SELECT * FROM search_jobs ORDER BY created_at DESC') })
-);
+app.get('/api/jobs', requireAuth, (req, res) => {
+  const uid  = req.session.userId;
+  const user = dbGet('SELECT is_admin FROM users WHERE id=?', [uid]);
+  let jobs;
+  if (user?.is_admin) {
+    // Admins see everything
+    jobs = dbAll(
+      'SELECT sj.*, u.username as owner_name FROM search_jobs sj LEFT JOIN users u ON u.id = sj.added_by ORDER BY sj.created_at DESC'
+    );
+  } else {
+    jobs = dbAll(`
+      SELECT DISTINCT sj.*, u.username as owner_name
+      FROM search_jobs sj
+      LEFT JOIN users u ON u.id = sj.added_by
+      WHERE sj.visibility = 'global'
+         OR sj.added_by = ?
+         OR (sj.visibility = 'private' AND sj.added_by = ?)
+         OR (sj.visibility = 'group' AND sj.visibility_id IN (
+              SELECT group_id FROM group_members WHERE user_id = ?
+            ))
+      ORDER BY sj.created_at DESC
+    `, [uid, uid, uid]);
+  }
+  res.json({ jobs });
+});
 
 app.post('/api/jobs', requireAuth, (req, res) => {
   const { label, search_url, interval_min = 60 } = req.body;
@@ -888,10 +914,22 @@ async function runJob(job) {
     saveDb();
     console.log(`[Poller] ${job.label}: ${newCount} neue (${totalFound} auf Seite)`);
 
-    // Queue notifications for subscribed users
+    // Queue notifications – only for users who can see this job's listings
     if (newCount > 0) {
-      const users = dbAll('SELECT * FROM users WHERE notify_new=1');
-      for (const user of users) {
+      let eligibleUsers = [];
+      if (job.visibility === 'global') {
+        eligibleUsers = dbAll('SELECT * FROM users WHERE notify_new=1');
+      } else if (job.visibility === 'private') {
+        eligibleUsers = dbAll('SELECT * FROM users WHERE id=? AND notify_new=1', [job.added_by]);
+      } else if (job.visibility === 'group' && job.visibility_id) {
+        eligibleUsers = dbAll(`
+          SELECT u.* FROM users u
+          JOIN group_members gm ON gm.user_id = u.id AND gm.group_id = ?
+          WHERE u.notify_new = 1
+        `, [job.visibility_id]);
+      }
+
+      for (const user of eligibleUsers) {
         dbRun(
           "INSERT INTO notification_queue (user_id,type,title,body,url) VALUES (?,?,?,?,?)",
           [user.id, 'new_listings',
@@ -901,7 +939,7 @@ async function runJob(job) {
         );
       }
       saveDb();
-      console.log(`[Notify] ${newCount} neue Inserate gequeued für ${users.length} Nutzer`);
+      console.log(`[Notify] ${newCount} neue Inserate gequeued für ${eligibleUsers.length} berechtigte Nutzer (Sichtbarkeit: ${job.visibility})`);
       // Flush immediately for users with 'instant' digest
       await flushNotificationQueue('instant');
     }
@@ -1082,6 +1120,46 @@ function startScheduler() {
 
   console.log('[Scheduler] Gestartet (erster Poll in 15s, erster Status-Check in 5min)');
 }
+
+// ── Admin routes ────────────────────────────────────────────────────────────
+// Self-promote works when no admins exist (first-run bootstrap)
+// After that only existing admins can promote/demote others.
+app.post('/api/admin/promote', requireAuth, (req, res) => {
+  const { targetUserId } = req.body;
+  const me       = dbGet('SELECT * FROM users WHERE id=?', [req.session.userId]);
+  const adminCount = dbGet('SELECT COUNT(*) as c FROM users WHERE is_admin=1');
+  const noAdmins = (adminCount?.c || 0) === 0;
+
+  if (!me?.is_admin && !noAdmins)
+    return res.status(403).json({ error: 'Nur Admins können andere Nutzer befördern' });
+
+  const tid    = parseInt(targetUserId) || req.session.userId;
+  const target = dbGet('SELECT * FROM users WHERE id=?', [tid]);
+  if (!target) return res.status(404).json({ error: 'Nutzer nicht gefunden' });
+
+  dbRun('UPDATE users SET is_admin=1 WHERE id=?', [target.id]);
+  saveDb();
+  res.json({ success: true, message: `${target.username} ist jetzt Admin` });
+});
+
+app.post('/api/admin/demote', requireAuth, (req, res) => {
+  const me = dbGet('SELECT * FROM users WHERE id=?', [req.session.userId]);
+  if (!me?.is_admin) return res.status(403).json({ error: 'Kein Zugriff' });
+  const { targetUserId } = req.body;
+  // Cannot demote yourself
+  if (parseInt(targetUserId) === req.session.userId)
+    return res.status(400).json({ error: 'Du kannst dir selbst keine Admin-Rechte entziehen' });
+  dbRun('UPDATE users SET is_admin=0 WHERE id=?', [targetUserId]);
+  saveDb();
+  res.json({ success: true });
+});
+
+app.get('/api/admin/users', requireAuth, (req, res) => {
+  const me = dbGet('SELECT is_admin FROM users WHERE id=?', [req.session.userId]);
+  if (!me?.is_admin) return res.status(403).json({ error: 'Kein Zugriff' });
+  const users = dbAll('SELECT id,username,email,is_admin,created_at FROM users ORDER BY created_at ASC');
+  res.json({ users });
+});
 
 // ── Password reset page ────────────────────────────────────
 app.get('/reset-password', (req, res) => {

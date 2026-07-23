@@ -1258,6 +1258,10 @@ async function loadSettings() {
 
   // Push button state
   await updatePushButtonState();
+
+  // Admin section
+  const adminSection = $id('admin-section');
+  if (adminSection) adminSection.style.display = me.is_admin ? '' : 'none';
 }
 
 $id('save-username-btn').addEventListener('click', async () => {
@@ -1437,6 +1441,47 @@ $id('archive-filter')?.addEventListener('click', e => {
   btn.classList.add('active');
   _archiveFilter = btn.dataset.filter;
   renderArchive();
+});
+
+
+// ══════════════════════════════════════════════════════════
+//  ADMIN
+// ══════════════════════════════════════════════════════════
+$id('admin-users-btn')?.addEventListener('click', async () => {
+  const panel = $id('admin-users-panel');
+  if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+  panel.style.display = '';
+  const { users = [] } = await api('/api/admin/users');
+  const list = $id('admin-users-list');
+  list.innerHTML = '';
+  users.forEach(u => {
+    const row = document.createElement('div');
+    row.className = 'admin-user-row';
+    row.innerHTML = `
+      <div class="admin-user-info">
+        <span class="admin-user-name">${esc(u.username)}</span>
+        <span class="admin-user-email">${esc(u.email)}</span>
+        ${u.is_admin ? '<span class="admin-badge">Admin</span>' : ''}
+      </div>
+      <div class="admin-user-actions">
+        ${!u.is_admin
+          ? `<button class="btn-ghost" style="font-size:.75rem;padding:4px 10px" data-promote="${u.id}">↑ Admin machen</button>`
+          : `<button class="btn-ghost" style="font-size:.75rem;padding:4px 10px;color:var(--dislike)" data-demote="${u.id}">↓ Entfernen</button>`}
+      </div>`;
+
+    row.querySelector('[data-promote]')?.addEventListener('click', async () => {
+      const r = await api('/api/admin/promote', { method: 'POST', body: { targetUserId: u.id } });
+      if (r.success) { toast('✓ ' + r.message); $id('admin-users-btn').click(); $id('admin-users-btn').click(); }
+      else toast('❌ ' + (r.error || 'Fehler'));
+    });
+    row.querySelector('[data-demote]')?.addEventListener('click', async () => {
+      const r = await api('/api/admin/demote', { method: 'POST', body: { targetUserId: u.id } });
+      if (r.success) { toast('✓ Admin-Rechte entfernt'); $id('admin-users-btn').click(); $id('admin-users-btn').click(); }
+      else toast('❌ ' + (r.error || 'Fehler'));
+    });
+
+    list.appendChild(row);
+  });
 });
 
 // ══════════════════════════════════════════════════════════
