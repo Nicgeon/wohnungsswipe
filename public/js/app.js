@@ -774,14 +774,35 @@ async function openGroupDetail(group) {
   $id('groups-main').style.display   = 'none';
   $id('group-detail').style.display  = '';
 
-  const [{ members = [] }, { results = [], memberCount = 0 }] = await Promise.all([
+  // Load swipe status in parallel
+  const [{ members = [] }, { results = [], memberCount = 0 }, { status: swipeStatus = [] }] = await Promise.all([
     api(`/api/groups/${group.id}/members`),
     api(`/api/groups/${group.id}/results`),
+    api(`/api/groups/${group.id}/swipe-status`),
   ]);
 
-  const membersHtml = members.map(m =>
-    `<span class="member-chip">${esc(m.username)}${m.id===state.user?.userId?' <span class="you-badge">(du)</span>':''}</span>`
-  ).join('');
+  // Build members section with nudge buttons
+  const myId = state.user?.userId;
+  const membersHtml = members.map(m => {
+    const sw = swipeStatus.find(s => s.id === m.id);
+    const isMe = m.id === myId;
+    const pendingCount = sw?.pending ?? '?';
+    const doneCount    = sw?.swiped  ?? 0;
+    const allDone      = sw && sw.pending === 0;
+    const statusColor  = allDone ? 'var(--like)' : pendingCount > 10 ? 'var(--dislike)' : 'var(--accent)';
+
+    return `
+      <div class="member-card">
+        <div class="member-card-avatar">${esc(m.username.charAt(0).toUpperCase())}</div>
+        <div class="member-card-info">
+          <span class="member-card-name">${esc(m.username)}${isMe ? ' <span class="you-badge">(du)</span>' : ''}</span>
+          <span class="member-card-status" style="color:${statusColor}">
+            ${allDone ? '✓ Alle geswiped' : `${pendingCount} noch offen`}
+          </span>
+        </div>
+        ${!isMe ? `<button class="nudge-btn" data-nudge="${m.id}" data-name="${esc(m.username)}" title="${esc(m.username)} erinnern zu swipen">👋</button>` : ''}
+      </div>`;
+  }).join('');
 
   const tiers = ['einstimmig','mehrheitlich','gespalten','abgelehnt'];
   const tierLabels = {
@@ -864,7 +885,7 @@ async function openGroupDetail(group) {
       </div>
     </div>
     <p class="section-label">Mitglieder</p>
-    <div class="members-list" style="margin-bottom:18px">${membersHtml}</div>
+    <div class="members-nudge-list" style="margin-bottom:18px">${membersHtml}</div>
     ${results.length
       ? `<p class="section-label">${memberCount} Mitglieder · ${results.length} gemeinsam bewertet</p>${tierSections}`
       : '<p style="color:var(--text2);font-size:.85rem">Noch keine Bewertungen in dieser Gruppe.</p>'}
@@ -872,7 +893,26 @@ async function openGroupDetail(group) {
   window.__toast = toast;
   window.__lb    = lb;
 
-  // ── Event delegation for the three-dot menu ──────────────────────────────
+  // Wire nudge buttons
+  $id('group-detail-content').querySelectorAll('[data-nudge]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const uid  = parseInt(btn.dataset.nudge);
+      const name = btn.dataset.name;
+      btn.disabled = true;
+      btn.textContent = '⏳';
+      const r = await api(`/api/groups/${group.id}/nudge/${uid}`, { method: 'POST' });
+      if (r.success) {
+        toast(`👋 ${name} erinnert!`);
+        btn.textContent = '✓';
+        setTimeout(() => { btn.disabled = false; btn.textContent = '👋'; }, 30000);
+      } else {
+        toast('❌ ' + (r.error || 'Fehler'));
+        btn.disabled = false; btn.textContent = '👋';
+      }
+    });
+  });
+
+
   // IMPORTANT: openGroupDetail() can be called multiple times (after re-rate,
   // contact-mark etc.). We must remove the previous click listeners before
   // adding new ones, otherwise they accumulate and fight each other

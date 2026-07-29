@@ -103,8 +103,9 @@ async function initDb() {
       description TEXT,
       platform    TEXT DEFAULT 'unbekannt',
       status      TEXT DEFAULT 'active',
-      added_by    INTEGER,
-      added_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+      added_by      INTEGER,
+      source_job_id INTEGER,
+      added_at      DATETIME DEFAULT CURRENT_TIMESTAMP
     );
     CREATE TABLE IF NOT EXISTS swipes (
       id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -183,6 +184,7 @@ async function initDb() {
   migrate("ALTER TABLE users    ADD COLUMN unsubscribe_token      TEXT    DEFAULT ''");
   migrate("ALTER TABLE users    ADD COLUMN is_admin               INTEGER DEFAULT 0");
   migrate("ALTER TABLE search_jobs ADD COLUMN visibility    TEXT DEFAULT 'global'");
+  migrate("ALTER TABLE listings    ADD COLUMN source_job_id INTEGER");
   migrate("ALTER TABLE search_jobs ADD COLUMN visibility_id INTEGER");
 
   // Migrate swipes table CHECK constraint to allow 'skip' (SQLite needs table rebuild for this)
@@ -235,15 +237,15 @@ function dbRun(sql, p = []) {
   } catch (e) { console.error('dbRun:', e.message); throw e; }
 }
 
-function insertListing(data, addedBy = null) {
+function insertListing(data, addedBy = null, sourceJobId = null) {
   const ex = dbGet('SELECT id FROM listings WHERE url=?', [data.url]);
   if (ex) return { id: ex.id, isNew: false };
   const r = dbRun(
-    'INSERT INTO listings (url,title,price,price_cold,size,location,rooms,image_url,images_json,tags_json,description,platform,status,added_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+    'INSERT INTO listings (url,title,price,price_cold,size,location,rooms,image_url,images_json,tags_json,description,platform,status,added_by,source_job_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
     [data.url, data.title||'', data.price||'', data.price_cold||'', data.size||'',
      data.location||'', data.rooms||'', data.image_url||'', data.images_json||'[]',
      data.tags_json||'[]', data.description||'', data.platform||'unbekannt',
-     data.status||'active', addedBy]
+     data.status||'active', addedBy, sourceJobId]
   );
   return { id: r.lastInsertRowid, isNew: true };
 }
@@ -513,45 +515,23 @@ app.get('/api/listings/swipe', requireAuth, (req, res) => {
   const listings = dbAll(`
     SELECT DISTINCT l.*, sw.action as _skip_marker FROM listings l
     LEFT JOIN swipes sw ON sw.listing_id = l.id AND sw.user_id = ? AND sw.action = 'skip'
-    LEFT JOIN search_jobs j ON l.added_by = j.added_by AND j.id = (
-      SELECT id FROM search_jobs WHERE added_by = l.added_by
-        AND visibility != 'global' LIMIT 1
-    )
+    LEFT JOIN search_jobs sj ON l.source_job_id = sj.id
     WHERE l.status = 'active'
     AND l.id NOT IN (SELECT listing_id FROM swipes WHERE user_id=? AND action != 'skip')
     AND (
-      -- manually added or job is global (default)
-      l.id IN (
-        SELECT id FROM listings WHERE added_by IS NULL OR added_by = 0
-      )
-      OR l.id IN (
-        SELECT li.id FROM listings li
-        JOIN search_jobs sj ON li.added_by = sj.added_by
-        WHERE sj.visibility = 'global'
-      )
-      -- private: only the job owner
-      OR l.id IN (
-        SELECT li.id FROM listings li
-        JOIN search_jobs sj ON li.added_by = sj.added_by
-        WHERE sj.visibility = 'private' AND sj.added_by = ?
-      )
-      -- group: user must be member
-      OR l.id IN (
-        SELECT li.id FROM listings li
-        JOIN search_jobs sj ON li.added_by = sj.added_by
-        JOIN group_members gm ON gm.group_id = sj.visibility_id AND gm.user_id = ?
-        WHERE sj.visibility = 'group'
-      )
-      -- manually added by this user or no job restriction
-      OR l.added_by = ?
-      OR l.id NOT IN (
-        SELECT li.id FROM listings li
-        JOIN search_jobs sj ON li.added_by = sj.added_by
-        WHERE sj.visibility != 'global'
-      )
+      -- manually added (no source job) → always visible
+      l.source_job_id IS NULL
+      -- job with global visibility → everyone sees it
+      OR sj.visibility = 'global'
+      -- job with private visibility → only the job owner
+      OR (sj.visibility = 'private' AND sj.added_by = ?)
+      -- job with group visibility → only group members
+      OR (sj.visibility = 'group' AND sj.visibility_id IN (
+            SELECT group_id FROM group_members WHERE user_id = ?
+          ))
     )
     ORDER BY (CASE WHEN sw.action = 'skip' THEN 1 ELSE 0 END), l.added_at DESC
-  `, [uid, uid, uid, uid, uid]);
+  `, [uid, uid, uid, uid]);
   res.json({ listings });
 });
 
@@ -746,7 +726,59 @@ app.get('/api/groups/:id/members', requireAuth, (req, res) => {
   `, [req.params.id]) });
 });
 
-// Group results with consensus tiers
+// Member swipe status – how many listings each member still has to swipe
+app.get('/api/groups/:id/swipe-status', requireAuth, (req, res) => {
+  const gid = req.params.id;
+  if (!dbGet('SELECT 1 FROM group_members WHERE group_id=? AND user_id=?', [gid, req.session.userId]))
+    return res.status(403).json({ error: 'Kein Zugriff' });
+
+  const members = dbAll(`
+    SELECT u.id, u.username FROM users u
+    JOIN group_members gm ON u.id=gm.user_id WHERE gm.group_id=?
+  `, [gid]);
+
+  const total = dbGet("SELECT COUNT(*) as c FROM listings WHERE status='active'")?.c || 0;
+  const status = members.map(m => {
+    const swiped = dbGet('SELECT COUNT(*) as c FROM swipes WHERE user_id=? AND action != ?', [m.id, 'skip'])?.c || 0;
+    return { id: m.id, username: m.username, swiped, pending: Math.max(0, total - swiped) };
+  });
+  res.json({ status, total });
+});
+
+// Nudge a group member to swipe (sends push + queues notification)
+app.post('/api/groups/:id/nudge/:userId', requireAuth, async (req, res) => {
+  const gid    = req.params.id;
+  const target = parseInt(req.params.userId);
+  const sender = dbGet('SELECT * FROM users WHERE id=?', [req.session.userId]);
+
+  if (!dbGet('SELECT 1 FROM group_members WHERE group_id=? AND user_id=?', [gid, req.session.userId]))
+    return res.status(403).json({ error: 'Kein Zugriff' });
+  if (!dbGet('SELECT 1 FROM group_members WHERE group_id=? AND user_id=?', [gid, target]))
+    return res.status(404).json({ error: 'Nutzer nicht in dieser Gruppe' });
+  if (target === req.session.userId)
+    return res.status(400).json({ error: 'Du kannst dich nicht selbst nudgen' });
+
+  const group      = dbGet('SELECT * FROM groups_table WHERE id=?', [gid]);
+  const targetUser = dbGet('SELECT * FROM users WHERE id=?', [target]);
+  if (!targetUser || !group) return res.status(404).json({ error: 'Nicht gefunden' });
+
+  const nudgeTitle = `${sender?.username || 'Jemand'} erinnert dich ans Swipen!`;
+  const nudgeBody  = `Gruppe: ${group.name}`;
+
+  // Browser push
+  if (targetUser.notify_push) {
+    await sendPushToUser(target, { title: nudgeTitle, body: nudgeBody, url: '/', icon: '/icon-192.png' });
+  }
+  // ntfy
+  if (targetUser.ntfy_topic) {
+    await sendNtfy(targetUser, nudgeTitle, nudgeBody);
+  }
+
+  console.log(`[Nudge] ${sender?.username} → ${targetUser.username} in "${group.name}"`);
+  res.json({ success: true });
+});
+
+
 app.get('/api/groups/:id/results', requireAuth, (req, res) => {
   const gid = req.params.id;
   if (!dbGet('SELECT 1 FROM group_members WHERE group_id=? AND user_id=?', [gid, req.session.userId]))
@@ -907,7 +939,7 @@ async function runJob(job) {
     const { newCount, totalFound } = await pollSearchJob(
       job,
       (url) => !!dbGet('SELECT id FROM listings WHERE url=?', [url]),
-      (data) => { insertListing(data, job.added_by); }
+      (data) => { insertListing(data, job.added_by, job.id); }
     );
     dbRun(`UPDATE search_jobs SET last_run=datetime('now'),last_error=NULL,last_new=?,total_found=total_found+? WHERE id=?`,
       [newCount, newCount, job.id]);

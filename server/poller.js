@@ -26,12 +26,16 @@ function detectPlatform(url) {
   if (url.includes('kleinanzeigen.de'))     return 'kleinanzeigen';
   if (url.includes('immobilienscout24.de')) return 'immoscout';
   if (url.includes('immowelt.de'))          return 'immowelt';
+  if (url.includes('rentola.de'))           return 'rentola';
+  if (url.includes('meinestadt.de'))        return 'meinestadt';
   return 'unbekannt';
 }
 
-async function fetchPage(url, timeoutMs = 18000) {
+async function fetchPage(url, timeoutMs = 18000, allowedFailCodes = []) {
   const res = await fetch(url, { headers: HEADERS, timeout: timeoutMs });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok && !allowedFailCodes.includes(res.status)) {
+    throw new Error(`HTTP ${res.status}`);
+  }
   return res.text();
 }
 
@@ -58,6 +62,18 @@ function extractListingUrls(html, searchUrl) {
       let href = $(el).attr('href') || '';
       if (href.startsWith('/')) href = 'https://www.immowelt.de' + href;
       if (href.startsWith('http')) urls.add(href.split('?')[0]);
+    });
+  } else if (platform === 'rentola') {
+    $('a[href*="/listings/"]').each((_, el) => {
+      let href = $(el).attr('href') || '';
+      if (href.startsWith('/')) href = 'https://rentola.de' + href;
+      if (href.startsWith('http') && href.includes('/listings/')) urls.add(href.split('?')[0]);
+    });
+  } else if (platform === 'meinestadt') {
+    $('a[href*="/expose/"]').each((_, el) => {
+      let href = $(el).attr('href') || '';
+      if (href.startsWith('/')) href = 'https://www.meinestadt.de' + href;
+      if (href.startsWith('http') && href.includes('/expose/')) urls.add(href.split('?')[0]);
     });
   } else {
     $('a[href]').each((_, el) => {
@@ -134,6 +150,20 @@ function extractTags($, platform, descText) {
       const t = $(el).text().trim();
       if (t && t.length < 50 && !/preis|miete|€/i.test(t)) tags.add(t);
     });
+  } else if (platform === 'rentola') {
+    $('[class*="feature"], [class*="Feature"], [class*="amenity"]').each((_, el) => {
+      const t = $(el).text().trim();
+      if (t.length > 2 && t.length < 40 && !/^\d+$/.test(t) && !/[€m²]/.test(t)) tags.add(t);
+    });
+  } else if (platform === 'meinestadt') {
+    const metaDesc = $('meta[name="description"]').attr('content') || '';
+    const ausstMatch = metaDesc.match(/Ausstattung:\s*(.+?)(?:\.|$)/i);
+    if (ausstMatch) {
+      ausstMatch[1].split(/[,/]/).forEach(tag => {
+        const t = tag.trim();
+        if (t.length > 1 && t.length < 40) tags.add(t);
+      });
+    }
   }
 
   // Mine common keywords from description
@@ -151,20 +181,44 @@ function extractTags($, platform, descText) {
   return [...tags].slice(0, 12); // max 12 tags per listing
 }
 
+// ── Visible-text helper ────────────────────────────────────
+// Cheerio's .text() includes text inside <script>/<style>/<noscript> tags.
+// This is fine for normal server-rendered HTML, but JS-heavy SPA sites
+// (rentola, and similar Next.js-based platforms) embed the entire app's
+// state as JSON inside a <script> tag – including translation strings,
+// config, and data about OTHER listings shown elsewhere on the same page.
+// That embedded JSON can innocently contain phrases like "bereits vermietet"
+// or "nicht mehr verfügbar" (e.g. as a status label used somewhere in the
+// UI, or describing a *different* listing) that have nothing to do with
+// the actual listing being scraped. We strip script/style content first so
+// only genuinely rendered, visible text is used for status pattern-matching.
+function getVisibleText($, selector = 'body') {
+  const $clone = $(selector).clone();
+  $clone.find('script, style, noscript, template').remove();
+  return $clone.text();
+}
+
 // ── Check if listing is offline or reserved ───────────────
 function checkListingStatus($, platform) {
-  const bodyText = $('body').text().toLowerCase();
+  const bodyText = getVisibleText($, 'body').toLowerCase();
   const title    = $('title').text().toLowerCase();
 
   // Common offline indicators
   const offlinePatterns = [
     /nicht mehr aktiv/i, /anzeige.*nicht.*vorhanden/i, /bereits.*verkauft/i,
     /bereits.*vermietet/i, /diese anzeige.*existiert nicht/i,
-    /anzeige.*gelöscht/i, /404/i, /not found/i, /leider nicht mehr/i,
+    /anzeige.*gelöscht/i, /not found/i, /leider nicht mehr/i,
     /nicht mehr verfügbar/i, /angebot.*abgelaufen/i,
   ];
+  // Only match 404/not-found in the page title, not in the body
+  // (many active sites mention "not found" in navigation or error helpers)
+  const titleOfflinePatterns = [/404/i, /not found/i, /seite nicht gefunden/i];
+
   for (const p of offlinePatterns) {
     if (p.test(bodyText) || p.test(title)) return 'offline';
+  }
+  for (const p of titleOfflinePatterns) {
+    if (p.test(title)) return 'offline';
   }
 
   // Reserved indicators
@@ -179,12 +233,16 @@ function checkListingStatus($, platform) {
   if (platform === 'kleinanzeigen') {
     if ($('.adexpired, [data-testid="adexpired"], .banner--warning').length) return 'offline';
     if ($('[data-testid="reserved-badge"], .reserved-badge').length) return 'reserved';
-    // Check if title area exists – if not, likely 404/expired
-    if (!$('h1#viewad-title, h1.headline').length && bodyText.length < 5000) return 'offline';
+    // Only flag as offline if there's NO title AND the page is very small
+    // (avoids false positives on JS-heavy pages that just haven't loaded yet)
+    if (!$('h1#viewad-title, h1.headline').length && bodyText.length < 3000) return 'offline';
   }
   if (platform === 'immoscout') {
     if ($('[data-qa="expose-offline"], .expose--inactive').length) return 'offline';
   }
+  // rentola/meinestadt: no DOM-based checks (they're SPAs, real content loads
+  // client-side), but the generic text-pattern checks above now work reliably
+  // for them too, since script/style content no longer pollutes bodyText.
 
   return 'active';
 }
@@ -200,9 +258,13 @@ async function scrapeListing(url) {
   };
 
   let html;
-  try { html = await fetchPage(url); }
+  try {
+    // For SPA platforms, allow 403 responses – they still contain meta tags in the HTML
+    const allowedCodes = (platform === 'rentola' || platform === 'meinestadt') ? [403] : [];
+    html = await fetchPage(url, 18000, allowedCodes);
+  }
   catch (e) {
-    // HTTP 404 / 410 = definitely offline
+    // HTTP 404 / 410 = definitely offline; 403 for non-SPA = likely offline
     if (e.message.includes('404') || e.message.includes('410') || e.message.includes('403')) {
       d.status = 'offline';
     }
@@ -260,10 +322,102 @@ async function scrapeListing(url) {
       if (/fläche/.test(lbl))    d.size       = extractSize(lbl)  || val;
       if (/kaltmiete/.test(lbl)) d.price_cold = extractPrice(val) || val;
     });
-    if (!d.price_cold) d.price_cold = findKaltmiete($, $('body').text().substring(0, 3000));
+    if (!d.price_cold) d.price_cold = findKaltmiete($, getVisibleText($, 'body').substring(0, 3000));
     const imgs = collectImages($, ['[class*="Gallery"] img', '[class*="gallery"] img', '[class*="Slider"] img']);
     d.images_json = JSON.stringify(imgs);
     d.image_url   = imgs[0] || $('meta[property="og:image"]').attr('content') || '';
+  }
+  else if (platform === 'rentola') {
+    // Rentola is a Next.js SPA – most content is client-rendered.
+    // The server delivers reliable data only via meta tags and the page title.
+    // Example title: "Wohnung (61.0 m²) zur Miete in Bremen (Alte Neustadt, Bremen, Germany) - rentola.de"
+    // Example meta-description: "Jetzt verfügbar: 61.0 m² Wohnung zur Langzeitmiete in Alte Neustadt, Bremen, Germany. Mietpreis: 452 €."
+    const ogTitle   = $('meta[property="og:title"]').attr('content') || '';
+    const pageTitle = $('title').text();
+    const metaDesc  = $('meta[name="description"]').attr('content') || '';
+
+    // Title: prefer h1 if rendered, fall back to og:title → page title
+    d.title = $('h1').first().text().trim() || ogTitle || pageTitle.replace(/ - rentola\.de$/i, '').trim();
+
+    // Rooms from og:title or page title: "3 Zimmer Wohnung mit 61m²"
+    d.rooms = extractRooms(ogTitle) || extractRooms(pageTitle) || extractRooms(metaDesc);
+
+    // Size from og:title, page title, or meta description
+    d.size  = extractSize(ogTitle) || extractSize(pageTitle) || extractSize(metaDesc);
+
+    // Price from meta description: "Mietpreis: 452 €"
+    const priceMatch = metaDesc.match(/Mietpreis:\s*(\d[\d.,]*\s*€)/i) ||
+                       metaDesc.match(/(\d[\d.,]*)\s*€/);
+    d.price      = priceMatch ? priceMatch[1].trim() : extractPrice(metaDesc);
+    d.price_cold = d.price; // rentola shows Kaltmiete directly
+
+    // Location from meta description: "in Alte Neustadt, Bremen, Germany"
+    // Strip the English country name at the end
+    const locMatch = metaDesc.match(/in\s+([^.]+,\s*[^.]+?)(?:\.|Mietpreis|$)/i) ||
+                     pageTitle.match(/in\s+([^(]+)\s*\(/i);
+    if (locMatch) {
+      d.location = locMatch[1].trim()
+        .replace(/,?\s*(Germany|Deutschland|Austria|Österreich|Switzerland|Schweiz)\s*$/i, '')
+        .trim();
+    }
+
+    // Description from meta description (remove price sentence at end)
+    d.description = metaDesc.replace(/Kontaktiere den Vermieter.*$/i, '').trim().substring(0, 800);
+
+    // Images: server-rendered img tags with rentola CDN
+    const imgs = collectImages($, [
+      'img[src*="img2.rentola.com"]',
+      'img[src*="rentola"]',
+      '[class*="gallery"] img',
+      '[class*="slider"] img',
+    ]);
+    const ogImg = $('meta[property="og:image"]').attr('content') || '';
+    if (ogImg && !imgs.includes(ogImg)) imgs.unshift(ogImg);
+    d.images_json = JSON.stringify([...new Set(imgs)]);
+    d.image_url   = imgs[0] || '';
+  }
+  else if (platform === 'meinestadt') {
+    // meinestadt exposes often have data in the page title: "3 Zimmer - 68 m² - 559 € Kaltmiete"
+    const pageTitle = $('title').text();
+    const titleMatch = pageTitle.match(/^(.+?)\s*\|\s*/);
+    d.title = $('h1').first().text().trim() ||
+              $('meta[property="og:title"]').attr('content') || pageTitle;
+
+    // Extract from title string: "3 Zimmer - 68 m² - 559 € Kaltmiete"
+    d.rooms      = extractRooms(pageTitle) || extractRooms($('meta[property="og:title"]').attr('content') || '');
+    d.size       = extractSize(pageTitle)  || extractSize($('meta[property="og:title"]').attr('content') || '');
+    d.price_cold = extractPrice(pageTitle) || extractPrice($('[class*="price"], [class*="kalt"]').text());
+    d.price      = d.price_cold || extractPrice($('[class*="price"]').first().text());
+
+    // Location from meta description or address fields
+    d.location   = $('[class*="address"], [class*="location"]').first().text().trim() ||
+                   ($('meta[name="description"]').attr('content') || '').split(' in ').pop()?.split('.')[0] || '';
+    // Description from meta
+    d.description = $('meta[name="description"]').attr('content')?.substring(0, 800) || '';
+
+    // Features from meta description (e.g. "Balkon / Terrasse, Keller, ...")
+    const metaDesc = $('meta[name="description"]').attr('content') || '';
+    const ausstMatch = metaDesc.match(/Ausstattung:\s*(.+?)(?:\.|$)/);
+    if (ausstMatch) {
+      ausstMatch[1].split(',').forEach(tag => {
+        const t = tag.trim();
+        if (t) d.description += (d.description ? '\n' : '') + t;
+      });
+    }
+
+    // Images
+    const ogImg = $('meta[property="og:image"]').attr('content') || '';
+    const imgs  = collectImages($, ['[class*="gallery"] img', '[class*="image"] img', 'img[src*="image-service"]']);
+    if (ogImg) imgs.unshift(ogImg);
+    d.images_json = JSON.stringify([...new Set(imgs)]);
+    d.image_url   = imgs[0] || ogImg;
+
+    // meinestadt shows "Immobilie nicht mehr verfügbar" for expired listings
+    const visibleBody = getVisibleText($, 'body');
+    if (visibleBody.includes('nicht mehr verfügbar') ||
+        visibleBody.includes('bereits vergeben')) {
+      d.status = 'offline';
+    }
   }
 
   // OpenGraph fallbacks
