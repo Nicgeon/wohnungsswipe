@@ -68,7 +68,7 @@ function showScreen(id) {
   $id(id).classList.add('active');
 }
 
-const SUB_VIEWS = new Set(['jobs', 'archive', 'settings']);
+const SUB_VIEWS = new Set(['add', 'jobs', 'archive', 'settings']);
 
 function showView(name, isSubNav = false) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
@@ -406,7 +406,25 @@ async function loadSwipeQueue() {
   const d = await api('/api/listings/swipe');
   state.swipeQueue = d.listings || [];
   updateUndoButton();
+  // Show badge on tab if there are unswiped listings
+  updateSwipeBadge(state.swipeQueue.length);
   renderStack();
+}
+
+function updateSwipeBadge(count) {
+  const tab = document.querySelector('.tab-nav[data-view="swipe"]');
+  if (!tab) return;
+  let badge = tab.querySelector('.tab-badge');
+  if (count > 0) {
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.className = 'tab-badge';
+      tab.querySelector('.tab-icon').appendChild(badge);
+    }
+    badge.textContent = count > 99 ? '99+' : count;
+  } else if (badge) {
+    badge.remove();
+  }
 }
 
 function renderStack() {
@@ -1222,6 +1240,9 @@ async function loadSettings() {
   $id('ntfy-topic').value  = me.ntfy_topic  || '';
   $id('ntfy-server').value = me.ntfy_server || '';
 
+  // Threshold
+  $id('notify-threshold').value = me.notify_threshold || 1;
+
   // Digest interval buttons
   const interval = me.notify_digest_interval || 'instant';
   document.querySelectorAll('.digest-btn').forEach(btn => {
@@ -1237,6 +1258,10 @@ async function loadSettings() {
 
   // Push button state
   await updatePushButtonState();
+
+  // Admin section
+  const adminSection = $id('admin-section');
+  if (adminSection) adminSection.style.display = me.is_admin ? '' : 'none';
 }
 
 $id('save-username-btn').addEventListener('click', async () => {
@@ -1294,21 +1319,23 @@ $id('save-ntfy-btn').addEventListener('click', async () => {
     notify_match: $id('notify-match').checked ? 1 : 0,
     notify_new:   $id('notify-new').checked   ? 1 : 0,
     notify_digest_interval: document.querySelector('.digest-btn.active')?.dataset.interval || 'instant',
-    ntfy_topic:  $id('ntfy-topic').value.trim(),
-    ntfy_server: $id('ntfy-server').value.trim(),
+    ntfy_topic:       $id('ntfy-topic').value.trim(),
+    ntfy_server:      $id('ntfy-server').value.trim(),
+    notify_threshold: parseInt($id('notify-threshold')?.value) || 1,
   }});
   if (d.success) { setOk('ntfy-ok','✓ Gespeichert'); toast('✅ ntfy gespeichert'); }
 });
 
 async function saveNotifySettings() {
   const d = await api('/api/user/notifications', { method:'PUT', body:{
-    notify_email: $id('notify-email').checked ? 1 : 0,
-    notify_push:  1,
-    notify_match: $id('notify-match').checked ? 1 : 0,
-    notify_new:   $id('notify-new').checked   ? 1 : 0,
+    notify_email:           $id('notify-email').checked ? 1 : 0,
+    notify_push:            1,
+    notify_match:           $id('notify-match').checked ? 1 : 0,
+    notify_new:             $id('notify-new').checked   ? 1 : 0,
     notify_digest_interval: document.querySelector('.digest-btn.active')?.dataset.interval || 'instant',
-    ntfy_topic:  $id('ntfy-topic').value.trim(),
-    ntfy_server: $id('ntfy-server').value.trim(),
+    ntfy_topic:             $id('ntfy-topic').value.trim(),
+    ntfy_server:            $id('ntfy-server').value.trim(),
+    notify_threshold:       parseInt($id('notify-threshold')?.value) || 1,
   }});
   if (d.success) setOk('notify-ok','✓ Gespeichert');
 }
@@ -1414,6 +1441,47 @@ $id('archive-filter')?.addEventListener('click', e => {
   btn.classList.add('active');
   _archiveFilter = btn.dataset.filter;
   renderArchive();
+});
+
+
+// ══════════════════════════════════════════════════════════
+//  ADMIN
+// ══════════════════════════════════════════════════════════
+$id('admin-users-btn')?.addEventListener('click', async () => {
+  const panel = $id('admin-users-panel');
+  if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+  panel.style.display = '';
+  const { users = [] } = await api('/api/admin/users');
+  const list = $id('admin-users-list');
+  list.innerHTML = '';
+  users.forEach(u => {
+    const row = document.createElement('div');
+    row.className = 'admin-user-row';
+    row.innerHTML = `
+      <div class="admin-user-info">
+        <span class="admin-user-name">${esc(u.username)}</span>
+        <span class="admin-user-email">${esc(u.email)}</span>
+        ${u.is_admin ? '<span class="admin-badge">Admin</span>' : ''}
+      </div>
+      <div class="admin-user-actions">
+        ${!u.is_admin
+          ? `<button class="btn-ghost" style="font-size:.75rem;padding:4px 10px" data-promote="${u.id}">↑ Admin machen</button>`
+          : `<button class="btn-ghost" style="font-size:.75rem;padding:4px 10px;color:var(--dislike)" data-demote="${u.id}">↓ Entfernen</button>`}
+      </div>`;
+
+    row.querySelector('[data-promote]')?.addEventListener('click', async () => {
+      const r = await api('/api/admin/promote', { method: 'POST', body: { targetUserId: u.id } });
+      if (r.success) { toast('✓ ' + r.message); $id('admin-users-btn').click(); $id('admin-users-btn').click(); }
+      else toast('❌ ' + (r.error || 'Fehler'));
+    });
+    row.querySelector('[data-demote]')?.addEventListener('click', async () => {
+      const r = await api('/api/admin/demote', { method: 'POST', body: { targetUserId: u.id } });
+      if (r.success) { toast('✓ Admin-Rechte entfernt'); $id('admin-users-btn').click(); $id('admin-users-btn').click(); }
+      else toast('❌ ' + (r.error || 'Fehler'));
+    });
+
+    list.appendChild(row);
+  });
 });
 
 // ══════════════════════════════════════════════════════════
