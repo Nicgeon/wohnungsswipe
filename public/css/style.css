@@ -258,6 +258,8 @@ a { color:var(--accent); text-decoration:none; }
 .job-badge.platform-kleinanzeigen { color:#f5a623;border-color:rgba(245,166,35,.3);background:rgba(245,166,35,.08); }
 .job-badge.platform-immoscout     { color:var(--superlike);border-color:rgba(96,180,240,.3);background:rgba(96,180,240,.08); }
 .job-badge.platform-immowelt      { color:#a78bfa;border-color:rgba(167,139,250,.3);background:rgba(167,139,250,.08); }
+.job-badge.platform-rentola       { color:#ff8a65;border-color:rgba(255,138,101,.3);background:rgba(255,138,101,.08); }
+.job-badge.platform-meinestadt    { color:#4dd0c4;border-color:rgba(77,208,196,.3);background:rgba(77,208,196,.08); }
 .job-badge.platform-unbekannt     { color:var(--text2);border-color:var(--border);background:var(--bg3); }
 .job-badge.status-active  { color:var(--like);border-color:rgba(91,220,138,.3);background:rgba(91,220,138,.08); }
 .job-badge.status-paused  { color:var(--text2);border-color:var(--border);background:var(--bg3); }
@@ -636,3 +638,11 @@ a { color:var(--accent); text-decoration:none; }
 }
 .nudge-btn:hover { background:rgba(232,201,122,.1); border-color:var(--accent); transform:scale(1.08); }
 .nudge-btn:disabled { opacity:.5; cursor:default; transform:none; }
+
+/* ── Job listings panel ────────────────────────────────── */
+.job-actions .btn-listings { border-color:rgba(232,201,122,.3); color:var(--accent); }
+.job-actions .btn-listings:hover { background:rgba(232,201,122,.1); }
+.job-listings-panel {
+  margin-top:10px; padding-top:10px; border-top:1px solid var(--border);
+}
+.job-listings-grid { grid-template-columns:repeat(auto-fill, minmax(160px,1fr)); gap:9px; }

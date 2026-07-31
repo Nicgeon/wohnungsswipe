@@ -114,11 +114,25 @@
   <div id="view-add" class="view">
     <div class="view-content">
       <h2 class="view-title">Inserat hinzufügen</h2>
-      <p class="view-subtitle">Link von Kleinanzeigen, ImmobilienScout24 oder Immowelt einfügen.</p>
+      <p class="view-subtitle">Link von Kleinanzeigen, ImmobilienScout24, Immowelt, rentola oder meinestadt einfügen.</p>
       <div class="card-form">
         <div class="field-group">
           <label>Inserat-Link</label>
           <input type="url" id="listing-url" placeholder="https://www.kleinanzeigen.de/s-anzeige/..." />
+        </div>
+        <div class="field-group">
+          <label>Sichtbarkeit</label>
+          <select id="add-visibility">
+            <option value="global">🌐 Alle Nutzer sehen dieses Inserat</option>
+            <option value="private">🔒 Nur ich (privat)</option>
+            <option value="group">👥 Bestimmte Gruppe</option>
+          </select>
+        </div>
+        <div id="add-visibility-group-row" class="field-group" style="display:none">
+          <label>Gruppe</label>
+          <select id="add-visibility-group">
+            <option value="">Gruppe wählen…</option>
+          </select>
         </div>
         <button id="add-listing-btn" class="btn-primary">
           <span id="add-btn-text">Laden &amp; hinzufügen</span>
@@ -136,7 +150,20 @@
           <span class="chip">kleinanzeigen.de</span>
           <span class="chip">immobilienscout24.de</span>
           <span class="chip">immowelt.de</span>
+          <span class="chip">rentola.de</span>
+          <span class="chip">meinestadt.de</span>
         </div>
+      </div>
+
+      <div class="rated-header" style="margin-top:20px">
+        <div>
+          <p class="section-label" style="margin-bottom:0">Meine hinzugefügten Inserate</p>
+        </div>
+      </div>
+      <div id="my-added-list" class="listings-grid"></div>
+      <div id="my-added-empty" class="empty-state" style="display:none">
+        <div class="empty-icon">➕</div>
+        <p>Du hast noch keine Inserate manuell hinzugefügt.</p>
       </div>
     </div>
   </div>
@@ -267,6 +294,8 @@
           <div class="hint-item"><strong>Kleinanzeigen</strong> – Suche filtern (Ort, Preis, Zimmer) → URL aus der Adressleiste kopieren.</div>
           <div class="hint-item"><strong>ImmobilienScout24</strong> – Suchergebnisse filtern → URL kopieren.</div>
           <div class="hint-item"><strong>Immowelt</strong> – Suchergebnisse filtern → URL kopieren.</div>
+          <div class="hint-item"><strong>rentola</strong> – Suchergebnisse filtern → URL kopieren.</div>
+          <div class="hint-item"><strong>meinestadt</strong> – Suchergebnisse filtern → URL kopieren.</div>
         </div>
       </div>
 

@@ -85,6 +85,7 @@ function showView(name, isSubNav = false) {
   if (name === 'jobs')     loadJobs();
   if (name === 'settings') loadSettings();
   if (name === 'archive')  loadArchive();
+  if (name === 'add')      loadMyAddedListings();
 }
 
 document.querySelectorAll('.tab-nav').forEach(btn =>
@@ -689,12 +690,17 @@ document.addEventListener('keydown', e => {
 //  ADD LISTING
 // ══════════════════════════════════════════════════════════
 $id('add-listing-btn').addEventListener('click', async () => {
-  const url = $id('listing-url').value.trim();
+  const url        = $id('listing-url').value.trim();
+  const visibility  = $id('add-visibility').value;
+  const visGrp      = $id('add-visibility-group').value;
   clr('add-error');
   if (!url.startsWith('http')) return setErr('add-error', 'Bitte eine gültige URL eingeben');
+  if (visibility === 'group' && !visGrp) return setErr('add-error', 'Bitte eine Gruppe wählen');
   const btnText = $id('add-btn-text'), spinner = $id('add-btn-spinner'), btn = $id('add-listing-btn');
   btnText.style.display = 'none'; spinner.style.display = 'inline'; btn.disabled = true;
-  const d = await api('/api/listings/add', { method:'POST', body:{ url } });
+  const d = await api('/api/listings/add', { method:'POST', body:{
+    url, visibility, visibility_id: visibility === 'group' ? visGrp : null,
+  }});
   btnText.style.display = 'inline'; spinner.style.display = 'none'; btn.disabled = false;
   if (d.error) return setErr('add-error', d.error);
   $id('listing-url').value = '';
@@ -703,7 +709,39 @@ $id('add-listing-btn').addEventListener('click', async () => {
   $id('add-preview').style.display = '';
   toast('✅ Inserat hinzugefügt!');
   state.swipeQueue = [];
+  loadMyAddedListings();
 });
+
+// Show/hide group selector based on visibility choice (manual add page)
+$id('add-visibility').addEventListener('change', () => {
+  const isGroup = $id('add-visibility').value === 'group';
+  $id('add-visibility-group-row').style.display = isGroup ? '' : 'none';
+});
+
+function populateAddGroupSelect() {
+  const sel = $id('add-visibility-group');
+  if (!sel) return;
+  while (sel.options.length > 1) sel.remove(1);
+  state.groups.forEach(g => {
+    const o = document.createElement('option');
+    o.value = g.id; o.textContent = g.name;
+    sel.appendChild(o);
+  });
+}
+
+// History of listings the current user has manually added
+async function loadMyAddedListings() {
+  populateAddGroupSelect();
+  const d = await api('/api/listings/mine');
+  const list  = $id('my-added-list');
+  const empty = $id('my-added-empty');
+  if (!list) return;
+  list.innerHTML = '';
+  const listings = d.listings || [];
+  if (!listings.length) { empty.style.display = ''; return; }
+  empty.style.display = 'none';
+  listings.forEach(l => list.appendChild(buildListCard(l)));
+}
 
 // ══════════════════════════════════════════════════════════
 //  RATED
@@ -1131,7 +1169,11 @@ function buildJobCard(job) {
       <button class="btn-run"           data-run>⟳ Jetzt abrufen</button>
       <button class="btn-toggle ${job.active?'on':''}" data-toggle>${job.active?'⏸ Pausieren':'▶ Aktivieren'}</button>
       <button class="btn-vis"           data-vis>🔒 Sichtbarkeit</button>
+      <button class="btn-listings"      data-listings-toggle>📋 Inserate anzeigen</button>
       <button class="btn-del"           data-del>🗑 Löschen</button>
+    </div>
+    <div class="job-listings-panel" style="display:none" data-listings-panel>
+      <div class="job-listings-grid listings-grid" data-listings-grid></div>
     </div>
     <div class="vis-panel" style="display:none" data-vis-panel>
       <div class="vis-panel-inner">
@@ -1154,6 +1196,26 @@ function buildJobCard(job) {
         <button class="btn-vis-save" data-vis-save>Speichern</button>
       </div>
     </div>`;
+
+  div.querySelector('[data-listings-toggle]').addEventListener('click', async () => {
+    const panel = div.querySelector('[data-listings-panel]');
+    const grid  = div.querySelector('[data-listings-grid]');
+    const btn   = div.querySelector('[data-listings-toggle]');
+    const isOpen = panel.style.display !== 'none';
+    if (isOpen) { panel.style.display = 'none'; return; }
+
+    panel.style.display = '';
+    btn.textContent = '⏳ Lädt…';
+    const d = await api(`/api/jobs/${job.id}/listings`);
+    btn.textContent = '📋 Inserate anzeigen';
+    grid.innerHTML = '';
+    const listings = d.listings || [];
+    if (!listings.length) {
+      grid.innerHTML = '<p style="font-size:.82rem;color:var(--text2);grid-column:1/-1">Noch keine Inserate von diesem Suchagenten gefunden.</p>';
+      return;
+    }
+    listings.forEach(l => grid.appendChild(buildListCard(l)));
+  });
 
   div.querySelector('[data-run]').addEventListener('click', async () => {
     const btn = div.querySelector('[data-run]');
