@@ -268,6 +268,11 @@ function buildListCard(listing, opts = {}) {
   const swipeLabelMap = { like:'♥ Like', superlike:'⭐ Super-Like', dislike:'✕ Nein' };
   const cardUid = `lc_${listing.id}_${Math.random().toString(36).slice(2,7)}`;
 
+  // Only the person who manually added a listing (no search-agent source) can
+  // change its visibility from the card menu.
+  const canChangeVisibility = !listing.source_job_id && listing.added_by === state.user?.userId;
+  const visLabel = { global:'🌐 Alle', private:'🔒 Nur ich', group:'👥 Gruppe' }[listing.visibility || 'global'];
+
   const div = document.createElement('div');
   div.className = 'list-card';
 
@@ -279,12 +284,26 @@ function buildListCard(listing, opts = {}) {
       ${images.length > 1 ? `<span class="list-card-photo-badge">📷 ${images.length}</span>` : ''}
       ${listing.status === 'offline'   ? `<span class="list-card-offline-badge">Offline</span>` : ''}
       ${listing.status === 'reserved'  ? `<span class="list-card-offline-badge" style="background:rgba(240,200,60,.8)">Reserviert</span>` : ''}
-      <button class="card-menu-btn" data-menu-toggle title="Optionen">⋮</button>
-      <div class="card-menu" data-menu style="display:none">
-        ${!opts.isArchive ? `<button data-menu-action="unswipe">↩ Bewertung zurückziehen</button>` : ''}
-        <button data-menu-action="contact-toggle">${listing.contacted ? '✓ Angeschrieben (Notiz bearbeiten)' : '📬 Als angeschrieben markieren'}</button>
-      </div>
     </div>
+    <button class="card-menu-btn" data-menu-toggle title="Optionen">⋮</button>
+    <div class="card-menu" data-menu style="display:none">
+      ${!opts.isArchive ? `<button data-menu-action="unswipe">↩ Bewertung zurückziehen</button>` : ''}
+      <button data-menu-action="contact-toggle">${listing.contacted ? '✓ Angeschrieben (Notiz bearbeiten)' : '📬 Als angeschrieben markieren'}</button>
+      ${canChangeVisibility ? `
+      <div class="card-menu-divider"></div>
+      <div class="card-menu-section-label">Sichtbarkeit (${esc(visLabel)})</div>
+      <button data-vis-action="global">🌐 Alle Nutzer</button>
+      <button data-vis-action="private">🔒 Nur ich</button>
+      <button data-vis-action="group">👥 Gruppe wählen…</button>
+      ` : ''}
+    </div>
+    ${canChangeVisibility ? `
+    <div class="vis-group-picker" data-vis-group-picker style="display:none">
+      <select data-vis-group-select>
+        <option value="">Gruppe wählen…</option>
+      </select>
+      <button data-vis-group-confirm>OK</button>
+    </div>` : ''}
     <div class="list-card-body">
       <div class="list-card-title">${esc(listing.title || 'Inserat')}</div>
       ${cold  ? `<div class="list-card-price">${esc(cold)} <span style="font-size:.7rem;font-weight:400;color:var(--text2)">kalt</span></div>` : ''}
@@ -322,13 +341,16 @@ function buildListCard(listing, opts = {}) {
   menuBtn.addEventListener('click', e => {
     e.stopPropagation();
     closeAllCardMenus(menu);
-    menu.style.display = menu.style.display === 'none' ? '' : 'none';
+    const willOpen = menu.style.display === 'none';
+    menu.style.display = willOpen ? '' : 'none';
+    div.classList.toggle('menu-open', willOpen);
   });
 
   menu.querySelectorAll('[data-menu-action]').forEach(btn => {
     btn.addEventListener('click', async e => {
       e.stopPropagation();
       menu.style.display = 'none';
+      div.classList.remove('menu-open');
       const action = btn.dataset.menuAction;
 
       if (action === 'unswipe') {
@@ -365,6 +387,69 @@ function buildListCard(listing, opts = {}) {
     });
   });
 
+  // ── Visibility change wiring (only present for own manually-added listings) ──
+  if (canChangeVisibility) {
+    const groupPicker = div.querySelector('[data-vis-group-picker]');
+    const groupSelect  = div.querySelector('[data-vis-group-select]');
+
+    div.querySelectorAll('[data-vis-action]').forEach(btn => {
+      btn.addEventListener('click', async e => {
+        e.stopPropagation();
+        const choice = btn.dataset.visAction;
+        if (choice === 'group') {
+          // Populate group options then show the inline picker instead of saving immediately
+          menu.style.display = 'none';
+          div.classList.remove('menu-open');
+          while (groupSelect.options.length > 1) groupSelect.remove(1);
+          state.groups.forEach(g => {
+            const o = document.createElement('option');
+            o.value = g.id; o.textContent = g.name;
+            if (listing.visibility_id == g.id) o.selected = true;
+            groupSelect.appendChild(o);
+          });
+          groupPicker.style.display = 'flex';
+          return;
+        }
+        // global / private → save immediately
+        menu.style.display = 'none';
+        div.classList.remove('menu-open');
+        const r = await api(`/api/listings/${listing.id}/visibility`, {
+          method: 'PATCH', body: { visibility: choice, visibility_id: null },
+        });
+        if (r.success) {
+          listing.visibility = r.visibility;
+          listing.visibility_id = r.visibility_id;
+          const label = { global:'🌐 Alle Nutzer', private:'🔒 Nur ich' }[choice];
+          toast(`✓ Sichtbarkeit: ${label}`);
+          const secLabel = div.querySelector('.card-menu-section-label');
+          if (secLabel) secLabel.textContent = `Sichtbarkeit (${label})`;
+        } else {
+          toast('❌ ' + (r.error || 'Fehler'));
+        }
+      });
+    });
+
+    div.querySelector('[data-vis-group-confirm]')?.addEventListener('click', async e => {
+      e.stopPropagation();
+      const gid = groupSelect.value;
+      if (!gid) { toast('⚠️ Bitte eine Gruppe wählen'); return; }
+      const r = await api(`/api/listings/${listing.id}/visibility`, {
+        method: 'PATCH', body: { visibility: 'group', visibility_id: gid },
+      });
+      groupPicker.style.display = 'none';
+      if (r.success) {
+        listing.visibility = 'group';
+        listing.visibility_id = gid;
+        const groupName = state.groups.find(g => g.id == gid)?.name || 'Gruppe';
+        toast(`✓ Sichtbarkeit: 👥 ${groupName}`);
+        const secLabel = div.querySelector('.card-menu-section-label');
+        if (secLabel) secLabel.textContent = `Sichtbarkeit (👥 ${groupName})`;
+      } else {
+        toast('❌ ' + (r.error || 'Fehler'));
+      }
+    });
+  }
+
   div.querySelector('[data-note-save]')?.addEventListener('click', async () => {
     await api(`/api/contacts/${listing.id}`, { method: 'PATCH', body: {
       note: noteText?.value || '', groupId: opts.groupId || null,
@@ -391,11 +476,15 @@ function buildListCard(listing, opts = {}) {
 // Close all open card menus except the one passed in (or all if omitted)
 function closeAllCardMenus(except = null) {
   document.querySelectorAll('.card-menu').forEach(m => {
-    if (m !== except) m.style.display = 'none';
+    if (m !== except) {
+      m.style.display = 'none';
+      m.closest('.list-card')?.classList.remove('menu-open');
+    }
   });
+  document.querySelectorAll('.vis-group-picker').forEach(p => p.style.display = 'none');
 }
 document.addEventListener('click', e => {
-  if (!e.target.closest('[data-menu-toggle]') && !e.target.closest('[data-menu]')) {
+  if (!e.target.closest('[data-menu-toggle]') && !e.target.closest('[data-menu]') && !e.target.closest('.vis-group-picker')) {
     closeAllCardMenus();
   }
 });

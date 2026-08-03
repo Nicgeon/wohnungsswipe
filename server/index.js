@@ -554,6 +554,58 @@ app.get('/api/listings/mine', requireAuth, (req, res) => {
   res.json({ listings });
 });
 
+// Change visibility of a manually-added listing (only the original adder may do this,
+// and only for listings that weren't found by a search agent).
+app.patch('/api/listings/:id/visibility', requireAuth, (req, res) => {
+  const { visibility, visibility_id } = req.body;
+  if (!['global','private','group'].includes(visibility))
+    return res.status(400).json({ error: 'Ungültige Sichtbarkeit' });
+
+  const listing = dbGet('SELECT * FROM listings WHERE id=?', [req.params.id]);
+  if (!listing) return res.status(404).json({ error: 'Inserat nicht gefunden' });
+  if (listing.source_job_id) return res.status(400).json({ error: 'Sichtbarkeit nur für manuell hinzugefügte Inserate änderbar' });
+  if (listing.added_by !== req.session.userId) return res.status(403).json({ error: 'Nur der ursprüngliche Ersteller kann die Sichtbarkeit ändern' });
+
+  const visId = visibility === 'group' ? (parseInt(visibility_id) || null) : null;
+  if (visibility === 'group' && visId) {
+    const member = dbGet('SELECT 1 FROM group_members WHERE group_id=? AND user_id=?', [visId, req.session.userId]);
+    if (!member) return res.status(403).json({ error: 'Nicht Mitglied dieser Gruppe' });
+  }
+
+  dbRun('UPDATE listings SET visibility=?, visibility_id=? WHERE id=?', [visibility, visId, req.params.id]);
+  saveDb();
+  res.json({ success: true, visibility, visibility_id: visId });
+});
+
+// Reusable count of how many active, visible-to-this-user listings a given
+// user still has NOT swiped (like/dislike/superlike – 'skip' doesn't count
+// as done since skipped items resurface). Mirrors the exact visibility rules
+// used by GET /api/listings/swipe so the two never disagree.
+function countPendingSwipes(uid) {
+  return dbGet(`
+    SELECT COUNT(DISTINCT l.id) as c FROM listings l
+    LEFT JOIN search_jobs sj ON l.source_job_id = sj.id
+    WHERE l.status = 'active'
+    AND l.id NOT IN (SELECT listing_id FROM swipes WHERE user_id=? AND action != 'skip')
+    AND (
+      (l.source_job_id IS NULL AND (
+        COALESCE(l.visibility, 'global') = 'global'
+        OR (l.visibility = 'private' AND l.added_by = ?)
+        OR (l.visibility = 'group' AND l.visibility_id IN (
+              SELECT group_id FROM group_members WHERE user_id = ?
+            ))
+      ))
+      OR (l.source_job_id IS NOT NULL AND (
+        sj.visibility = 'global'
+        OR (sj.visibility = 'private' AND sj.added_by = ?)
+        OR (sj.visibility = 'group' AND sj.visibility_id IN (
+              SELECT group_id FROM group_members WHERE user_id = ?
+            ))
+      ))
+    )
+  `, [uid, uid, uid, uid, uid])?.c || 0;
+}
+
 app.get('/api/listings/swipe', requireAuth, (req, res) => {
   const uid = req.session.userId;
   // Listings are visible if:
@@ -796,12 +848,15 @@ app.get('/api/groups/:id/swipe-status', requireAuth, (req, res) => {
     JOIN group_members gm ON u.id=gm.user_id WHERE gm.group_id=?
   `, [gid]);
 
-  const total = dbGet("SELECT COUNT(*) as c FROM listings WHERE status='active'")?.c || 0;
+  // Each member has their own visible set of listings (based on visibility
+  // rules), so "pending" must be computed per member individually rather
+  // than against one global count of all active listings.
   const status = members.map(m => {
-    const swiped = dbGet('SELECT COUNT(*) as c FROM swipes WHERE user_id=? AND action != ?', [m.id, 'skip'])?.c || 0;
-    return { id: m.id, username: m.username, swiped, pending: Math.max(0, total - swiped) };
+    const pending = countPendingSwipes(m.id);
+    const swiped  = dbGet('SELECT COUNT(*) as c FROM swipes WHERE user_id=? AND action != ?', [m.id, 'skip'])?.c || 0;
+    return { id: m.id, username: m.username, swiped, pending };
   });
-  res.json({ status, total });
+  res.json({ status });
 });
 
 // Nudge a group member to swipe (sends push + queues notification)
