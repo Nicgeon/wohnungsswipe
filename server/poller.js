@@ -123,6 +123,29 @@ function collectImages($, selectors) {
   return [...set];
 }
 
+// ── Kleinanzeigen-specific gallery extraction ──────────────
+// Kleinanzeigen's own CDN URLs don't carry a real file extension
+// (e.g. ".../images/8f/8f8d6d23-...?rule=$_59.AUTO"), so the generic
+// collectImages() extension filter silently drops every gallery photo
+// except whichever one happens to be duplicated via the og:image meta tag.
+// CSS class selectors for the gallery also tend to drift as Kleinanzeigen
+// updates its markup. Instead we match directly on the stable CDN URL
+// pattern (img.kleinanzeigen.de/api/v1/prod-ads/images/<id>), dedupe by
+// the image's unique ID (ignoring the `rule=` size variant), and always
+// request the larger "$_59" size for display quality.
+function collectKleinanzeigenGalleryImages($) {
+  const seen = new Map(); // imageId -> normalized large-size URL
+  $('img[src*="kleinanzeigen.de/api/v1/prod-ads/images/"], img[data-src*="kleinanzeigen.de/api/v1/prod-ads/images/"], img[data-imgsrc*="kleinanzeigen.de/api/v1/prod-ads/images/"]').each((_, el) => {
+    const src = $(el).attr('src') || $(el).attr('data-src') || $(el).attr('data-imgsrc') || '';
+    const match = src.match(/\/images\/([a-f0-9]+)\/([a-f0-9-]+)/i);
+    if (!match) return;
+    const imageId  = match[2];
+    const largeUrl = src.replace(/rule=\$_\d+\.\w+/i, 'rule=$_59.AUTO');
+    if (!seen.has(imageId)) seen.set(imageId, largeUrl);
+  });
+  return [...seen.values()];
+}
+
 // ── Extract tags/features from listing ───────────────────
 function extractTags($, platform, descText) {
   const tags = new Set();
@@ -289,9 +312,16 @@ async function scrapeListing(url) {
       if (/kalt|netto|grund/.test(lbl)) d.price_cold = extractPrice(val) || val;
     });
     if (!d.price_cold) d.price_cold = findKaltmiete($, d.description);
-    const imgs = collectImages($, ['#viewad-image img', '.galleryimage-element img', '[class*="gallery"] img']);
-    const og   = $('meta[property="og:image"]').attr('content') || '';
-    if (og) imgs.unshift(og);
+    // Primary: match Kleinanzeigen's stable CDN URL pattern directly (robust
+    // against markup/class-name changes and doesn't get filtered out by
+    // extension checks, since these URLs carry no real file extension).
+    let imgs = collectKleinanzeigenGalleryImages($);
+    if (!imgs.length) {
+      // Fallback to the old selector-based approach in case the CDN pattern changes
+      imgs = collectImages($, ['#viewad-image img', '.galleryimage-element img', '[class*="gallery"] img']);
+    }
+    const og = $('meta[property="og:image"]').attr('content') || '';
+    if (og && !imgs.some(u => u.includes(og.split('?')[0]))) imgs.unshift(og);
     d.images_json = JSON.stringify([...new Set(imgs)]);
     d.image_url   = imgs[0] || '';
   }

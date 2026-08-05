@@ -342,8 +342,9 @@ function buildListCard(listing, opts = {}) {
     e.stopPropagation();
     closeAllCardMenus(menu);
     const willOpen = menu.style.display === 'none';
-    menu.style.display = willOpen ? '' : 'none';
+    menu.style.display = willOpen ? 'flex' : 'none';
     div.classList.toggle('menu-open', willOpen);
+    if (willOpen) positionMenuNearButton(menu, menuBtn);
   });
 
   menu.querySelectorAll('[data-menu-action]').forEach(btn => {
@@ -408,6 +409,7 @@ function buildListCard(listing, opts = {}) {
             groupSelect.appendChild(o);
           });
           groupPicker.style.display = 'flex';
+          positionMenuNearButton(groupPicker, menuBtn);
           return;
         }
         // global / private → save immediately
@@ -474,6 +476,41 @@ function buildListCard(listing, opts = {}) {
 }
 
 // Close all open card menus except the one passed in (or all if omitted)
+// Position a dropdown menu so it always stays fully within the viewport,
+// instead of relying on fixed CSS offsets (right:8px etc.) that only work
+// when there happens to be enough room. Anchors the menu just below the
+// trigger button, clamped so it never runs off the left/right/bottom edge —
+// this matters most on narrow mobile grid cards where a right-anchored menu
+// can easily overflow past the left edge of the screen.
+function positionMenuNearButton(menu, btn) {
+  const margin = 8;
+  const btnRect = btn.getBoundingClientRect();
+
+  // Make sure the menu is measurable (must be visible/display!=none already)
+  const menuRect = menu.getBoundingClientRect();
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+
+  // Default: align menu's right edge with the button's right edge, just below it
+  let left = btnRect.right - menuRect.width;
+  let top  = btnRect.bottom + 6;
+
+  // Clamp horizontally so it never runs off either edge of the screen
+  if (left < margin) left = margin;
+  if (left + menuRect.width > vw - margin) left = Math.max(margin, vw - menuRect.width - margin);
+
+  // If there isn't room below, flip above the button instead
+  if (top + menuRect.height > vh - margin) {
+    const above = btnRect.top - menuRect.height - 6;
+    top = above > margin ? above : margin;
+  }
+
+  menu.style.position = 'fixed';
+  menu.style.left     = `${left}px`;
+  menu.style.top      = `${top}px`;
+  menu.style.right    = 'auto';
+}
+
 function closeAllCardMenus(except = null) {
   document.querySelectorAll('.card-menu').forEach(m => {
     if (m !== except) {
@@ -1064,7 +1101,9 @@ async function openGroupDetail(group) {
       e.stopPropagation();
       const menu = menuToggle.nextElementSibling;
       closeAllCardMenus(menu);
-      menu.style.display = menu.style.display === 'none' ? '' : 'none';
+      const willOpen = menu.style.display === 'none';
+      menu.style.display = willOpen ? 'flex' : 'none';
+      if (willOpen) positionMenuNearButton(menu, menuToggle);
       return;
     }
 
