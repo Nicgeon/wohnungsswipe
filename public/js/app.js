@@ -213,6 +213,170 @@ $id('lb-next').onclick  = () => lb.go(1);
 $id('lightbox').addEventListener('click', e => { if (e.target === $id('lightbox')) lb.close(); });
 
 // ══════════════════════════════════════════════════════════
+//  DETAIL VIEW
+//  A full in-app view of a listing (all photos, full description,
+//  a map shortcut, and — only when opened from the Swipe page — the
+//  swipe actions themselves) so tapping through to the original
+//  listing becomes the exception rather than the default habit.
+// ══════════════════════════════════════════════════════════
+const detailView = {
+  listing:   null,
+  imgs:      [],
+  idx:       0,
+  fromSwipe: false,
+
+  open(listing, opts = {}) {
+    this.listing   = listing;
+    this.imgs      = parseImages(listing);
+    this.idx       = 0;
+    this.fromSwipe = !!opts.fromSwipe;
+
+    $id('detail-platform').textContent = listing.platform || 'Inserat';
+    $id('detail-title').textContent    = listing.title || 'Inserat';
+
+    const cold  = (listing.price_cold || '').trim();
+    const total = (listing.price      || '').trim();
+    $id('detail-price').innerHTML = cold
+      ? `${esc(cold)} <span class="detail-price-sub">kalt</span>${total && total !== cold ? ` &nbsp;·&nbsp; ${esc(total)} warm` : ''}`
+      : (total ? esc(total) : '<span class="detail-price-sub">Preis nicht angegeben</span>');
+
+    const metaParts = [];
+    if (listing.size)     metaParts.push(`📐 ${esc(listing.size)}`);
+    if (listing.rooms)    metaParts.push(`🚪 ${esc(listing.rooms)} Zimmer`);
+    if (listing.location) metaParts.push(`📍 ${esc(listing.location)}`);
+    $id('detail-meta').innerHTML = metaParts.map(m => `<span class="detail-meta-item">${m}</span>`).join('');
+
+    // Structured cost/meta breakdown (Nebenkosten, Heizkosten, Kaution,
+    // Wohnungstyp, Verfügbar ab) — only rendered when at least one field
+    // was actually scraped, so older listings without this data don't
+    // show an empty box.
+    const costRows = [
+      ['Nebenkosten',    listing.nebenkosten],
+      ['Heizkosten',     listing.heizkosten],
+      ['Kaution',        listing.kaution],
+      ['Wohnungstyp',    listing.property_type],
+      ['Verfügbar ab',   listing.available_from],
+    ].filter(([, v]) => v && v.trim());
+    const costsEl = $id('detail-costs');
+    if (costRows.length) {
+      costsEl.style.display = '';
+      costsEl.innerHTML = costRows.map(([label, val]) =>
+        `<div class="detail-cost-row"><span class="detail-cost-label">${esc(label)}</span><span class="detail-cost-value">${esc(val)}</span></div>`
+      ).join('');
+    } else {
+      costsEl.style.display = 'none';
+      costsEl.innerHTML = '';
+    }
+
+    const tags = parseTags(listing.tags_json);
+    $id('detail-tags').innerHTML = tags.map(t => `<span class="detail-tag">${esc(t)}</span>`).join('');
+
+    $id('detail-description').textContent = listing.description?.trim() || 'Keine Beschreibung verfügbar.';
+
+    // Status badge (reserved/offline) — mirrors the small badges shown on cards
+    const statusBadge = $id('detail-status-badge');
+    if (listing.status === 'reserved') {
+      statusBadge.textContent = 'Reserviert'; statusBadge.className = 'detail-status-badge status-reserved'; statusBadge.style.display = '';
+    } else if (listing.status === 'offline') {
+      statusBadge.textContent = 'Offline'; statusBadge.className = 'detail-status-badge status-offline'; statusBadge.style.display = '';
+    } else {
+      statusBadge.style.display = 'none';
+    }
+
+    // Map shortcut — we only ever have a free-text location (not geocoded
+    // coordinates), so the most reliable cross-platform option is handing
+    // that text to Google Maps' search endpoint, which opens the device's
+    // default maps app via its universal/app link on both iOS and Android,
+    // falling back to Maps in the browser otherwise.
+    const mapBtn = $id('detail-map-btn');
+    if (listing.location?.trim()) {
+      mapBtn.style.display = '';
+      mapBtn.onclick = () => {
+        const q = encodeURIComponent(listing.location.trim());
+        window.open(`https://www.google.com/maps/search/?api=1&query=${q}`, '_blank', 'noopener');
+      };
+    } else {
+      mapBtn.style.display = 'none';
+    }
+
+    $id('detail-original-link').href = listing.url || '#';
+
+    // Swipe actions only make sense (and only stay in sync with the queue)
+    // when opened from the swipe page itself.
+    $id('detail-swipe-actions').style.display = this.fromSwipe ? 'flex' : 'none';
+
+    this._renderGallery();
+    $id('detail-view').style.display = 'flex';
+    document.addEventListener('keydown', detailView._key);
+  },
+
+  close() {
+    $id('detail-view').style.display = 'none';
+    document.removeEventListener('keydown', detailView._key);
+    this.listing = null;
+  },
+
+  _renderGallery() {
+    const img   = $id('detail-gallery-img');
+    const ph    = $id('detail-gallery-placeholder');
+    const thumbs = $id('detail-gallery-thumbs');
+
+    if (this.imgs.length) {
+      img.style.display = ''; ph.style.display = 'none';
+      img.src = this.imgs[this.idx];
+    } else {
+      img.style.display = 'none'; ph.style.display = 'flex';
+    }
+
+    $id('detail-gallery-counter').textContent = this.imgs.length ? `${this.idx + 1} / ${this.imgs.length}` : '';
+    $id('detail-gallery-prev').style.display  = this.imgs.length > 1 ? '' : 'none';
+    $id('detail-gallery-next').style.display  = this.imgs.length > 1 ? '' : 'none';
+
+    thumbs.innerHTML = '';
+    if (this.imgs.length > 1) {
+      this.imgs.forEach((src, i) => {
+        const t = document.createElement('img');
+        t.src = src; t.className = 'detail-gallery-thumb' + (i === this.idx ? ' active' : '');
+        t.onclick = () => { this.idx = i; this._renderGallery(); };
+        thumbs.appendChild(t);
+      });
+      thumbs.querySelector('.detail-gallery-thumb.active')?.scrollIntoView({ inline: 'center', block: 'nearest' });
+    }
+  },
+
+  galleryGo(d) {
+    if (!this.imgs.length) return;
+    this.idx = (this.idx + d + this.imgs.length) % this.imgs.length;
+    this._renderGallery();
+  },
+
+  _key(e) {
+    if (e.key === 'Escape')     detailView.close();
+    if (e.key === 'ArrowLeft')  detailView.galleryGo(-1);
+    if (e.key === 'ArrowRight') detailView.galleryGo(1);
+  },
+};
+
+$id('detail-close').onclick        = () => detailView.close();
+$id('detail-gallery-prev').onclick = () => detailView.galleryGo(-1);
+$id('detail-gallery-next').onclick = () => detailView.galleryGo(1);
+$id('detail-view').addEventListener('click', e => { if (e.target.id === 'detail-view') detailView.close(); });
+
+$id('detail-btn-like').onclick = () => {
+  if (detailView.listing) { doSwipe(detailView.listing, 'like'); detailView.close(); }
+};
+$id('detail-btn-dislike').onclick = () => {
+  if (detailView.listing) { doSwipe(detailView.listing, 'dislike'); detailView.close(); }
+};
+$id('detail-btn-superlike').onclick = () => {
+  if (detailView.listing) { doSwipe(detailView.listing, 'superlike'); detailView.close(); }
+};
+$id('detail-btn-skip').onclick = () => {
+  if (detailView.listing) { doSwipe(detailView.listing, 'skip'); detailView.close(); }
+};
+$id('detail-btn-undo').onclick = () => { undoLastSwipe(); detailView.close(); };
+
+// ══════════════════════════════════════════════════════════
 //  CARD BUILDERS
 // ══════════════════════════════════════════════════════════
 function buildSwipeCard(listing) {
@@ -249,11 +413,14 @@ function buildSwipeCard(listing) {
       </div>
       ${tags.length ? `<div class="card-tags">${tags.map(t=>`<span class="card-tag">${esc(t)}</span>`).join('')}</div>` : ''}
       ${listing.description ? `<div class="card-desc">${esc(listing.description)}</div>` : ''}
-      <a class="card-link" href="${esc(listing.url)}" target="_blank" rel="noopener">Inserat öffnen →</a>
+      <button class="card-link" data-open-detail type="button">Details ansehen →</button>
     </div>`;
 
   card.querySelector('[data-gallery]')?.addEventListener('click', e => {
     e.stopPropagation(); lb.open(images, 0);
+  });
+  card.querySelector('[data-open-detail]')?.addEventListener('click', e => {
+    e.stopPropagation(); detailView.open(listing, { fromSwipe: true });
   });
   return card;
 }
@@ -317,7 +484,7 @@ function buildListCard(listing, opts = {}) {
       ${opts.matchInfo ? `<div class="match-count" style="font-size:.76rem;color:var(--like);margin-bottom:5px">${esc(opts.matchInfo)}</div>` : ''}
       ${swipe ? `<div class="swipe-badge ${swipe}">${swipeLabelMap[swipe]||swipe}</div>` : ''}
       ${listing.contacted ? `<div class="contacted-badge">📬 Angeschrieben${listing.contact_note ? ' · ' + esc(listing.contact_note.substring(0,40)) : ''}</div>` : ''}
-      <a class="list-card-link" href="${esc(listing.url)}" target="_blank" rel="noopener">Inserat öffnen →</a>
+      <button class="list-card-link" data-open-detail type="button">Details ansehen →</button>
       <div class="contact-note-wrap" data-note-wrap>
         <textarea class="contact-note" placeholder="Notiz (optional): Wann kontaktiert, Antwort, etc." data-note-text>${esc(listing.contact_note || '')}</textarea>
         <div class="contact-note-actions">
@@ -330,6 +497,10 @@ function buildListCard(listing, opts = {}) {
   if (hasImg) div.querySelector('.list-card-img-area').addEventListener('click', e => {
     if (e.target.closest('[data-menu-toggle]') || e.target.closest('[data-menu]')) return;
     lb.open(images);
+  });
+
+  div.querySelector('[data-open-detail]')?.addEventListener('click', e => {
+    e.stopPropagation(); detailView.open(listing);
   });
 
   // ── Three-dot menu wiring ──
@@ -680,6 +851,7 @@ function attachDrag(card, listing) {
     dragging = false;
     bl.style.opacity = bd.style.opacity = bs.style.opacity = 0;
     const dx = cx - sx, dy = cy - sy;
+    const dist = Math.max(Math.abs(dx), Math.abs(dy));
     if      (dy < -100 && Math.abs(dx) < 100) doSwipe(listing, 'superlike');
     else if (dx >  100)                        doSwipe(listing, 'like');
     else if (dx < -100)                        doSwipe(listing, 'dislike');
@@ -687,16 +859,21 @@ function attachDrag(card, listing) {
       card.style.transition = 'transform 0.35s cubic-bezier(.16,1,.3,1)';
       card.style.transform  = '';
       card.style.zIndex     = '';
+      // A clean tap (negligible movement, not an aborted swipe attempt)
+      // opens the full detail view instead of just snapping back.
+      if (dist < 8) detailView.open(listing, { fromSwipe: true });
     }
   }
 
   const onMove = e => move(e.clientX, e.clientY);
   const onUp   = end;
 
-  card.addEventListener('mousedown',  e => { if (e.button === 0) start(e.clientX, e.clientY); });
+  const isInteractive = e => !!e.target.closest('[data-gallery], [data-open-detail], a, button');
+
+  card.addEventListener('mousedown',  e => { if (e.button === 0 && !isInteractive(e)) start(e.clientX, e.clientY); });
   document.addEventListener('mousemove', onMove);
   document.addEventListener('mouseup',   onUp);
-  card.addEventListener('touchstart', e => { const t = e.touches[0]; start(t.clientX, t.clientY); }, { passive: true });
+  card.addEventListener('touchstart', e => { if (isInteractive(e)) return; const t = e.touches[0]; start(t.clientX, t.clientY); }, { passive: true });
   card.addEventListener('touchmove',  e => { const t = e.touches[0]; move(t.clientX, t.clientY); e.preventDefault(); }, { passive: false });
   card.addEventListener('touchend',   end);
 
@@ -757,8 +934,9 @@ async function doSwipe(listing, action) {
 
 function updateUndoButton() {
   const btn = $id('btn-undo');
-  if (!btn) return;
-  btn.disabled = !state.lastSwipe;
+  if (btn) btn.disabled = !state.lastSwipe;
+  const detailBtn = $id('detail-btn-undo');
+  if (detailBtn) detailBtn.disabled = !state.lastSwipe;
 }
 
 async function undoLastSwipe() {
@@ -944,6 +1122,7 @@ async function openGroupDetail(group) {
     api(`/api/groups/${group.id}/results`),
     api(`/api/groups/${group.id}/swipe-status`),
   ]);
+  const resultsById = Object.fromEntries(results.map(r => [r.id, r]));
 
   // Build members section with nudge buttons
   const myId = state.user?.userId;
@@ -1029,7 +1208,7 @@ async function openGroupDetail(group) {
                 <button data-note-cancel>Abbrechen</button>
               </div>
             </div>
-            <a href="${esc(r.url)}" target="_blank" rel="noopener" style="font-size:.73rem;color:var(--accent);display:block;margin-top:5px">Inserat öffnen →</a>
+            <button data-open-detail data-listing="${r.id}" type="button" style="font-size:.73rem;color:var(--accent);display:block;margin-top:5px;background:none;border:none;padding:0;cursor:pointer;text-align:left;font-family:inherit">Details ansehen →</button>
           </div>
         </div>`;
     }).join('');
@@ -1095,6 +1274,16 @@ async function openGroupDetail(group) {
   const detailEl = $id('group-detail-content');
 
   detailEl.addEventListener('click', async e => {
+    // Open the in-app detail view
+    const detailBtn = e.target.closest('[data-open-detail]');
+    if (detailBtn) {
+      e.stopPropagation();
+      const lid = parseInt(detailBtn.dataset.listing);
+      const r   = resultsById[lid];
+      if (r) detailView.open(r);
+      return;
+    }
+
     // Open/close the menu
     const menuToggle = e.target.closest('[data-menu-toggle]');
     if (menuToggle) {

@@ -525,6 +525,57 @@
   <div class="lb-thumbnails" id="lb-thumbnails"></div>
 </div>
 
+<!-- ══ DETAIL VIEW ══════════════════════════════════════════
+     Full listing detail shown in-app, so opening the original
+     listing (and getting yanked into an external app on mobile)
+     becomes the exception rather than the default habit. -->
+<div id="detail-view" class="detail-view" style="display:none">
+  <div class="detail-view-inner">
+    <button class="detail-close" id="detail-close">✕</button>
+
+    <div class="detail-gallery" id="detail-gallery">
+      <img class="detail-gallery-img" id="detail-gallery-img" src="" alt="" />
+      <div class="detail-gallery-placeholder" id="detail-gallery-placeholder" style="display:none">🏠</div>
+      <button class="detail-gallery-arrow detail-gallery-prev" id="detail-gallery-prev">‹</button>
+      <button class="detail-gallery-arrow detail-gallery-next" id="detail-gallery-next">›</button>
+      <div class="detail-gallery-counter" id="detail-gallery-counter"></div>
+      <div class="detail-gallery-thumbs" id="detail-gallery-thumbs"></div>
+      <div class="detail-status-badge" id="detail-status-badge" style="display:none"></div>
+    </div>
+
+    <div class="detail-body">
+      <span class="detail-platform" id="detail-platform"></span>
+      <h2 class="detail-title" id="detail-title"></h2>
+      <div class="detail-price" id="detail-price"></div>
+      <div class="detail-meta" id="detail-meta"></div>
+
+      <div class="detail-costs" id="detail-costs" style="display:none"></div>
+
+      <div class="detail-tags" id="detail-tags"></div>
+
+      <div class="detail-section-label">Beschreibung</div>
+      <div class="detail-description" id="detail-description"></div>
+
+      <div class="detail-action-row">
+        <button class="detail-map-btn" id="detail-map-btn" style="display:none">📍 In Karten-App öffnen</button>
+        <a class="detail-original-link" id="detail-original-link" href="#" target="_blank" rel="noopener">
+          🔗 Original-Inserat öffnen
+        </a>
+      </div>
+    </div>
+
+    <!-- Only shown when the detail view was opened from the Swipe page,
+         so a user can act on the listing without leaving the detail view. -->
+    <div class="detail-swipe-actions" id="detail-swipe-actions" style="display:none">
+      <button class="action-btn-mini undo"  id="detail-btn-undo"      title="Letzte Aktion zurücknehmen" disabled>↩</button>
+      <button class="action-btn dislike"    id="detail-btn-dislike"   title="Nein">✕</button>
+      <button class="action-btn superlike"  id="detail-btn-superlike" title="Super!">⭐</button>
+      <button class="action-btn like"       id="detail-btn-like"      title="Ja!">♥</button>
+      <button class="action-btn-mini skip"  id="detail-btn-skip"      title="Überspringen – später nochmal anzeigen">⏭</button>
+    </div>
+  </div>
+</div>
+
 <!-- Modals -->
 <div id="create-group-modal" class="modal" style="display:none">
   <div class="modal-card">

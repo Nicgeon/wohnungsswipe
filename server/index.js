@@ -107,6 +107,11 @@ async function initDb() {
       source_job_id INTEGER,
       visibility    TEXT DEFAULT 'global',
       visibility_id INTEGER,
+      nebenkosten     TEXT,
+      heizkosten      TEXT,
+      kaution         TEXT,
+      available_from  TEXT,
+      property_type   TEXT,
       added_at      DATETIME DEFAULT CURRENT_TIMESTAMP
     );
     CREATE TABLE IF NOT EXISTS swipes (
@@ -189,6 +194,11 @@ async function initDb() {
   migrate("ALTER TABLE listings    ADD COLUMN source_job_id INTEGER");
   migrate("ALTER TABLE listings    ADD COLUMN visibility    TEXT DEFAULT 'global'");
   migrate("ALTER TABLE listings    ADD COLUMN visibility_id INTEGER");
+  migrate("ALTER TABLE listings    ADD COLUMN nebenkosten     TEXT");
+  migrate("ALTER TABLE listings    ADD COLUMN heizkosten      TEXT");
+  migrate("ALTER TABLE listings    ADD COLUMN kaution         TEXT");
+  migrate("ALTER TABLE listings    ADD COLUMN available_from  TEXT");
+  migrate("ALTER TABLE listings    ADD COLUMN property_type   TEXT");
   migrate("ALTER TABLE search_jobs ADD COLUMN visibility_id INTEGER");
 
   // Migrate swipes table CHECK constraint to allow 'skip' (SQLite needs table rebuild for this)
@@ -245,11 +255,12 @@ function insertListing(data, addedBy = null, sourceJobId = null, visibility = 'g
   const ex = dbGet('SELECT id FROM listings WHERE url=?', [data.url]);
   if (ex) return { id: ex.id, isNew: false };
   const r = dbRun(
-    'INSERT INTO listings (url,title,price,price_cold,size,location,rooms,image_url,images_json,tags_json,description,platform,status,added_by,source_job_id,visibility,visibility_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+    'INSERT INTO listings (url,title,price,price_cold,size,location,rooms,image_url,images_json,tags_json,description,platform,status,added_by,source_job_id,visibility,visibility_id,nebenkosten,heizkosten,kaution,available_from,property_type) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
     [data.url, data.title||'', data.price||'', data.price_cold||'', data.size||'',
      data.location||'', data.rooms||'', data.image_url||'', data.images_json||'[]',
      data.tags_json||'[]', data.description||'', data.platform||'unbekannt',
-     data.status||'active', addedBy, sourceJobId, visibility, visibilityId]
+     data.status||'active', addedBy, sourceJobId, visibility, visibilityId,
+     data.nebenkosten||'', data.heizkosten||'', data.kaution||'', data.available_from||'', data.property_type||'']
   );
   return { id: r.lastInsertRowid, isNew: true };
 }

@@ -111,6 +111,89 @@ function findKaltmiete($, descText) {
   return '';
 }
 
+// ── Robust price extraction for listing pages ──────────────
+// Kleinanzeigen (especially corporate/property-management listings like
+// Vonovia) often show the main rent as a short standalone heading right
+// under the title (e.g. "490 €") rather than inside any consistently
+// class-named price element — CSS selectors for this drift often enough
+// that we fall back to a structural pattern instead: any heading-ish
+// element whose ENTIRE text content is just a euro amount and nothing
+// else is almost certainly the listing's price.
+function findStandalonePriceHeading($) {
+  let found = '';
+  $('h1, h2, h3, strong, b, [class*="price" i]').each((_, el) => {
+    if (found) return;
+    const t = $(el).text().trim();
+    if (/^\d[\d.,]*\s*€$/.test(t)) found = t;
+  });
+  return found;
+}
+
+// Extract labeled cost/meta fields (Warmmiete, Nebenkosten, Heizkosten,
+// Kaution, Wohnungstyp, Verfügbar ab) directly from the page's visible
+// text. This sidesteps brittle CSS selectors entirely: as long as the
+// label word appears somewhere near its value (true for every Kleinanzeigen
+// layout variant we've observed), the regex finds it regardless of markup.
+function extractKleinanzeigenCostFields($, visibleText) {
+  const out = {};
+  const grab = (re) => { const m = visibleText.match(re); return m ? m[1].trim() : ''; };
+  out.price_warm      = grab(/Warmmiete\s*([\d.,]+\s*€)/i);
+  out.nebenkosten      = grab(/Nebenkosten\s*([\d.,]+\s*€)/i);
+  out.heizkosten        = grab(/Heizkosten\s*([\d.,]+\s*€)/i);
+  out.kaution           = grab(/Kaution(?:\s*\/\s*Genoss\.?-?Anteile)?\s*[:\s]*([\d.,]+\s*€)/i);
+  out.available_from    = grab(/Verfügbar ab:?\s*([\d.,\/]+)/i);
+  out.property_type     = grab(/Wohnungstyp\s+([A-ZÄÖÜ][A-Za-zäöüßÄÖÜ]+)/);
+  return out;
+}
+
+// ── Ausstattung (amenities) extraction ─────────────────────
+// Kleinanzeigen renders a dedicated "Ausstattung" heading followed by a
+// semicolon-separated list of real amenities. Reading FROM that heading
+// is far more reliable than broad class-based selectors, which can also
+// pick up unrelated page furniture: UI action buttons ("Nachricht
+// schreiben", "Zur Merkliste hinzufügen") and — critically — preview
+// cards from the "Andere Anzeigen des Anbieters" (other listings from
+// this seller) section at the bottom of the page, which contain their
+// OWN size/room/price badges that have nothing to do with this listing.
+function extractKleinanzeigenAusstattung($) {
+  const items = new Set();
+  $('h1, h2, h3, h4, dt, strong').each((_, el) => {
+    if (!/^ausstattung$/i.test($(el).text().trim())) return;
+    let sib = $(el).next();
+    let tries = 0;
+    while (sib.length && tries < 3) {
+      const txt = sib.text().trim();
+      if (txt.length > 10) {
+        txt.split(/[;\n]/).map(s => s.trim()).filter(Boolean).forEach(s => {
+          if (s.length > 1 && s.length < 60) items.add(s);
+        });
+        break;
+      }
+      sib = sib.next();
+      tries++;
+    }
+  });
+  return [...items];
+}
+
+// Text values that are UI chrome, not real amenities/tags — filters the
+// fallback generic tag-scanning selector, which can otherwise pick up
+// button labels and unrelated "other listings" preview-card content.
+const KLEINANZEIGEN_TAG_BLOCKLIST = [
+  'nachricht schreiben', 'zur merkliste hinzufügen', 'anzeige melden',
+  'anzeige teilen', 'teilen', 'folgen', 'drucken', 'melden',
+  'zurück', 'weiter', 'schließen', 'favorit', 'merken',
+];
+function isRealKleinanzeigenTag(t) {
+  const low = t.toLowerCase().trim();
+  if (KLEINANZEIGEN_TAG_BLOCKLIST.includes(low)) return false;
+  // Matches combined "53,03 m² 3 Zi." style figures bleeding in from
+  // unrelated "other listings" preview cards elsewhere on the page.
+  if (/^\d[\d.,]*\s*m[²2]\s+\d+\s*zi\.?$/i.test(t.trim())) return false;
+  if (/^\d[\d.,]*\s*€$/.test(t.trim())) return false; // stray price badges
+  return true;
+}
+
 function collectImages($, selectors) {
   const set = new Set();
   selectors.forEach(sel => {
@@ -151,17 +234,27 @@ function extractTags($, platform, descText) {
   const tags = new Set();
 
   if (platform === 'kleinanzeigen') {
-    // Kleinanzeigen feature chips/attributes
-    $('[class*="tag"], [class*="Tag"], .iconlist li, [class*="feature"], [class*="Feature"]').each((_, el) => {
-      const t = $(el).text().trim();
-      if (t.length > 1 && t.length < 40 && !/^\d+$/.test(t)) tags.add(t);
-    });
-    // Also mine from the details list
-    $('.addetailslist--detail').each((_, el) => {
-      const lbl = $(el).find('.addetailslist--detail--label').text().trim();
-      const val = $(el).find('span:last-child').text().trim();
-      if (lbl && val && !/preis|miete|größe|zimmer/i.test(lbl)) tags.add(`${lbl}: ${val}`);
-    });
+    // Primary: read the real "Ausstattung" list directly (see helper above)
+    // — reliably scoped to just this listing's own amenities, unlike broad
+    // class selectors which also catch UI buttons and unrelated preview
+    // cards from the "Andere Anzeigen des Anbieters" section.
+    const ausstattung = extractKleinanzeigenAusstattung($);
+    ausstattung.forEach(t => tags.add(t));
+
+    if (!tags.size) {
+      // Fallback: generic chip/feature selector scan, filtered against a
+      // blocklist of known UI-button labels and stray size/price badges
+      // that otherwise leak in from unrelated parts of the page.
+      $('[class*="tag"], [class*="Tag"], .iconlist li, [class*="feature"], [class*="Feature"]').each((_, el) => {
+        const t = $(el).text().trim();
+        if (t.length > 1 && t.length < 40 && !/^\d+$/.test(t) && isRealKleinanzeigenTag(t)) tags.add(t);
+      });
+      $('.addetailslist--detail').each((_, el) => {
+        const lbl = $(el).find('.addetailslist--detail--label').text().trim();
+        const val = $(el).find('span:last-child').text().trim();
+        if (lbl && val && !/preis|miete|größe|zimmer/i.test(lbl)) tags.add(`${lbl}: ${val}`);
+      });
+    }
   } else if (platform === 'immoscout') {
     $('[class*="criteriaGroup"] [class*="criteria"], [data-qa*="criterion"]').each((_, el) => {
       const lbl = $(el).find('[class*="label"]').text().trim();
@@ -278,6 +371,7 @@ async function scrapeListing(url) {
     title: '', price: '', price_cold: '', size: '', location: '',
     rooms: '', image_url: '', images_json: '[]', description: '',
     tags_json: '[]', status: 'active',
+    nebenkosten: '', heizkosten: '', kaution: '', available_from: '', property_type: '',
   };
 
   let html;
@@ -300,10 +394,23 @@ async function scrapeListing(url) {
   d.status = checkListingStatus($, platform);
 
   if (platform === 'kleinanzeigen') {
-    d.title       = $('h1#viewad-title').text().trim() || $('h1').first().text().trim();
-    d.price       = extractPrice($('[data-testid="price"]').text() || $('.priceintro').text() || $('strong.price-big').text());
-    d.location    = $('#viewad-locality').text().trim() || $('[data-testid="listing-location"]').text().trim();
+    d.title = $('h1#viewad-title').text().trim() || $('h1').first().text().trim();
+
+    // Location: take only the FIRST match. Kleinanzeigen frequently renders
+    // a duplicate (mobile+desktop) copy of the same location text elsewhere
+    // on the page; concatenating every match produces a doubled string like
+    // "28237 Gröpelingen – Gröpelingen28237 Gröpelingen – Gröpelingen".
+    let loc = $('#viewad-locality').first().text().trim() || $('[data-testid="listing-location"]').first().text().trim();
+    // Defensive dedup: collapse "XY" into "X" whenever the string is
+    // literally two back-to-back copies of the same text, regardless of cause.
+    if (loc.length % 2 === 0) {
+      const half = loc.length / 2;
+      if (loc.slice(0, half) === loc.slice(half)) loc = loc.slice(0, half);
+    }
+    d.location = loc;
+
     d.description = ($('#viewad-description-text').text() || $('[data-testid="description"]').text()).trim().substring(0, 800);
+
     $('#viewad-details .addetailslist--detail').each((_, el) => {
       const lbl = $(el).find('.addetailslist--detail--label').text().toLowerCase();
       const val = $(el).find('span:last-child').text().trim();
@@ -311,7 +418,36 @@ async function scrapeListing(url) {
       if (/fläche|größe/.test(lbl))     d.size       = val;
       if (/kalt|netto|grund/.test(lbl)) d.price_cold = extractPrice(val) || val;
     });
-    if (!d.price_cold) d.price_cold = findKaltmiete($, d.description);
+
+    // Additional structured fields (Warmmiete, Nebenkosten, Heizkosten,
+    // Kaution, Wohnungstyp, Verfügbar ab) — text-pattern based, so they
+    // survive markup changes the same way the price fallback below does.
+    const visibleBody = getVisibleText($, 'body');
+    const costFields   = extractKleinanzeigenCostFields($, visibleBody);
+    Object.assign(d, {
+      nebenkosten:    costFields.nebenkosten,
+      heizkosten:     costFields.heizkosten,
+      kaution:        costFields.kaution,
+      available_from: costFields.available_from,
+      property_type:  costFields.property_type,
+    });
+
+    // price_cold: prefer the addetailslist label match above; otherwise the
+    // standalone price heading (common on corporate/property-management
+    // listings that show the base rent as a bare "490 €" under the title
+    // rather than in any consistently labeled element); otherwise the
+    // legacy description-text pattern fallback.
+    if (!d.price_cold) d.price_cold = findStandalonePriceHeading($) || findKaltmiete($, d.description);
+
+    // price (rendered as the "warm" figure whenever it differs from
+    // price_cold): prefer an explicit Warmmiete match; else fall back to
+    // the classic selector-based price extraction (still valid for
+    // simpler/older private listings); else mirror price_cold so at least
+    // one figure is always shown instead of "Preis nicht angegeben".
+    d.price = costFields.price_warm
+           || extractPrice($('[data-testid="price"]').text() || $('.priceintro').text() || $('strong.price-big').text())
+           || d.price_cold;
+
     // Primary: match Kleinanzeigen's stable CDN URL pattern directly (robust
     // against markup/class-name changes and doesn't get filtered out by
     // extension checks, since these URLs carry no real file extension).

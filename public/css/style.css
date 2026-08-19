@@ -145,7 +145,7 @@ a { color:var(--accent); text-decoration:none; }
 .card-tag { font-size:.68rem;color:var(--text3);border:1px solid var(--border);border-radius:20px;padding:1px 7px; }
 
 .card-desc { font-size:var(--fs-small);color:var(--text2);line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden; }
-.card-link { display:block;text-align:right;font-size:.75rem;color:var(--accent);margin-top:7px;opacity:.7; }
+.card-link { display:block;text-align:right;font-size:.75rem;color:var(--accent);margin-top:7px;opacity:.7;background:none;border:none;width:100%;padding:0;cursor:pointer;font-family:inherit; }
 .card-link:hover { opacity:1; }
 
 /* ── Swipe buttons ───────────────────────────────────── */
@@ -197,7 +197,8 @@ a { color:var(--accent); text-decoration:none; }
 .list-card-meta { font-size:.75rem;color:var(--text2);display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px; }
 .list-card-tags { display:flex;flex-wrap:wrap;gap:3px;margin-bottom:6px; }
 .list-card-tag { font-size:.64rem;color:var(--text3);border:1px solid var(--border);border-radius:20px;padding:1px 6px; }
-.list-card-link { font-size:.73rem;color:var(--accent);display:block;margin-bottom:6px; }
+.list-card-link { font-size:.73rem;color:var(--accent);display:block;margin-bottom:6px;background:none;border:none;width:100%;text-align:left;padding:0;cursor:pointer;font-family:inherit; }
+.list-card-link:hover { text-decoration:underline; }
 
 .swipe-badge { display:inline-flex;align-items:center;gap:4px;font-size:.72rem;font-weight:600;padding:2px 8px;border-radius:6px;margin-bottom:6px; }
 .swipe-badge.like      { background:rgba(91,220,138,.12);color:var(--like); }
@@ -665,4 +666,142 @@ a { color:var(--accent); text-decoration:none; }
 .vis-group-picker button {
   background:var(--accent); color:#0f0f11; border:none; border-radius:7px;
   padding:6px 12px; font-size:var(--fs-small); font-weight:600; cursor:pointer; white-space:nowrap;
+}
+
+/* ══════════════════════════════════════════════════════════
+   DETAIL VIEW
+   Full in-app listing view — photos, complete description, map
+   shortcut, and (on the Swipe page) the swipe actions themselves.
+   Goal: opening the original listing becomes the rare exception,
+   not the default way to see what a listing actually offers.
+══════════════════════════════════════════════════════════ */
+.detail-view {
+  position:fixed; inset:0; z-index:900;
+  background:rgba(0,0,0,.75); backdrop-filter:blur(6px);
+  display:flex; align-items:center; justify-content:center;
+  padding:0; animation:fadeIn .18s ease;
+}
+.detail-view-inner {
+  background:var(--bg2); width:100%; height:100%;
+  max-width:560px; max-height:100vh;
+  display:flex; flex-direction:column;
+  overflow:hidden; position:relative;
+  animation:slideUp .25s cubic-bezier(.16,1,.3,1);
+}
+@media (min-width: 640px) {
+  .detail-view { padding:24px; }
+  .detail-view-inner { max-height:calc(100vh - 48px); border-radius:20px; box-shadow:var(--shadow); border:1px solid var(--border); }
+}
+
+.detail-close {
+  position:absolute; top:12px; right:12px; z-index:10;
+  width:36px; height:36px; border-radius:50%;
+  background:rgba(0,0,0,.55); border:none; color:#fff;
+  font-size:1.15rem; cursor:pointer; backdrop-filter:blur(3px);
+  display:flex; align-items:center; justify-content:center;
+  transition:background .15s;
+}
+.detail-close:hover { background:rgba(0,0,0,.75); }
+
+/* ── Gallery ─────────────────────────────────────────── */
+.detail-gallery {
+  position:relative; width:100%; height:min(42vh, 340px);
+  flex-shrink:0; background:var(--bg3); overflow:hidden;
+}
+.detail-gallery-img { width:100%; height:100%; object-fit:cover; display:block; }
+.detail-gallery-placeholder {
+  width:100%; height:100%; display:flex; align-items:center; justify-content:center;
+  font-size:4rem; background:linear-gradient(135deg,var(--bg3),var(--bg2));
+}
+.detail-gallery-arrow {
+  position:absolute; top:50%; transform:translateY(-50%);
+  background:rgba(0,0,0,.5); border:none; color:#fff;
+  width:40px; height:40px; border-radius:50%; font-size:1.6rem;
+  cursor:pointer; display:flex; align-items:center; justify-content:center;
+  transition:background .15s; backdrop-filter:blur(3px);
+}
+.detail-gallery-arrow:hover { background:rgba(0,0,0,.7); }
+.detail-gallery-prev { left:10px; } .detail-gallery-next { right:10px; }
+.detail-gallery-counter {
+  position:absolute; top:12px; left:12px;
+  background:rgba(0,0,0,.55); color:#fff; font-size:.75rem;
+  padding:3px 10px; border-radius:20px; backdrop-filter:blur(3px);
+}
+.detail-gallery-thumbs {
+  position:absolute; bottom:8px; left:50%; transform:translateX(-50%);
+  display:flex; gap:5px; max-width:92%; overflow-x:auto; padding:3px;
+  scrollbar-width:none;
+}
+.detail-gallery-thumbs::-webkit-scrollbar { display:none; }
+.detail-gallery-thumb {
+  width:38px; height:38px; object-fit:cover; border-radius:6px;
+  cursor:pointer; opacity:.5; transition:opacity .2s, transform .2s;
+  border:2px solid transparent; flex-shrink:0;
+}
+.detail-gallery-thumb.active { opacity:1; border-color:var(--accent); transform:scale(1.06); }
+
+.detail-status-badge {
+  position:absolute; top:12px; right:56px;
+  font-size:.72rem; font-weight:600; padding:3px 10px; border-radius:8px;
+  letter-spacing:.5px; text-transform:uppercase;
+}
+.detail-status-badge.status-reserved { background:rgba(240,200,60,.85); color:#1a1600; }
+.detail-status-badge.status-offline  { background:rgba(240,80,96,.85); color:#fff; }
+
+/* ── Body ────────────────────────────────────────────── */
+.detail-body { flex:1; overflow-y:auto; padding:20px 20px 16px; }
+.detail-platform {
+  display:inline-block; font-size:.68rem; font-weight:600; letter-spacing:1px;
+  text-transform:uppercase; color:var(--accent); background:rgba(232,201,122,.1);
+  border-radius:6px; padding:2px 8px; margin-bottom:8px;
+}
+.detail-title {
+  font-family:'Fraunces',serif; font-size:var(--fs-display); font-weight:700;
+  line-height:1.25; margin-bottom:10px;
+}
+.detail-price { font-family:'Fraunces',serif; font-size:1.3rem; font-weight:700; margin-bottom:12px; }
+.detail-price-sub { font-size:.8rem; font-weight:400; color:var(--text2); }
+.detail-meta { display:flex; flex-wrap:wrap; gap:7px; margin-bottom:12px; }
+.detail-meta-item { font-size:var(--fs-small); color:var(--text2); background:var(--bg3); border-radius:7px; padding:4px 10px; }
+.detail-costs {
+  display:grid; grid-template-columns:1fr 1fr; gap:6px 14px;
+  background:var(--bg3); border-radius:11px; padding:12px 14px; margin-bottom:14px;
+}
+.detail-cost-row { display:flex; justify-content:space-between; gap:8px; font-size:var(--fs-small); }
+.detail-cost-label { color:var(--text2); }
+.detail-cost-value { color:var(--text); font-weight:600; text-align:right; }
+
+.detail-tags { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:16px; }
+.detail-tag { font-size:var(--fs-small); color:var(--text3); border:1px solid var(--border); border-radius:20px; padding:3px 10px; }
+
+.detail-section-label {
+  font-size:var(--fs-tiny); font-weight:600; text-transform:uppercase;
+  letter-spacing:.5px; color:var(--text2); margin-bottom:6px;
+}
+.detail-description {
+  font-size:var(--fs-body); color:var(--text); line-height:1.7;
+  white-space:pre-wrap; margin-bottom:18px;
+}
+
+.detail-action-row { display:flex; flex-direction:column; gap:9px; }
+.detail-map-btn {
+  background:var(--bg3); border:1px solid var(--border); border-radius:11px;
+  padding:11px; font-size:.88rem; color:var(--text); cursor:pointer;
+  transition:background .15s, border-color .15s; text-align:center;
+}
+.detail-map-btn:hover { background:var(--bg2); border-color:rgba(255,255,255,.18); }
+.detail-original-link {
+  display:block; text-align:center; background:transparent;
+  border:1px solid var(--accent); color:var(--accent); border-radius:11px;
+  padding:11px; font-size:.88rem; font-weight:500; text-decoration:none;
+  transition:background .15s;
+}
+.detail-original-link:hover { background:rgba(232,201,122,.08); }
+
+/* ── Swipe actions (only shown when opened from the Swipe page) ── */
+.detail-swipe-actions {
+  display:flex; align-items:center; justify-content:center; gap:14px;
+  padding:14px 16px calc(14px + env(safe-area-inset-bottom, 0px));
+  border-top:1px solid var(--border); flex-shrink:0; background:var(--bg2);
+  flex-wrap:nowrap;
 }
