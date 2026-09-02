@@ -15,6 +15,7 @@
     "node-fetch": "^2.7.0",
     "nodemailer": "^9.0.1",
     "sql.js": "^1.10.3",
-    "web-push": "^3.6.6"
+    "web-push": "^3.6.6",
+    "sanitize-html": "^2.11.0"
   }
 }

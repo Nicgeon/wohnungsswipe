@@ -283,13 +283,35 @@ const detailView = {
       statusBadge.style.display = 'none';
     }
 
-    // Map shortcut — we only ever have a free-text location (not geocoded
-    // coordinates), so the most reliable cross-platform option is handing
-    // that text to Google Maps' search endpoint, which opens the device's
-    // default maps app via its universal/app link on both iOS and Android,
-    // falling back to Maps in the browser otherwise.
+    // Embedded map — when Kleinanzeigen (or another platform) exposes real
+    // coordinates via og:latitude/og:longitude, show an actual OpenStreetMap
+    // preview right in the detail view instead of only a text-based link.
+    // OSM's embed endpoint needs no API key and works for any public location.
+    const mapEmbed = $id('detail-map-embed');
+    const mapLabel = $id('detail-map-label');
+    const hasCoords = Number.isFinite(listing.latitude) && Number.isFinite(listing.longitude);
+    if (hasCoords) {
+      const lat = listing.latitude, lon = listing.longitude;
+      const d = 0.006; // small bounding box around the point, roughly a few hundred metres
+      const bbox = `${lon - d}%2C${lat - d}%2C${lon + d}%2C${lat + d}`;
+      mapEmbed.innerHTML = `<iframe
+        src="https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${lat}%2C${lon}"
+        loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>`;
+      mapEmbed.style.display = ''; mapLabel.style.display = '';
+    } else {
+      mapEmbed.style.display = 'none'; mapLabel.style.display = 'none';
+      mapEmbed.innerHTML = '';
+    }
+
+    // "Open in maps app" — precise coordinates when we have them, otherwise
+    // fall back to a text search built from the scraped address.
     const mapBtn = $id('detail-map-btn');
-    if (listing.location?.trim()) {
+    if (hasCoords) {
+      mapBtn.style.display = '';
+      mapBtn.onclick = () => {
+        window.open(`https://www.google.com/maps/search/?api=1&query=${listing.latitude}%2C${listing.longitude}`, '_blank', 'noopener');
+      };
+    } else if (listing.location?.trim()) {
       mapBtn.style.display = '';
       mapBtn.onclick = () => {
         const q = encodeURIComponent(listing.location.trim());
@@ -351,9 +373,28 @@ const detailView = {
   },
 
   _key(e) {
-    if (e.key === 'Escape')     detailView.close();
-    if (e.key === 'ArrowLeft')  detailView.galleryGo(-1);
-    if (e.key === 'ArrowRight') detailView.galleryGo(1);
+    if (e.key === 'Escape') { detailView.close(); return; }
+
+    if (detailView.fromSwipe) {
+      // Opened from the Swipe page: arrow keys drive the same swipe
+      // actions as the main page, so users never lose keyboard flow just
+      // because they tapped into the detail view. Gallery photos are still
+      // browsable via the on-screen ‹ › buttons.
+      if (e.key === 'Backspace' || (e.key.toLowerCase() === 'z' && !e.ctrlKey && !e.metaKey)) {
+        if (state.lastSwipe) { e.preventDefault(); undoLastSwipe(); detailView.close(); }
+        return;
+      }
+      if (!detailView.listing) return;
+      if (e.key === 'ArrowLeft')  { e.preventDefault(); doSwipe(detailView.listing, 'dislike');   detailView.close(); }
+      if (e.key === 'ArrowRight') { e.preventDefault(); doSwipe(detailView.listing, 'like');      detailView.close(); }
+      if (e.key === 'ArrowUp')    { e.preventDefault(); doSwipe(detailView.listing, 'superlike'); detailView.close(); }
+      if (e.key === 'ArrowDown')  { e.preventDefault(); doSwipe(detailView.listing, 'skip');      detailView.close(); }
+    } else {
+      // Opened from Bewertet/Archiv/Gruppen/etc. — no swipe actions apply
+      // here, so arrow keys are free for browsing the photo gallery.
+      if (e.key === 'ArrowLeft')  detailView.galleryGo(-1);
+      if (e.key === 'ArrowRight') detailView.galleryGo(1);
+    }
   },
 };
 
@@ -974,6 +1015,7 @@ $id('btn-undo').onclick      = () => undoLastSwipe();
 document.addEventListener('keydown', e => {
   if (!state.user) return;
   if ($id('lightbox').style.display !== 'none') return;
+  if ($id('detail-view').style.display !== 'none') return;
   if (document.querySelector('.modal[style*="flex"]')) return;
   if (!$id('view-swipe').classList.contains('active')) return;
 

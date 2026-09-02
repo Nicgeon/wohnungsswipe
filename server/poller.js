@@ -314,6 +314,24 @@ function getVisibleText($, selector = 'body') {
   return $clone.text();
 }
 
+// ── Paragraph-preserving text extraction ───────────────────
+// Cheerio's plain .text() concatenates every text node with no separator
+// between block-level elements, so a description with clear paragraphs in
+// the source HTML (<p>...</p><p>...</p> or lines separated by <br>) comes
+// out as one unbroken wall of text. We insert explicit newlines at block
+// boundaries BEFORE reading the text, so the paragraph structure a reader
+// actually sees on the original page survives into our stored description.
+function extractTextWithParagraphs($, el) {
+  if (!el || !el.length) return '';
+  const $clone = el.clone();
+  $clone.find('br').replaceWith('\n');
+  $clone.find('p, div, li').each((_, block) => { $(block).append('\n\n'); });
+  let text = $clone.text();
+  text = text.replace(/[ \t]+\n/g, '\n');   // trim trailing spaces before a break
+  text = text.replace(/\n{3,}/g, '\n\n');   // collapse 3+ blank lines to exactly one
+  return text.split('\n').map(l => l.trimEnd()).join('\n').trim();
+}
+
 // ── Check if listing is offline or reserved ───────────────
 function checkListingStatus($, platform) {
   const bodyText = getVisibleText($, 'body').toLowerCase();
@@ -363,6 +381,34 @@ function checkListingStatus($, platform) {
   return 'active';
 }
 
+// ── Geocoding fallback ──────────────────────────────────────
+// Not every platform embeds real coordinates like Kleinanzeigen does (e.g.
+// rentola only gives us a free-text address). For those, we ask
+// OpenStreetMap's free Nominatim geocoder to resolve the address to
+// lat/lng, so the detail view can still show a real embedded map instead
+// of just a text link. This runs at most once per newly-scraped listing,
+// well within Nominatim's usage policy (max ~1 req/s, identify via
+// User-Agent) since scraping already spaces out requests between listings.
+async function geocodeLocation(locationText) {
+  if (!locationText || !locationText.trim()) return null;
+  try {
+    const res = await fetch(
+      `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(locationText.trim())}`,
+      { headers: { 'User-Agent': 'WohnungsSwipe/1.0 (self-hosted apartment search tool)' }, timeout: 8000 }
+    );
+    if (!res.ok) return null;
+    const results = await res.json();
+    if (!results.length) return null;
+    const lat = parseFloat(results[0].lat);
+    const lon = parseFloat(results[0].lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+    return { lat, lon };
+  } catch (e) {
+    console.warn(`[Geocode] Fehler für "${locationText}": ${e.message}`);
+    return null;
+  }
+}
+
 // ── Scrape a single listing ───────────────────────────────
 async function scrapeListing(url) {
   const platform = detectPlatform(url);
@@ -372,6 +418,7 @@ async function scrapeListing(url) {
     rooms: '', image_url: '', images_json: '[]', description: '',
     tags_json: '[]', status: 'active',
     nebenkosten: '', heizkosten: '', kaution: '', available_from: '', property_type: '',
+    latitude: null, longitude: null,
   };
 
   let html;
@@ -409,7 +456,12 @@ async function scrapeListing(url) {
     }
     d.location = loc;
 
-    d.description = ($('#viewad-description-text').text() || $('[data-testid="description"]').text()).trim().substring(0, 800);
+    // Preserve paragraph breaks from the source page instead of collapsing
+    // the whole description into one unbroken wall of text.
+    const descEl = $('#viewad-description-text').length
+      ? $('#viewad-description-text')
+      : $('[data-testid="description"]');
+    d.description = extractTextWithParagraphs($, descEl).substring(0, 3000);
 
     $('#viewad-details .addetailslist--detail').each((_, el) => {
       const lbl = $(el).find('.addetailslist--detail--label').text().toLowerCase();
@@ -591,6 +643,25 @@ async function scrapeListing(url) {
   if (!d.description) d.description = ($('meta[property="og:description"]').attr('content') || '').substring(0, 800);
   if (!d.image_url)   d.image_url   = $('meta[property="og:image"]').attr('content') || '';
   if (d.images_json === '[]' && d.image_url) d.images_json = JSON.stringify([d.image_url]);
+
+  // Real coordinates — Kleinanzeigen (and some other listing sites) embed
+  // exact latitude/longitude as standard Open Graph meta tags. When present,
+  // this lets the detail view show a genuine embedded map instead of only a
+  // "open in maps app" link built from a fuzzy address string.
+  const ogLat = parseFloat($('meta[property="og:latitude"]').attr('content'));
+  const ogLng = parseFloat($('meta[property="og:longitude"]').attr('content'));
+  if (Number.isFinite(ogLat) && Number.isFinite(ogLng)) {
+    d.latitude  = ogLat;
+    d.longitude = ogLng;
+  }
+
+  // Fallback: platforms without native coordinates (e.g. rentola) still
+  // usually give us a text address — geocode that via Nominatim so the
+  // map embed works there too, not just on Kleinanzeigen.
+  if (!Number.isFinite(d.latitude) && d.location?.trim()) {
+    const geo = await geocodeLocation(d.location);
+    if (geo) { d.latitude = geo.lat; d.longitude = geo.lon; }
+  }
 
   // Tags
   d.tags_json = JSON.stringify(extractTags($, platform, d.description));

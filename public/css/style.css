@@ -771,6 +771,12 @@ a { color:var(--accent); text-decoration:none; }
 .detail-cost-label { color:var(--text2); }
 .detail-cost-value { color:var(--text); font-weight:600; text-align:right; }
 
+.detail-map-embed {
+  width:100%; height:220px; border-radius:11px; overflow:hidden;
+  margin-bottom:16px; border:1px solid var(--border); background:var(--bg3);
+}
+.detail-map-embed iframe { width:100%; height:100%; border:0; display:block; }
+
 .detail-tags { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:16px; }
 .detail-tag { font-size:var(--fs-small); color:var(--text3); border:1px solid var(--border); border-radius:20px; padding:3px 10px; }
 
@@ -804,4 +810,30 @@ a { color:var(--accent); text-decoration:none; }
   padding:14px 16px calc(14px + env(safe-area-inset-bottom, 0px));
   border-top:1px solid var(--border); flex-shrink:0; background:var(--bg2);
   flex-wrap:nowrap;
+}
+
+/* ── Desktop layout ──────────────────────────────────────
+   There's plenty of horizontal room on desktop, so instead of the mobile
+   stacked layout (gallery on top, everything else below in one long
+   scroll) we switch to a side-by-side view: gallery fills the left
+   column at full height, details scroll independently on the right,
+   and the swipe-action bar (when present) spans the full width below
+   both columns. Placed at the very end of the stylesheet so it reliably
+   wins the cascade over the earlier mobile-first base rules it overrides. */
+@media (min-width: 900px) {
+  .detail-view-inner {
+    width:100%;
+    max-width:1140px;
+    height:calc(100vh - 64px);
+    max-height:calc(100vh - 64px);
+    display:grid;
+    grid-template-columns:44% 1fr;
+    grid-template-rows:1fr auto;
+    grid-template-areas:
+      "gallery body"
+      "actions actions";
+  }
+  .detail-gallery { grid-area:gallery; height:100%; }
+  .detail-body    { grid-area:body; max-height:none; }
+  .detail-swipe-actions { grid-area:actions; }
 }
