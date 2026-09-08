@@ -322,6 +322,7 @@ const detailView = {
     }
 
     $id('detail-original-link').href = listing.url || '#';
+    $id('detail-quick-original').href = listing.url || '#';
 
     // Swipe actions only make sense (and only stay in sync with the queue)
     // when opened from the swipe page itself.
