@@ -645,6 +645,12 @@ a { color:var(--accent); text-decoration:none; }
 /* ── Job listings panel ────────────────────────────────── */
 .job-actions .btn-listings { border-color:rgba(232,201,122,.3); color:var(--accent); }
 .job-actions .btn-listings:hover { background:rgba(232,201,122,.1); }
+.job-actions .btn-reset { border-color:rgba(167,139,250,.3); color:#a78bfa; }
+.job-actions .btn-reset:hover { background:rgba(167,139,250,.1); }
+.jobs-list-header {
+  display:flex; align-items:center; justify-content:space-between;
+  gap:10px; margin-bottom:12px; flex-wrap:wrap;
+}
 .job-listings-panel {
   margin-top:10px; padding-top:10px; border-top:1px solid var(--border);
 }

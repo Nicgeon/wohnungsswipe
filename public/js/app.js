@@ -1478,13 +1478,32 @@ async function loadJobs() {
 }
 
 function renderJobs(jobs) {
-  const list  = $id('jobs-list');
-  const empty = $id('jobs-empty');
+  const list   = $id('jobs-list');
+  const empty  = $id('jobs-empty');
+  const header = $id('jobs-list-header');
   list.innerHTML = '';
-  if (!jobs.length) { empty.style.display=''; return; }
+  if (!jobs.length) { empty.style.display=''; header.style.display='none'; return; }
   empty.style.display = 'none';
+  header.style.display = 'flex';
   jobs.forEach(job => list.appendChild(buildJobCard(job)));
 }
+
+$id('reset-all-jobs-btn').addEventListener('click', async () => {
+  const confirmed = confirm(
+    'Alle Suchagenten zurücksetzen?\n\nAlle bisher gefundenen Inserate (inkl. Bewertungen/Notizen dazu) werden gelöscht, danach werden alle Suchagenten neu gescannt. Sinnvoll nach einem Fix am Scraper.'
+  );
+  if (!confirmed) return;
+  const btn = $id('reset-all-jobs-btn');
+  btn.disabled = true; btn.textContent = '🔄 Setze zurück…';
+  const r = await api('/api/jobs/reset-all', { method: 'POST' });
+  btn.disabled = false; btn.textContent = '🔄 Alle zurücksetzen';
+  if (r.success) {
+    toast(r.message || `✓ ${r.jobCount} Suchagenten zurückgesetzt`);
+    setTimeout(() => loadJobs(), 3000);
+  } else {
+    toast('❌ ' + (r.error || 'Fehler'));
+  }
+});
 
 function buildJobCard(job) {
   const div = document.createElement('div');
@@ -1530,6 +1549,7 @@ function buildJobCard(job) {
       <button class="btn-toggle ${job.active?'on':''}" data-toggle>${job.active?'⏸ Pausieren':'▶ Aktivieren'}</button>
       <button class="btn-vis"           data-vis>🔒 Sichtbarkeit</button>
       <button class="btn-listings"      data-listings-toggle>📋 Inserate anzeigen</button>
+      <button class="btn-reset"         data-reset>🔄 Zurücksetzen</button>
       <button class="btn-del"           data-del>🗑 Löschen</button>
     </div>
     <div class="job-listings-panel" style="display:none" data-listings-panel>
@@ -1584,6 +1604,22 @@ function buildJobCard(job) {
     toast(r.message || '⟳ Job gestartet');
     btn.disabled = false; btn.textContent = '⟳ Jetzt abrufen';
     setTimeout(() => loadJobs(), 3000);
+  });
+  div.querySelector('[data-reset]').addEventListener('click', async () => {
+    const confirmed = confirm(
+      `„${job.label}" zurücksetzen?\n\nAlle bisher von diesem Suchagenten gefundenen Inserate werden gelöscht (inkl. Bewertungen/Notizen dazu), danach wird sofort neu gescannt. Das ist sinnvoll nach einem Fix am Scraper, um veraltete/fehlerhafte Daten loszuwerden.`
+    );
+    if (!confirmed) return;
+    const btn = div.querySelector('[data-reset]');
+    btn.disabled = true; btn.textContent = '🔄 Setze zurück…';
+    const r = await api(`/api/jobs/${job.id}/reset`, { method:'POST' });
+    if (r.success) {
+      toast(r.message || `✓ ${r.removed} Inserate entfernt, wird neu gescannt…`);
+      setTimeout(() => loadJobs(), 3000);
+    } else {
+      toast('❌ ' + (r.error || 'Fehler'));
+      btn.disabled = false; btn.textContent = '🔄 Zurücksetzen';
+    }
   });
   div.querySelector('[data-toggle]').addEventListener('click', async () => {
     await api(`/api/jobs/${job.id}/toggle`, { method:'PATCH' });

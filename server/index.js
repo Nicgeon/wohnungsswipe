@@ -1063,6 +1063,65 @@ app.post('/api/jobs/:id/run', requireAuth, async (req, res) => {
   runJob(job);
 });
 
+// Deletes every listing this job previously found (and anything hanging
+// off those listings: swipes, contacts, archive notes) so the next poll
+// treats every URL as brand new and re-scrapes it from scratch with the
+// current scraper logic. Useful after a scraper bug fix, to flush out
+// old listings that were saved with incorrect/garbled data.
+function resetJobListings(jobId) {
+  const ids = dbAll('SELECT id FROM listings WHERE source_job_id=?', [jobId]).map(r => r.id);
+  if (!ids.length) return 0;
+  const placeholders = ids.map(() => '?').join(',');
+  dbRun(`DELETE FROM swipes        WHERE listing_id IN (${placeholders})`, ids);
+  dbRun(`DELETE FROM contacts      WHERE listing_id IN (${placeholders})`, ids);
+  dbRun(`DELETE FROM archive_notes WHERE listing_id IN (${placeholders})`, ids);
+  dbRun(`DELETE FROM listings      WHERE id IN (${placeholders})`, ids);
+  dbRun('UPDATE search_jobs SET last_run=NULL, last_error=NULL, last_new=0, total_found=0 WHERE id=?', [jobId]);
+  return ids.length;
+}
+
+function canManageJob(job, user) {
+  return !!user?.is_admin || job.added_by === user?.id;
+}
+
+app.post('/api/jobs/:id/reset', requireAuth, async (req, res) => {
+  const job = dbGet('SELECT * FROM search_jobs WHERE id=?', [req.params.id]);
+  if (!job) return res.status(404).json({ error: 'Job nicht gefunden' });
+  const user = dbGet('SELECT id, is_admin FROM users WHERE id=?', [req.session.userId]);
+  if (!canManageJob(job, user)) return res.status(403).json({ error: 'Kein Zugriff auf diesen Suchagenten' });
+
+  const removed = resetJobListings(job.id);
+  saveDb();
+  res.json({ success: true, removed, message: `${removed} Inserate entfernt, Suchagent wird neu gescannt…` });
+
+  const freshJob = dbGet('SELECT * FROM search_jobs WHERE id=?', [job.id]);
+  runJob(freshJob);
+});
+
+app.post('/api/jobs/reset-all', requireAuth, async (req, res) => {
+  const user = dbGet('SELECT id, is_admin FROM users WHERE id=?', [req.session.userId]);
+  const jobs = user?.is_admin
+    ? dbAll('SELECT * FROM search_jobs')
+    : dbAll('SELECT * FROM search_jobs WHERE added_by=?', [user.id]);
+
+  if (!jobs.length) return res.json({ success: true, jobCount: 0, removed: 0 });
+
+  let totalRemoved = 0;
+  for (const job of jobs) totalRemoved += resetJobListings(job.id);
+  saveDb();
+  res.json({ success: true, jobCount: jobs.length, removed: totalRemoved,
+    message: `${jobs.length} Suchagenten zurückgesetzt, ${totalRemoved} Inserate entfernt.` });
+
+  // Re-run each job in the background, spaced slightly apart so they don't
+  // all hammer external sites in the exact same instant.
+  jobs.forEach((job, i) => {
+    setTimeout(() => {
+      const freshJob = dbGet('SELECT * FROM search_jobs WHERE id=?', [job.id]);
+      if (freshJob) runJob(freshJob);
+    }, i * 2000);
+  });
+});
+
 // ── Job runner ─────────────────────────────────────────────
 async function runJob(job) {
   console.log(`[Poller] Job: ${job.label}`);
