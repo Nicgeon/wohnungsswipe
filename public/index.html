@@ -398,8 +398,19 @@
           <input type="text" id="prof-pets" placeholder="z.B. keine / eine Katze" />
         </div>
         <div class="field-group">
-          <label>Einkommen / Bonität (optional)</label>
-          <input type="text" id="prof-income" placeholder="z.B. unbefristet angestellt, SCHUFA vorhanden" />
+          <label>Unterlagen (optional)</label>
+          <p class="notify-sub" style="margin:-2px 0 8px">Dokument links, Status rechts – z.B. „SCHUFA-Auskunft" / „beantragt".</p>
+          <div id="prof-documents-list" class="doc-list"></div>
+          <button type="button" class="btn-secondary" id="prof-doc-add" style="width:auto">+ Dokument hinzufügen</button>
+          <datalist id="doc-suggestions">
+            <option value="SCHUFA-Auskunft"></option>
+            <option value="Gehaltsnachweise"></option>
+            <option value="Mieterselbstauskunft"></option>
+            <option value="Ausweiskopie"></option>
+            <option value="Bürgschaft"></option>
+            <option value="Mietschuldenfreiheitsbescheinigung"></option>
+            <option value="Arbeitsvertrag"></option>
+          </datalist>
         </div>
         <div class="field-group">
           <label>Über mich (optional)</label>
