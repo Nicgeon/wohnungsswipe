@@ -879,7 +879,10 @@ app.post('/api/message/preview', requireAuth, (req, res) => {
   res.json({ message });
 });
 
-
+// ── Web Push ───────────────────────────────────────────────
+app.get('/api/push/vapid-key', (req, res) => {
+  res.json({ publicKey: VAPID_PUBLIC || null });
+});
 
 app.post('/api/push/subscribe', requireAuth, (req, res) => {
   const { endpoint, keys } = req.body;

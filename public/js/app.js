@@ -2249,6 +2249,27 @@ $id('admin-users-btn')?.addEventListener('click', async () => {
   });
 });
 
+// Opens the detail view for a listing referenced by a shared link
+// (?listing=<id> in the URL), then cleans the URL so a refresh doesn't
+// re-trigger it. Works for any listing the current user can technically
+// see via GET /api/listings/:id (bypasses the normal swipe-queue
+// visibility scoping — see that endpoint's comment for why).
+async function openSharedListingFromUrl() {
+  const params = new URLSearchParams(location.search);
+  const sharedId = params.get('listing');
+  if (!sharedId) return;
+
+  // Strip the param immediately regardless of outcome, so the URL is
+  // clean and a page refresh won't keep re-opening the same listing.
+  params.delete('listing');
+  const cleanUrl = location.pathname + (params.toString() ? `?${params}` : '') + location.hash;
+  history.replaceState({}, '', cleanUrl);
+
+  const d = await api(`/api/listings/${sharedId}`);
+  if (d.error || !d.listing) { toast('❌ Geteiltes Inserat nicht gefunden'); return; }
+  detailView.open(d.listing, { fromSwipe: true });
+}
+
 // ══════════════════════════════════════════════════════════
 //  APPLICANT PROFILE
 // ══════════════════════════════════════════════════════════
@@ -2421,27 +2442,6 @@ $id('message-copy').addEventListener('click', async () => {
     toast('📋 Nachricht kopiert!');
   } catch (e) { toast('❌ Kopieren fehlgeschlagen'); }
 });
-
-// Opens the detail view for a listing referenced by a shared link
-// (?listing=<id> in the URL), then cleans the URL so a refresh doesn't
-// re-trigger it. Works for any listing the current user can technically
-// see via GET /api/listings/:id (bypasses the normal swipe-queue
-// visibility scoping — see that endpoint's comment for why).
-async function openSharedListingFromUrl() {
-  const params = new URLSearchParams(location.search);
-  const sharedId = params.get('listing');
-  if (!sharedId) return;
-
-  // Strip the param immediately regardless of outcome, so the URL is
-  // clean and a page refresh won't keep re-opening the same listing.
-  params.delete('listing');
-  const cleanUrl = location.pathname + (params.toString() ? `?${params}` : '') + location.hash;
-  history.replaceState({}, '', cleanUrl);
-
-  const d = await api(`/api/listings/${sharedId}`);
-  if (d.error || !d.listing) { toast('❌ Geteiltes Inserat nicht gefunden'); return; }
-  detailView.open(d.listing, { fromSwipe: true });
-}
 
 // ══════════════════════════════════════════════════════════
 //  INIT
