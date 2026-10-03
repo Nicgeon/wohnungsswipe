@@ -125,6 +125,30 @@ async function sendNewListingsMail(email, username, count, searchLabel, unsubTok
   });
 }
 
+async function sendNudgeMail(email, username, senderName, groupName, unsubToken='') {
+  return sendMail({
+    to:      email,
+    subject: `👋 ${senderName} erinnert dich ans Swipen`,
+    html: template('Erinnerung', `
+      <h2>👋 Zeit zum Swipen!</h2>
+      <p>Hallo ${username},<br><strong>${senderName}</strong> aus der Gruppe <strong>${groupName}</strong> erinnert dich daran, die noch offenen Inserate zu bewerten.</p>
+      <a href="${BASE_URL()}" class="btn">Jetzt swipen →</a>
+    `, unsubToken),
+  });
+}
+
+async function sendListingChangeMail(email, username, changeTitle, changeBody, unsubToken='') {
+  return sendMail({
+    to:      email,
+    subject: changeTitle || 'Inserat aktualisiert',
+    html: template('Inserat aktualisiert', `
+      <h2>${changeTitle}</h2>
+      <p>Hallo ${username},<br>${changeBody}</p>
+      <a href="${BASE_URL()}" class="btn">In WohnungsSwipe öffnen →</a>
+    `, unsubToken),
+  });
+}
+
 async function sendPasswordChangedMail(email, username, unsubToken='') {
   return sendMail({
     to:      email,
@@ -141,5 +165,7 @@ module.exports = {
   sendPasswordResetMail,
   sendMatchMail,
   sendNewListingsMail,
+  sendNudgeMail,
+  sendListingChangeMail,
   sendPasswordChangedMail,
 };

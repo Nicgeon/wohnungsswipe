@@ -357,6 +357,85 @@
         </div>
       </div>
 
+      <!-- ══ Kategorie: Nachrichten ══ -->
+      <details class="settings-cat" open>
+        <summary>✉️ Nachrichten &amp; Bewerber-Profil</summary>
+
+      <!-- Bewerber-Profil für Nachrichten-Generator -->
+      <div class="settings-section">
+        <div class="section-label">Bewerber-Profil</div>
+        <p class="notify-sub" style="margin-bottom:12px">Wird genutzt, um Anfrage-Nachrichten an Vermieter vorzubereiten. In Gruppen wird dein Profil mit dem der anderen Mitglieder zusammengeführt.</p>
+        <div class="field-group">
+          <label>Name</label>
+          <input type="text" id="prof-name" placeholder="Vor- und Nachname" />
+        </div>
+        <div class="inline-row">
+          <div class="field-group" style="flex:1">
+            <label>Beruf / Tätigkeit</label>
+            <input type="text" id="prof-occupation" placeholder="z.B. Ingenieurin" />
+          </div>
+          <div class="field-group" style="flex:1">
+            <label>Haushaltsgröße</label>
+            <input type="text" id="prof-household" placeholder="z.B. 2 Personen" />
+          </div>
+        </div>
+        <div class="inline-row">
+          <div class="field-group" style="flex:1">
+            <label>Einzug</label>
+            <select id="prof-movein-type">
+              <option value="asap">Schnellstmöglich</option>
+              <option value="flexible">Flexibel</option>
+              <option value="date">Zu festem Datum</option>
+            </select>
+          </div>
+          <div class="field-group" id="prof-movein-date-wrap" style="flex:1;display:none">
+            <label>Datum</label>
+            <input type="text" id="prof-movein" placeholder="z.B. 01.11.2026" />
+          </div>
+        </div>
+        <div class="field-group">
+          <label>Haustiere</label>
+          <input type="text" id="prof-pets" placeholder="z.B. keine / eine Katze" />
+        </div>
+        <div class="field-group">
+          <label>Einkommen / Bonität (optional)</label>
+          <input type="text" id="prof-income" placeholder="z.B. unbefristet angestellt, SCHUFA vorhanden" />
+        </div>
+        <div class="field-group">
+          <label>Über mich (optional)</label>
+          <textarea id="prof-about" rows="2" placeholder="Kurzer Satz über dich als Mieter:in"></textarea>
+        </div>
+        <label class="toggle-row" style="margin-bottom:12px">
+          <span>🚭 Nichtraucher</span>
+          <input type="checkbox" id="prof-nonsmoker" class="toggle-cb" />
+          <span class="toggle-switch"></span>
+        </label>
+        <label class="toggle-row" style="margin-bottom:12px">
+          <span>📝 Förmliche Anrede (Sie)</span>
+          <input type="checkbox" id="prof-formal" class="toggle-cb" />
+          <span class="toggle-switch"></span>
+        </label>
+
+        <div class="section-label" style="margin-top:14px;font-size:var(--fs-tiny)">Eigene Vorlage (optional)</div>
+        <p class="notify-sub" style="margin-bottom:6px">Platzhalter anklicken zum Einfügen:</p>
+        <div class="placeholder-chips" id="placeholder-chips"></div>
+        <div class="field-group">
+          <textarea id="prof-template" rows="4" placeholder="Leer lassen, um die geführte Vorlage zu nutzen. Beispiel: Hallo, ich interessiere mich für {titel} für {preis}…"></textarea>
+        </div>
+
+        <button class="btn-primary" id="save-profile-btn">Profil speichern</button>
+        <p class="form-success" id="profile-ok"></p>
+
+        <div class="section-label" style="margin-top:16px;font-size:var(--fs-tiny)">Vorschau (Beispiel-Inserat)</div>
+        <div class="msg-preview" id="prof-preview">—</div>
+      </div>
+
+      </details>
+
+      <!-- ══ Kategorie: Konto ══ -->
+      <details class="settings-cat">
+        <summary>👤 Konto &amp; Statistiken</summary>
+
       <!-- Stats -->
       <div class="settings-section">
         <div class="section-label">Statistiken</div>
@@ -415,6 +494,12 @@
       </div>
 
       <!-- Notifications -->
+      </details>
+
+      <!-- ══ Kategorie: Benachrichtigungen ══ -->
+      <details class="settings-cat">
+        <summary>🔔 Benachrichtigungen</summary>
+
       <div class="settings-section">
         <div class="section-label">Benachrichtigungen – Kanäle</div>
 
@@ -453,7 +538,7 @@
         <!-- Email -->
         <div class="toggle-list" style="margin-top:4px">
           <label class="toggle-row">
-            <span>📧 E-Mail-Benachrichtigungen</span>
+            <span>📧 E-Mail-Versand grundsätzlich aktiv</span>
             <input type="checkbox" id="notify-email" class="toggle-cb" />
             <span class="toggle-switch"></span>
           </label>
@@ -464,20 +549,48 @@
       </div>
 
       <div class="settings-section">
-        <div class="section-label">Benachrichtigungen – Ereignisse</div>
-        <div class="toggle-list">
-          <label class="toggle-row">
-            <span>🎉 Match in Gruppe</span>
-            <span class="toggle-sub-hint">Immer sofort – auch bei Digest</span>
-            <input type="checkbox" id="notify-match" class="toggle-cb" />
-            <span class="toggle-switch"></span>
-          </label>
-          <label class="toggle-row">
-            <span>📡 Neue Inserate</span>
-            <input type="checkbox" id="notify-new" class="toggle-cb" />
-            <span class="toggle-switch"></span>
-          </label>
+        <div class="section-label">Benachrichtigungen – wer bekommt was?</div>
+        <p class="notify-sub" style="margin-bottom:12px">Wähle pro Ereignis, über welche Kanäle du informiert werden möchtest.</p>
+        <div class="notify-matrix" id="notify-matrix">
+          <div class="notify-matrix-header">
+            <span></span>
+            <span title="E-Mail">📧</span>
+            <span title="Browser-Push">🔔</span>
+            <span title="ntfy">📲</span>
+          </div>
+          <div class="notify-matrix-row" data-type="match">
+            <span class="notify-matrix-label">🎉 Match in Gruppe</span>
+            <input type="checkbox" data-channel="email" />
+            <input type="checkbox" data-channel="push" />
+            <input type="checkbox" data-channel="ntfy" />
+          </div>
+          <div class="notify-matrix-row" data-type="new">
+            <span class="notify-matrix-label">📡 Neue Inserate</span>
+            <input type="checkbox" data-channel="email" />
+            <input type="checkbox" data-channel="push" />
+            <input type="checkbox" data-channel="ntfy" />
+          </div>
+          <div class="notify-matrix-row" data-type="nudge">
+            <span class="notify-matrix-label">👋 Anstupsen</span>
+            <input type="checkbox" data-channel="email" />
+            <input type="checkbox" data-channel="push" />
+            <input type="checkbox" data-channel="ntfy" />
+          </div>
+          <div class="notify-matrix-row" data-type="change">
+            <span class="notify-matrix-label">🔄 Inserat-Änderungen</span>
+            <input type="checkbox" data-channel="email" />
+            <input type="checkbox" data-channel="push" />
+            <input type="checkbox" data-channel="ntfy" />
+          </div>
         </div>
+        <p class="notify-sub" style="font-size:.72rem;margin-top:8px">
+          Match-Benachrichtigungen kommen immer sofort, unabhängig vom Digest-Intervall unten.
+        </p>
+        <p class="form-success" id="notify-matrix-ok"></p>
+      </div>
+
+      <div class="settings-section">
+        <div class="section-label">Sammelbenachrichtigung für „Neue Inserate"</div>
 
         <!-- Digest interval -->
         <div class="digest-row" id="digest-row">
@@ -502,6 +615,8 @@
         </div>
         <p class="form-success" id="notify-ok"></p>
       </div>
+
+      </details>
 
       <!-- Admin section (only visible for admins) -->
       <div class="settings-section" id="admin-section" style="display:none">
@@ -536,6 +651,7 @@
 <div id="detail-view" class="detail-view" style="display:none">
   <div class="detail-view-inner">
     <a class="detail-quick-original" id="detail-quick-original" href="#" target="_blank" rel="noopener" title="Original-Inserat öffnen">🔗</a>
+    <button class="detail-quick-share" id="detail-quick-share" title="Inserat teilen">📤</button>
     <button class="detail-close" id="detail-close">✕</button>
 
     <div class="detail-gallery" id="detail-gallery">
@@ -556,6 +672,8 @@
 
       <div class="detail-costs" id="detail-costs" style="display:none"></div>
 
+      <div class="detail-changes" id="detail-changes" style="display:none"></div>
+
       <div class="detail-tags" id="detail-tags"></div>
 
       <div class="detail-section-label">Beschreibung</div>
@@ -565,10 +683,12 @@
       <div class="detail-map-embed" id="detail-map-embed" style="display:none"></div>
 
       <div class="detail-action-row">
+        <button class="detail-msg-btn" id="detail-msg-btn">💬 Nachricht vorbereiten</button>
         <button class="detail-map-btn" id="detail-map-btn" style="display:none">📍 In Karten-App öffnen</button>
         <a class="detail-original-link" id="detail-original-link" href="#" target="_blank" rel="noopener">
           🔗 Original-Inserat öffnen
         </a>
+        <button class="detail-report-btn" id="detail-report-btn">🚫 Als offline melden</button>
       </div>
     </div>
 
@@ -585,6 +705,29 @@
 </div>
 
 <!-- Modals -->
+<div id="message-modal" class="modal" style="display:none">
+  <div class="modal-card" style="max-width:560px">
+    <h3>💬 Nachricht vorbereiten</h3>
+    <p class="notify-sub" id="message-context" style="margin-top:-6px"></p>
+    <div class="msg-mode-tabs" id="msg-mode-tabs">
+      <button class="msg-mode-tab active" data-msgmode="guided">Geführt</button>
+      <button class="msg-mode-tab" data-msgmode="template">Eigene Vorlage</button>
+      <button class="msg-mode-tab" data-msgmode="ai" id="msg-mode-ai" style="display:none">✨ KI</button>
+    </div>
+    <div class="field-group">
+      <textarea id="message-text" rows="12" style="font-size:.9rem;line-height:1.5"></textarea>
+    </div>
+    <p class="form-error" id="message-error"></p>
+    <div class="modal-actions" style="flex-wrap:wrap;gap:8px">
+      <button class="btn-secondary" id="message-regen">🔄 Neu generieren</button>
+      <button class="btn-primary" id="message-copy">📋 Kopieren</button>
+      <a class="btn-secondary" id="message-open-link" href="#" target="_blank" rel="noopener">🔗 Inserat öffnen</a>
+      <button class="btn-ghost" id="message-close">Schließen</button>
+    </div>
+    <p class="notify-sub" style="font-size:.72rem;margin-top:4px">Prüfe den Text, passe ihn an und sende ihn selbst bei der jeweiligen Plattform.</p>
+  </div>
+</div>
+
 <div id="create-group-modal" class="modal" style="display:none">
   <div class="modal-card">
     <h3>Gruppe erstellen</h3>

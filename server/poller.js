@@ -32,11 +32,22 @@ function detectPlatform(url) {
 }
 
 async function fetchPage(url, timeoutMs = 18000, allowedFailCodes = []) {
+  const res = await fetchPageRaw(url, timeoutMs, allowedFailCodes);
+  return res.text;
+}
+
+// Like fetchPage but also returns the FINAL url after any redirects, so
+// callers can detect when a listing URL silently redirected somewhere else
+// (Kleinanzeigen bounces expired ads to a category/search page with HTTP
+// 200 instead of returning a 404, which would otherwise look "alive").
+async function fetchPageRaw(url, timeoutMs = 18000, allowedFailCodes = []) {
   const res = await fetch(url, { headers: HEADERS, timeout: timeoutMs });
   if (!res.ok && !allowedFailCodes.includes(res.status)) {
     throw new Error(`HTTP ${res.status}`);
   }
-  return res.text();
+  const text = await res.text();
+  // node-fetch exposes the final URL after following redirects as res.url
+  return { text, finalUrl: res.url || url };
 }
 
 // ── Extract listing URLs from search results page ──────────
@@ -478,10 +489,13 @@ async function scrapeListing(url) {
   };
 
   let html;
+  let finalUrl = url;
   try {
     // For SPA platforms, allow 403 responses – they still contain meta tags in the HTML
     const allowedCodes = (platform === 'rentola' || platform === 'meinestadt') ? [403] : [];
-    html = await fetchPage(url, 18000, allowedCodes);
+    const raw = await fetchPageRaw(url, 18000, allowedCodes);
+    html = raw.text;
+    finalUrl = raw.finalUrl;
   }
   catch (e) {
     // HTTP 404 / 410 = definitely offline; 403 for non-SPA = likely offline
@@ -491,6 +505,26 @@ async function scrapeListing(url) {
     d.title = 'Inserat (nicht ladbar)';
     d.description = `Fehler: ${e.message}`;
     return d;
+  }
+
+  // Expired-listing redirect check: Kleinanzeigen (and similar sites) don't
+  // always 404 a removed ad — they quietly 200-redirect it to a category or
+  // search-results page. We started at a specific /s-anzeige/…/<id> listing
+  // URL; if the final URL after redirects is no longer an /s-anzeige/ page
+  // (or points at a *different* ad id), the original ad is gone → offline.
+  if (platform === 'kleinanzeigen') {
+    const startedOnListing = /\/s-anzeige\//.test(url);
+    const idMatch = url.match(/(\d{6,})-\d+-\d+/);
+    const startId = idMatch ? idMatch[1] : null;
+    const stillOnListing = /\/s-anzeige\//.test(finalUrl);
+    const finalIdMatch = finalUrl.match(/(\d{6,})-\d+-\d+/);
+    const finalId = finalIdMatch ? finalIdMatch[1] : null;
+    if (startedOnListing && (!stillOnListing || (startId && finalId && startId !== finalId))) {
+      d.status = 'offline';
+      d.title = d.title || 'Inserat nicht mehr verfügbar';
+      d.description = `Anzeige nicht mehr verfügbar (weitergeleitet zu ${finalUrl})`;
+      return d;
+    }
   }
 
   const $ = cheerio.load(html);
@@ -767,27 +801,37 @@ async function scrapeListing(url) {
   return d;
 }
 
-// ── Check existing listings for offline/reserved status ───
-async function checkExistingListings(listings, onUpdate) {
-  const results = { offline: 0, reserved: 0 };
+// ── Check existing listings for offline/reserved status AND changes ──
+// Beyond the offline/reserved status flip, this also re-scrapes each
+// listing fully so title/price/size/rooms changes get caught too (a
+// landlord editing the title, dropping the price, or a listing quietly
+// getting reserved without the page's status text saying so explicitly).
+async function checkExistingListings(listings, onStatusChange, onFieldChange) {
+  const results = { offline: 0, reserved: 0, changed: 0 };
+  const TRACKED_FIELDS = ['title', 'price', 'price_cold', 'size', 'rooms'];
+
   for (const listing of listings) {
     try {
-      let html;
-      try { html = await fetchPage(listing.url, 12000); }
-      catch (e) {
-        if (e.message.includes('404') || e.message.includes('410')) {
-          onUpdate(listing.id, 'offline');
-          results.offline++;
+      const fresh = await scrapeListing(listing.url);
+
+      if (fresh.status && fresh.status !== 'active') {
+        onStatusChange(listing.id, fresh.status);
+        results[fresh.status] = (results[fresh.status] || 0) + 1;
+      }
+
+      if (onFieldChange) {
+        const changes = [];
+        for (const field of TRACKED_FIELDS) {
+          const oldVal = (listing[field] || '').trim();
+          const newVal = (fresh[field]  || '').trim();
+          if (newVal && oldVal !== newVal) changes.push({ field, oldVal, newVal });
         }
-        await sleep(1000 + Math.random() * 1000);
-        continue;
+        if (changes.length) {
+          onFieldChange(listing.id, changes, fresh);
+          results.changed++;
+        }
       }
-      const $      = cheerio.load(html);
-      const status = checkListingStatus($, detectPlatform(listing.url));
-      if (status !== 'active') {
-        onUpdate(listing.id, status);
-        results[status] = (results[status] || 0) + 1;
-      }
+
       await sleep(1500 + Math.random() * 1500);
     } catch (e) {
       console.warn(`[Poller] Status-check Fehler für ${listing.url}: ${e.message}`);

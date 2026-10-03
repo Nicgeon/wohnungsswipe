@@ -155,6 +155,7 @@ function onLogin(data) {
   $id('nav-username').textContent = data.username;
   showScreen('app-screen');
   loadGroups().then(() => loadSwipeQueue());
+  openSharedListingFromUrl();
 }
 
 async function doLogout() {
@@ -230,6 +231,7 @@ const detailView = {
     this.imgs      = parseImages(listing);
     this.idx       = 0;
     this.fromSwipe = !!opts.fromSwipe;
+    this.groupId   = opts.groupId || null;
 
     $id('detail-platform').textContent = listing.platform || 'Inserat';
     $id('detail-title').textContent    = listing.title || 'Inserat';
@@ -267,6 +269,8 @@ const detailView = {
       costsEl.style.display = 'none';
       costsEl.innerHTML = '';
     }
+
+    this._loadChanges(listing.id);
 
     const tags = parseTags(listing.tags_json);
     $id('detail-tags').innerHTML = tags.map(t => `<span class="detail-tag">${esc(t)}</span>`).join('');
@@ -373,6 +377,31 @@ const detailView = {
     this._renderGallery();
   },
 
+  async _loadChanges(listingId) {
+    const el = $id('detail-changes');
+    el.style.display = 'none'; el.innerHTML = '';
+    const fieldLabels = { title: 'Titel', price: 'Warmmiete', price_cold: 'Kaltmiete', size: 'Größe', rooms: 'Zimmer' };
+    try {
+      const { changes = [] } = await api(`/api/listings/${listingId}/changes`);
+      if (!changes.length) return;
+      // Only render if this is still the listing being viewed (guards
+      // against a slow request resolving after the user already switched).
+      if (!this.listing || this.listing.id !== listingId) return;
+      el.style.display = '';
+      el.innerHTML = `
+        <div class="detail-section-label">Änderungsverlauf</div>
+        ${changes.slice(0, 8).map(c => {
+          const label = fieldLabels[c.field] || c.field;
+          const date  = new Date(c.changed_at + 'Z').toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+          return `<div class="detail-change-row">
+            <span class="detail-change-date">${date}</span>
+            <span class="detail-change-desc"><strong>${esc(label)}</strong> geändert: ${esc(c.old_value || '—')} → ${esc(c.new_value || '—')}</span>
+          </div>`;
+        }).join('')}
+      `;
+    } catch (e) { /* silently skip — history is a nice-to-have, not critical */ }
+  },
+
   _key(e) {
     if (e.key === 'Escape') { detailView.close(); return; }
 
@@ -404,6 +433,27 @@ $id('detail-gallery-prev').onclick = () => detailView.galleryGo(-1);
 $id('detail-gallery-next').onclick = () => detailView.galleryGo(1);
 $id('detail-view').addEventListener('click', e => { if (e.target.id === 'detail-view') detailView.close(); });
 
+$id('detail-quick-share').onclick = async () => {
+  if (!detailView.listing) return;
+  const shareUrl   = `${location.origin}${location.pathname}?listing=${detailView.listing.id}`;
+  const shareTitle = detailView.listing.title || 'Inserat';
+  const priceStr   = detailView.listing.price_cold || detailView.listing.price || '';
+  const shareText  = priceStr ? `${shareTitle} – ${priceStr}` : shareTitle;
+
+  if (navigator.share) {
+    try {
+      await navigator.share({ title: shareTitle, text: shareText, url: shareUrl });
+    } catch (e) { /* user cancelled the native share sheet — nothing to do */ }
+  } else {
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      toast('🔗 Link kopiert!');
+    } catch (e) {
+      toast('❌ Konnte Link nicht kopieren');
+    }
+  }
+};
+
 $id('detail-btn-like').onclick = () => {
   if (detailView.listing) { doSwipe(detailView.listing, 'like'); detailView.close(); }
 };
@@ -417,6 +467,29 @@ $id('detail-btn-skip').onclick = () => {
   if (detailView.listing) { doSwipe(detailView.listing, 'skip'); detailView.close(); }
 };
 $id('detail-btn-undo').onclick = () => { undoLastSwipe(); detailView.close(); };
+
+$id('detail-report-btn').onclick = async () => {
+  const listing = detailView.listing;
+  if (!listing) return;
+  if (!confirm(`„${listing.title}" als offline melden?\n\nDas Inserat wird ins Archiv verschoben. Falls es über einen Suchagenten kam, wird dieser direkt neu durchsucht, um weitere nicht mehr verfügbare Inserate aufzuräumen.`)) return;
+  const r = await api(`/api/listings/${listing.id}/report-offline`, { method: 'POST' });
+  if (r.success) {
+    toast(r.jobTriggered ? '🚫 Gemeldet – Suchagent wird neu durchsucht' : '🚫 Als offline gemeldet');
+    state.swipeQueue = state.swipeQueue.filter(l => l.id !== listing.id);
+    detailView.close();
+    // Refresh whatever view is currently active so the listing disappears
+    const active = document.querySelector('.view.active')?.id;
+    if (active === 'view-swipe')  renderStack();
+    if (active === 'view-rated')  loadRated();
+    if (active === 'view-add')    loadMyAddedListings?.();
+  } else {
+    toast('❌ ' + (r.error || 'Fehler'));
+  }
+};
+
+$id('detail-msg-btn').onclick = () => {
+  if (detailView.listing) messageModal.open(detailView.listing, { groupId: detailView.groupId || null });
+};
 
 // ══════════════════════════════════════════════════════════
 //  CARD BUILDERS
@@ -467,6 +540,37 @@ function buildSwipeCard(listing) {
   return card;
 }
 
+// ── Shared card-menu item builders ─────────────────────────
+// Both the list-card menu (Bewertet/Meine Inserate) and the group-results
+// menu render the same "common actions" (contact toggle, report offline).
+// Defining each entry's markup ONCE here means a new shared menu item only
+// has to be added in a single place, instead of being copied into every
+// menu template (which is how the report-offline button previously got
+// forgotten in the group view).
+//
+// The two menus are wired differently — the list-card menu uses per-button
+// listeners keyed on data-menu-action, the group menu uses event delegation
+// keyed on dedicated data-* attributes — so the builder takes a `ctx`
+// ('list' | 'group') and emits exactly the attribute set that context's
+// existing handler already listens for. Adding a shared item = editing this
+// one function.
+function sharedCardMenuHtml(id, contacted, ctx) {
+  const contactLabel = contacted ? '✓ Angeschrieben (Notiz bearbeiten)' : '📬 Als angeschrieben markieren';
+  if (ctx === 'group') {
+    return [
+      `<button data-prepare-message data-listing="${id}">💬 Nachricht vorbereiten</button>`,
+      `<button data-contact-toggle data-listing="${id}">${contactLabel}</button>`,
+      `<button data-report-offline data-listing="${id}">🚫 Als offline melden</button>`,
+    ].join('\n');
+  }
+  // ctx === 'list'
+  return [
+    `<button data-menu-action="prepare-message">💬 Nachricht vorbereiten</button>`,
+    `<button data-menu-action="contact-toggle">${contactLabel}</button>`,
+    `<button data-menu-action="report-offline">🚫 Als offline melden</button>`,
+  ].join('\n');
+}
+
 function buildListCard(listing, opts = {}) {
   const images = parseImages(listing);
   const hasImg = images[0]?.startsWith('http');
@@ -497,7 +601,9 @@ function buildListCard(listing, opts = {}) {
     <button class="card-menu-btn" data-menu-toggle title="Optionen">⋮</button>
     <div class="card-menu" data-menu style="display:none">
       ${!opts.isArchive ? `<button data-menu-action="unswipe">↩ Bewertung zurückziehen</button>` : ''}
-      <button data-menu-action="contact-toggle">${listing.contacted ? '✓ Angeschrieben (Notiz bearbeiten)' : '📬 Als angeschrieben markieren'}</button>
+      ${!opts.isArchive
+        ? sharedCardMenuHtml(listing.id, listing.contacted, 'list')
+        : `<button data-menu-action="contact-toggle">${listing.contacted ? '✓ Angeschrieben (Notiz bearbeiten)' : '📬 Als angeschrieben markieren'}</button>`}
       ${canChangeVisibility ? `
       <div class="card-menu-divider"></div>
       <div class="card-menu-section-label">Sichtbarkeit (${esc(visLabel)})</div>
@@ -597,6 +703,19 @@ function buildListCard(listing, opts = {}) {
         } else {
           noteWrap.classList.toggle('open');
         }
+      } else if (action === 'report-offline') {
+        if (!confirm(`„${listing.title}" als offline melden?\n\nDas Inserat wird ins Archiv verschoben. Falls es über einen Suchagenten kam, wird dieser direkt neu durchsucht, um weitere nicht mehr verfügbare Inserate aufzuräumen.`)) return;
+        const r = await api(`/api/listings/${listing.id}/report-offline`, { method: 'POST' });
+        if (r.success) {
+          div.style.opacity = '0'; div.style.transition = 'opacity .3s';
+          setTimeout(() => div.remove(), 280);
+          toast(r.jobTriggered ? '🚫 Gemeldet – Suchagent wird neu durchsucht' : '🚫 Als offline gemeldet');
+          state.swipeQueue = [];
+        } else {
+          toast('❌ ' + (r.error || 'Fehler'));
+        }
+      } else if (action === 'prepare-message') {
+        messageModal.open(listing, { groupId: opts.groupId || null });
       }
     });
   });
@@ -749,6 +868,50 @@ async function loadSwipeQueue() {
   // Show badge on tab if there are unswiped listings
   updateSwipeBadge(state.swipeQueue.length);
   renderStack();
+  prefetchUpcomingImages();
+}
+
+// ── Bounded-concurrency image prefetcher ───────────────────
+// On a slow/flaky connection, swiping stutters because the next card's
+// photos only start downloading the moment it becomes visible. This warms
+// the browser cache for the FIRST image of the next few queued listings in
+// the background, but caps how many download at once so we never saturate a
+// weak connection (which would make the *current* card's gallery load even
+// slower). Fire-and-forget: failures are ignored, already-cached images
+// resolve instantly, and the set of fetched URLs is remembered so we never
+// re-request the same image.
+const PREFETCH_AHEAD       = 5;   // how many upcoming listings to warm
+const PREFETCH_CONCURRENCY = 2;   // max simultaneous downloads
+const _prefetchedUrls = new Set();
+
+function prefetchUpcomingImages() {
+  // Collect the first image of the next PREFETCH_AHEAD listings (skipping
+  // the top card, whose image is loading anyway), de-duplicated.
+  const urls = [];
+  for (const listing of state.swipeQueue.slice(1, 1 + PREFETCH_AHEAD)) {
+    const imgs = parseImages(listing);
+    const first = imgs[0];
+    if (first && first.startsWith('http') && !_prefetchedUrls.has(first)) {
+      _prefetchedUrls.add(first);
+      urls.push(first);
+    }
+  }
+  if (!urls.length) return;
+
+  // Simple worker-pool: PREFETCH_CONCURRENCY workers pull from the queue.
+  let idx = 0;
+  const worker = async () => {
+    while (idx < urls.length) {
+      const myIdx = idx++;
+      if (myIdx >= urls.length) break;
+      await new Promise(resolve => {
+        const img = new Image();
+        img.onload = img.onerror = () => resolve();
+        img.src = urls[myIdx];
+      });
+    }
+  };
+  for (let w = 0; w < PREFETCH_CONCURRENCY; w++) worker();
 }
 
 function updateSwipeBadge(count) {
@@ -928,7 +1091,27 @@ function attachDrag(card, listing) {
 
 async function doSwipe(listing, action) {
   const card = $id('card-stack').querySelector(`.swipe-card[data-id="${listing.id}"]`);
-  if (!card || card.classList.contains('fly-left') || card.classList.contains('fly-right') || card.classList.contains('fly-up') || card.classList.contains('fly-down')) return;
+  const isFlying = card && (card.classList.contains('fly-left') || card.classList.contains('fly-right') || card.classList.contains('fly-up') || card.classList.contains('fly-down'));
+  if (isFlying) return;
+
+  const toastMsg = {
+    like:      '💚 Gefällt dir!',
+    dislike:   '✕ Abgelehnt',
+    superlike: '⭐ Super-Like!',
+    skip:      '⏭ Übersprungen – kommt später wieder',
+  }[action];
+
+  // Fire API in background
+  api('/api/listings/swipe', { method: 'POST', body: { listingId: listing.id, action } });
+
+  // Track for the undo button (always remembers the most recent swipe in this session)
+  state.lastSwipe = { listing, action };
+  updateUndoButton();
+
+  // No matching card in the stack — this listing was never part of the
+  // active swipe queue (e.g. opened directly via a shared link). Just
+  // record the swipe and confirm with a toast; there's no card to animate.
+  if (!card) { toast(toastMsg); return; }
 
   // Detach drag immediately
   if (_dragCleanup) { _dragCleanup(); _dragCleanup = null; }
@@ -942,21 +1125,7 @@ async function doSwipe(listing, action) {
 
   const flyClass = { like: 'fly-right', dislike: 'fly-left', superlike: 'fly-up', skip: 'fly-down' }[action];
   card.classList.add(flyClass);
-
-  const toastMsg = {
-    like:      '💚 Gefällt dir!',
-    dislike:   '✕ Abgelehnt',
-    superlike: '⭐ Super-Like!',
-    skip:      '⏭ Übersprungen – kommt später wieder',
-  }[action];
   toast(toastMsg);
-
-  // Fire API in background
-  api('/api/listings/swipe', { method: 'POST', body: { listingId: listing.id, action } });
-
-  // Track for the undo button (always remembers the most recent swipe in this session)
-  state.lastSwipe = { listing, action };
-  updateUndoButton();
 
   // Remove from queue immediately so renderStack knows what's next.
   // Skipped listings get pushed to the back of the queue instead of removed entirely,
@@ -969,6 +1138,7 @@ async function doSwipe(listing, action) {
   // Trigger stack update right away – the flying card is still in DOM
   // renderStack will skip it because it has fly-* class
   renderStack();
+  prefetchUpcomingImages();
 
   // Remove the card after animation completes
   setTimeout(() => { card.remove(); }, 420);
@@ -1224,9 +1394,7 @@ async function openGroupDetail(group) {
             <button data-rerate-action="dislike"   data-listing="${r.id}">✕ Nein</button>
             <button data-rerate-action="remove"    data-listing="${r.id}">↩ Zurückziehen</button>
             <div class="card-menu-divider"></div>
-            <button data-contact-toggle data-listing="${r.id}">
-              ${r.group_contacted ? '✓ Angeschrieben (Notiz bearbeiten)' : '📬 Als angeschrieben markieren'}
-            </button>
+            ${sharedCardMenuHtml(r.id, r.group_contacted, 'group')}
           </div>
           ${hasImg
             ? `<img class="group-listing-img" src="${esc(imgs[0])}" onclick="window.__lb && window.__lb.open(${JSON.stringify(imgs).replace(/"/g,'&quot;')})" style="cursor:pointer" />`
@@ -1270,6 +1438,20 @@ async function openGroupDetail(group) {
         <button class="btn-ghost" style="padding:5px 10px;font-size:.76rem" onclick="navigator.clipboard?.writeText('${esc(group.invite_code)}').then(()=>window.__toast('📋 Kopiert!'))">📋</button>
       </div>
     </div>
+
+    <details class="settings-cat" style="margin-bottom:16px">
+      <summary>✉️ Nachrichten-Vorlage für diese Gruppe</summary>
+      <div class="settings-section">
+        <p class="notify-sub" style="margin-bottom:8px">Eigene Vorlage für Anfragen aus dieser Gruppe. Überschreibt deine persönliche Vorlage, wenn du aus dieser Gruppe heraus eine Nachricht vorbereitest. Leer lassen = persönliche Vorlage nutzen.</p>
+        <div class="placeholder-chips" id="group-tpl-chips"></div>
+        <div class="field-group">
+          <textarea id="group-tpl-text" rows="4" placeholder="z.B. Hallo, wir als WG interessieren uns für {titel} ({zimmer} Zi., {groesse})…"></textarea>
+        </div>
+        <button class="btn-primary" id="group-tpl-save">Gruppen-Vorlage speichern</button>
+        <p class="form-success" id="group-tpl-ok"></p>
+      </div>
+    </details>
+
     <p class="section-label">Mitglieder</p>
     <div class="members-nudge-list" style="margin-bottom:18px">${membersHtml}</div>
     ${results.length
@@ -1278,6 +1460,35 @@ async function openGroupDetail(group) {
   `;
   window.__toast = toast;
   window.__lb    = lb;
+
+  // ── Group template editor ──
+  (async () => {
+    const chipsWrap = $id('group-tpl-chips');
+    const ta        = $id('group-tpl-text');
+    if (!chipsWrap || !ta) return;
+    // Placeholder chips (same set as the personal template)
+    chipsWrap.innerHTML = PLACEHOLDER_LIST.map(ph => `<button type="button" class="ph-chip" data-ph="${ph}">{${ph}}</button>`).join('');
+    chipsWrap.querySelectorAll('.ph-chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        const token = `{${chip.dataset.ph}}`;
+        const s = ta.selectionStart ?? ta.value.length;
+        const e = ta.selectionEnd ?? ta.value.length;
+        ta.value = ta.value.slice(0, s) + token + ta.value.slice(e);
+        ta.focus(); ta.selectionStart = ta.selectionEnd = s + token.length;
+      });
+    });
+    // Load existing group template
+    try {
+      const d = await api(`/api/groups/${group.id}/template`);
+      ta.value = d.template || '';
+    } catch (_) {}
+    $id('group-tpl-save').addEventListener('click', async () => {
+      clr('group-tpl-ok');
+      const r = await api(`/api/groups/${group.id}/template`, { method: 'PUT', body: { template: ta.value } });
+      if (r.success) { setOk('group-tpl-ok', '✓ Gespeichert'); toast('✅ Gruppen-Vorlage gespeichert'); }
+      else toast('❌ ' + (r.error || 'Fehler'));
+    });
+  })();
 
   // Wire nudge buttons
   $id('group-detail-content').querySelectorAll('[data-nudge]').forEach(btn => {
@@ -1323,7 +1534,7 @@ async function openGroupDetail(group) {
       e.stopPropagation();
       const lid = parseInt(detailBtn.dataset.listing);
       const r   = resultsById[lid];
-      if (r) detailView.open(r);
+      if (r) detailView.open(r, { groupId: group.id });
       return;
     }
 
@@ -1384,6 +1595,38 @@ async function openGroupDetail(group) {
       } else {
         card?.querySelector('[data-note-wrap]')?.classList.toggle('open');
       }
+      return;
+    }
+
+    // Report-offline chosen from the menu
+    const reportBtn = e.target.closest('[data-report-offline]');
+    if (reportBtn) {
+      e.stopPropagation();
+      const lid  = parseInt(reportBtn.dataset.listing);
+      const menu = reportBtn.closest('.card-menu');
+      menu.style.display = 'none';
+      const card = detailEl.querySelector(`.group-listing-card[data-listing-id="${lid}"]`);
+      const titleText = card?.querySelector('.group-listing-title')?.textContent?.trim() || 'Dieses Inserat';
+      if (!confirm(`„${titleText}" als offline melden?\n\nDas Inserat wird ins Archiv verschoben und verschwindet aus der Gruppenansicht. Falls es über einen Suchagenten kam, wird dieser direkt neu durchsucht.`)) return;
+      const r = await api(`/api/listings/${lid}/report-offline`, { method: 'POST' });
+      if (r.success) {
+        toast(r.jobTriggered ? '🚫 Gemeldet – Suchagent wird neu durchsucht' : '🚫 Als offline gemeldet');
+        setTimeout(() => openGroupDetail(group), 600);
+      } else {
+        toast('❌ ' + (r.error || 'Fehler'));
+      }
+      return;
+    }
+
+    // Prepare-message chosen from the menu
+    const prepMsgBtn = e.target.closest('[data-prepare-message]');
+    if (prepMsgBtn) {
+      e.stopPropagation();
+      const lid  = parseInt(prepMsgBtn.dataset.listing);
+      const menu = prepMsgBtn.closest('.card-menu');
+      menu.style.display = 'none';
+      const r = resultsById[lid];
+      if (r) messageModal.open(r, { groupId: group.id });
       return;
     }
 
@@ -1729,10 +1972,21 @@ async function loadSettings() {
   clr('settings-username-error','settings-username-ok','settings-email-error','settings-email-ok','settings-pw-error','settings-pw-ok','notify-ok','ntfy-ok');
   $id('settings-pw-current').value = $id('settings-pw-new').value = $id('settings-pw-confirm').value = '';
 
+  // Applicant profile
+  loadApplicantProfile();
+
   // Notification toggles
   $id('notify-email').checked = !!me.notify_email;
-  $id('notify-match').checked = !!me.notify_match;
-  $id('notify-new').checked   = !!me.notify_new;
+
+  // Per-type/per-channel matrix
+  const matrix = me.notify_matrix || {};
+  document.querySelectorAll('.notify-matrix-row').forEach(row => {
+    const type = row.dataset.type;
+    row.querySelectorAll('input[data-channel]').forEach(cb => {
+      const channel = cb.dataset.channel;
+      cb.checked = !!matrix[type]?.[channel];
+    });
+  });
 
   // ntfy fields
   $id('ntfy-topic').value  = me.ntfy_topic  || '';
@@ -1794,9 +2048,24 @@ $id('save-password-btn').addEventListener('click', async () => {
   setOk('settings-pw-ok','✓ Passwort geändert'); toast('✅ Passwort geändert');
 });
 
+// Reads the current state of all matrix checkboxes into a plain object
+// like { match: {email,push,ntfy}, new: {...}, nudge: {...}, change: {...} }
+function readMatrixFromUI() {
+  const matrix = {};
+  document.querySelectorAll('.notify-matrix-row').forEach(row => {
+    const type = row.dataset.type;
+    matrix[type] = {};
+    row.querySelectorAll('input[data-channel]').forEach(cb => {
+      matrix[type][cb.dataset.channel] = cb.checked;
+    });
+  });
+  return matrix;
+}
+
 // Notification toggles save on change
-['notify-email','notify-match','notify-new'].forEach(id => {
-  $id(id).addEventListener('change', saveNotifySettings);
+$id('notify-email').addEventListener('change', saveNotifySettings);
+document.querySelectorAll('.notify-matrix-row input[data-channel]').forEach(cb => {
+  cb.addEventListener('change', saveNotifySettings);
 });
 
 // Digest interval buttons
@@ -1814,12 +2083,11 @@ $id('save-ntfy-btn').addEventListener('click', async () => {
   const d = await api('/api/user/notifications', { method:'PUT', body:{
     notify_email: $id('notify-email').checked ? 1 : 0,
     notify_push:  1,
-    notify_match: $id('notify-match').checked ? 1 : 0,
-    notify_new:   $id('notify-new').checked   ? 1 : 0,
     notify_digest_interval: document.querySelector('.digest-btn.active')?.dataset.interval || 'instant',
     ntfy_topic:       $id('ntfy-topic').value.trim(),
     ntfy_server:      $id('ntfy-server').value.trim(),
     notify_threshold: parseInt($id('notify-threshold')?.value) || 1,
+    notify_matrix:    readMatrixFromUI(),
   }});
   if (d.success) { setOk('ntfy-ok','✓ Gespeichert'); toast('✅ ntfy gespeichert'); }
 });
@@ -1828,14 +2096,13 @@ async function saveNotifySettings() {
   const d = await api('/api/user/notifications', { method:'PUT', body:{
     notify_email:           $id('notify-email').checked ? 1 : 0,
     notify_push:            1,
-    notify_match:           $id('notify-match').checked ? 1 : 0,
-    notify_new:             $id('notify-new').checked   ? 1 : 0,
     notify_digest_interval: document.querySelector('.digest-btn.active')?.dataset.interval || 'instant',
     ntfy_topic:             $id('ntfy-topic').value.trim(),
     ntfy_server:            $id('ntfy-server').value.trim(),
     notify_threshold:       parseInt($id('notify-threshold')?.value) || 1,
+    notify_matrix:          readMatrixFromUI(),
   }});
-  if (d.success) setOk('notify-ok','✓ Gespeichert');
+  if (d.success) setOk('notify-matrix-ok','✓ Gespeichert');
 }
 
 // ── Web Push ──────────────────────────────────────────────
@@ -1983,6 +2250,200 @@ $id('admin-users-btn')?.addEventListener('click', async () => {
 });
 
 // ══════════════════════════════════════════════════════════
+//  APPLICANT PROFILE
+// ══════════════════════════════════════════════════════════
+const PLACEHOLDER_LIST = ['titel','preis','kalt','warm','zimmer','groesse','lage','name','beruf','einzug','haushalt'];
+
+async function loadApplicantProfile() {
+  const d = await api('/api/profile');
+  const p = d.profile || {};
+  $id('prof-name').value          = p.display_name || '';
+  $id('prof-occupation').value    = p.occupation || '';
+  $id('prof-household').value      = p.household_size || '';
+  $id('prof-movein-type').value   = p.move_in_type || 'date';
+  $id('prof-movein').value         = p.move_in_date || '';
+  $id('prof-pets').value           = p.pets || '';
+  $id('prof-income').value         = p.income_note || '';
+  $id('prof-about').value          = p.about_text || '';
+  $id('prof-nonsmoker').checked    = !p.smoker;      // UI shows "Nichtraucher"
+  $id('prof-formal').checked       = !!p.formal;
+  $id('prof-template').value       = p.custom_template || '';
+  renderPlaceholderChips();
+  updateMoveInDateVisibility();
+  refreshProfilePreview();
+}
+
+// Show the date field only when "festes Datum" is selected.
+function updateMoveInDateVisibility() {
+  const wrap = $id('prof-movein-date-wrap');
+  if (wrap) wrap.style.display = $id('prof-movein-type').value === 'date' ? '' : 'none';
+}
+
+// Gathers the current (unsaved) profile form state into an object.
+function readProfileForm() {
+  return {
+    display_name:    $id('prof-name').value,
+    occupation:      $id('prof-occupation').value,
+    household_size:  $id('prof-household').value,
+    move_in_type:    $id('prof-movein-type').value,
+    move_in_date:    $id('prof-movein').value,
+    pets:            $id('prof-pets').value,
+    income_note:     $id('prof-income').value,
+    about_text:      $id('prof-about').value,
+    smoker:          !$id('prof-nonsmoker').checked,
+    formal:          $id('prof-formal').checked,
+    custom_template: $id('prof-template').value,
+  };
+}
+
+// Live preview — debounced so typing doesn't spam the server.
+let _previewTimer = null;
+function refreshProfilePreview() {
+  clearTimeout(_previewTimer);
+  _previewTimer = setTimeout(async () => {
+    const body = readProfileForm();
+    body.mode = body.custom_template.trim() ? 'template' : 'guided';
+    try {
+      const d = await api('/api/message/preview', { method: 'POST', body });
+      $id('prof-preview').textContent = d.message || '—';
+    } catch (e) { /* preview is best-effort */ }
+  }, 350);
+}
+
+function renderPlaceholderChips() {
+  const wrap = $id('placeholder-chips');
+  if (!wrap) return;
+  wrap.innerHTML = PLACEHOLDER_LIST.map(ph => `<button type="button" class="ph-chip" data-ph="${ph}">{${ph}}</button>`).join('');
+  wrap.querySelectorAll('.ph-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      const ta = $id('prof-template');
+      const token = `{${chip.dataset.ph}}`;
+      const start = ta.selectionStart ?? ta.value.length;
+      const end   = ta.selectionEnd ?? ta.value.length;
+      ta.value = ta.value.slice(0, start) + token + ta.value.slice(end);
+      ta.focus();
+      ta.selectionStart = ta.selectionEnd = start + token.length;
+      refreshProfilePreview();
+    });
+  });
+}
+
+$id('save-profile-btn')?.addEventListener('click', async () => {
+  clr('profile-ok');
+  const d = await api('/api/profile', { method: 'PUT', body: readProfileForm() });
+  if (d.success) { setOk('profile-ok', '✓ Profil gespeichert'); toast('✅ Bewerber-Profil gespeichert'); }
+});
+
+// Live preview + move-in-date visibility react to every profile edit.
+['prof-name','prof-occupation','prof-household','prof-movein','prof-pets',
+ 'prof-income','prof-about','prof-template'].forEach(id => {
+  $id(id)?.addEventListener('input', refreshProfilePreview);
+});
+['prof-nonsmoker','prof-formal'].forEach(id => {
+  $id(id)?.addEventListener('change', refreshProfilePreview);
+});
+$id('prof-movein-type')?.addEventListener('change', () => {
+  updateMoveInDateVisibility();
+  refreshProfilePreview();
+});
+
+// ══════════════════════════════════════════════════════════
+//  MESSAGE GENERATOR
+// ══════════════════════════════════════════════════════════
+const messageModal = {
+  listing: null,
+  groupId: null,
+  aiAvailable: false,
+
+  async open(listing, opts = {}) {
+    this.listing = listing;
+    this.groupId = opts.groupId || null;
+    $id('message-context').textContent = this.groupId
+      ? `Anfrage für die Gruppe – Profile aller Mitglieder werden zusammengeführt.`
+      : `Anfrage für: ${listing.title || 'Inserat'}`;
+    $id('message-open-link').href = listing.url || '#';
+    clr('message-error');
+
+    // Show AI tab only if the server has it configured
+    try {
+      const cap = await api('/api/message/capabilities');
+      this.aiAvailable = !!cap.ai;
+    } catch (_) { this.aiAvailable = false; }
+    $id('msg-mode-ai').style.display = this.aiAvailable ? '' : 'none';
+
+    // Reset to guided mode
+    document.querySelectorAll('.msg-mode-tab').forEach(t => t.classList.toggle('active', t.dataset.msgmode === 'guided'));
+    $id('message-modal').style.display = 'flex';
+    await this.generate('guided');
+  },
+
+  close() { $id('message-modal').style.display = 'none'; this.listing = null; },
+
+  currentMode() {
+    return document.querySelector('.msg-mode-tab.active')?.dataset.msgmode || 'guided';
+  },
+
+  async generate(mode) {
+    if (!this.listing) return;
+    clr('message-error');
+    const ta = $id('message-text');
+    ta.value = '⏳ Wird erstellt…';
+    const r = await api('/api/message/generate', { method: 'POST', body: {
+      listingId: this.listing.id, groupId: this.groupId, mode,
+    }});
+    if (r.error) {
+      ta.value = '';
+      setErr('message-error', r.error);
+      // On AI failure, fall back to the guided text so the box isn't empty
+      if (mode === 'ai') {
+        const fb = await api('/api/message/generate', { method: 'POST', body: { listingId: this.listing.id, groupId: this.groupId, mode: 'guided' } });
+        if (fb.message) ta.value = fb.message;
+      }
+      return;
+    }
+    ta.value = r.message || '';
+  },
+};
+
+document.querySelectorAll('.msg-mode-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.msg-mode-tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    messageModal.generate(tab.dataset.msgmode);
+  });
+});
+$id('message-regen').addEventListener('click', () => messageModal.generate(messageModal.currentMode()));
+$id('message-close').addEventListener('click', () => messageModal.close());
+$id('message-modal').addEventListener('click', e => { if (e.target.id === 'message-modal') messageModal.close(); });
+$id('message-copy').addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText($id('message-text').value);
+    toast('📋 Nachricht kopiert!');
+  } catch (e) { toast('❌ Kopieren fehlgeschlagen'); }
+});
+
+// Opens the detail view for a listing referenced by a shared link
+// (?listing=<id> in the URL), then cleans the URL so a refresh doesn't
+// re-trigger it. Works for any listing the current user can technically
+// see via GET /api/listings/:id (bypasses the normal swipe-queue
+// visibility scoping — see that endpoint's comment for why).
+async function openSharedListingFromUrl() {
+  const params = new URLSearchParams(location.search);
+  const sharedId = params.get('listing');
+  if (!sharedId) return;
+
+  // Strip the param immediately regardless of outcome, so the URL is
+  // clean and a page refresh won't keep re-opening the same listing.
+  params.delete('listing');
+  const cleanUrl = location.pathname + (params.toString() ? `?${params}` : '') + location.hash;
+  history.replaceState({}, '', cleanUrl);
+
+  const d = await api(`/api/listings/${sharedId}`);
+  if (d.error || !d.listing) { toast('❌ Geteiltes Inserat nicht gefunden'); return; }
+  detailView.open(d.listing, { fromSwipe: true });
+}
+
+// ══════════════════════════════════════════════════════════
 //  INIT
 // ══════════════════════════════════════════════════════════
 (async () => {
@@ -1993,6 +2454,7 @@ $id('admin-users-btn')?.addEventListener('click', async () => {
     showScreen('app-screen');
     await loadGroups();
     loadSwipeQueue();
+    openSharedListingFromUrl();
   } else {
     showScreen('auth-screen');
   }
