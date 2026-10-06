@@ -10,6 +10,7 @@ const MemoryStore = require('memorystore')(session);
 const webpush    = require('web-push');
 const { pollSearchJob, checkExistingListings, detectPlatform, scrapeListing } = require('./poller');
 const mailer     = require('./mailer');
+const P          = require('./profile');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -196,6 +197,13 @@ async function initDb() {
       custom_template TEXT DEFAULT '',
       updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS group_settings (
+      group_id     INTEGER PRIMARY KEY,
+      move_in_type TEXT DEFAULT '',
+      move_in_date TEXT DEFAULT '',
+      updated_by   INTEGER,
+      updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
     CREATE TABLE IF NOT EXISTS group_templates (
       user_id    INTEGER NOT NULL,
       group_id   INTEGER NOT NULL,
@@ -236,6 +244,16 @@ async function initDb() {
   migrate("ALTER TABLE listings    ADD COLUMN longitude       REAL");
   migrate("ALTER TABLE applicant_profiles ADD COLUMN move_in_type TEXT DEFAULT 'date'");
   migrate("ALTER TABLE applicant_profiles ADD COLUMN documents_json TEXT DEFAULT '[]'");
+  migrate("ALTER TABLE applicant_profiles ADD COLUMN household_type TEXT DEFAULT ''");
+  migrate("ALTER TABLE applicant_profiles ADD COLUMN persons INTEGER DEFAULT 0");
+  migrate("ALTER TABLE applicant_profiles ADD COLUMN children INTEGER DEFAULT 0");
+  migrate("ALTER TABLE applicant_profiles ADD COLUMN lease_duration TEXT DEFAULT ''");
+  migrate("ALTER TABLE applicant_profiles ADD COLUMN employment TEXT DEFAULT ''");
+  migrate("ALTER TABLE applicant_profiles ADD COLUMN employment_permanent INTEGER DEFAULT 0");
+  migrate("ALTER TABLE applicant_profiles ADD COLUMN income_range TEXT DEFAULT ''");
+  migrate("ALTER TABLE applicant_profiles ADD COLUMN phone TEXT DEFAULT ''");
+  migrate("ALTER TABLE applicant_profiles ADD COLUMN availability TEXT DEFAULT ''");
+  migrate("ALTER TABLE applicant_profiles ADD COLUMN share_json TEXT DEFAULT '{}'");
   migrate("ALTER TABLE search_jobs ADD COLUMN visibility_id INTEGER");
   migrate("ALTER TABLE users       ADD COLUMN notify_matrix   TEXT");
 
@@ -536,33 +554,9 @@ app.put('/api/user/notifications', requireAuth, (req, res) => {
 
 // ══════════════════════════════════════════════════════════
 //  APPLICANT PROFILE & MESSAGE GENERATION
+//  (field rules, privacy, completeness and message building live in
+//   ./profile.js; this section holds the routes and the DB access)
 // ══════════════════════════════════════════════════════════
-
-// Status a given document can be in, as shown in the applicant profile's
-// document list and rendered into the guided message.
-// Words that only exist in the plural ("Gehaltsnachweise ist beantragt" would
-// be wrong) — the status verb has to follow the document, not just the count.
-const PLURAL_DOC_RE = /(nachweise|unterlagen|papiere|kopien|bescheinigungen|auskünfte|verträge|belege|dokumente|zeugnisse|kontoauszüge|abrechnungen)$/i;
-const isPluralDoc = name => PLURAL_DOC_RE.test((name || '').trim());
-const DOC_STATUS_LABEL = {
-  vorhanden:   { one: 'liegt vor',   many: 'liegen vor' },
-  beantragt:   { one: 'ist beantragt', many: 'sind beantragt' },
-  auf_anfrage: { one: 'kann auf Wunsch gerne bereitgestellt werden', many: 'können auf Wunsch gerne bereitgestellt werden' },
-};
-
-// Validates/cleans the {doc, status} list posted from the profile form —
-// drops empty rows, caps name length, and falls back to 'vorhanden' for
-// any unrecognized status so a tampered/old client can't store garbage.
-function cleanDocuments(docs) {
-  if (!Array.isArray(docs)) return [];
-  return docs
-    .map(d => ({
-      doc:    (typeof d?.doc === 'string' ? d.doc : '').trim().substring(0, 80),
-      status: Object.keys(DOC_STATUS_LABEL).includes(d?.status) ? d.status : 'vorhanden',
-    }))
-    .filter(d => d.doc)
-    .slice(0, 20);
-}
 
 const SAMPLE_LISTING = {
   id: 0,
@@ -571,50 +565,46 @@ const SAMPLE_LISTING = {
   size: '58 m²', rooms: '2', location: 'Bremen Neustadt',
 };
 
+const EMPTY_PROFILE = {
+  display_name:'', occupation:'', household_size:'', household_type:'', persons:0, children:0,
+  move_in_type:'', move_in_date:'', lease_duration:'', smoker:0, pets:'',
+  employment:'', employment_permanent:0, income_range:'', documents_json:'[]',
+  about_text:'', phone:'', availability:'', formal:1, custom_template:'', share_json:'{}',
+};
+
 function getProfile(userId) {
   const row = dbGet('SELECT * FROM applicant_profiles WHERE user_id=?', [userId]);
   if (row) return row;
-  return { user_id: userId, _empty: true, display_name:'', occupation:'', household_size:'', move_in_date:'',
-         move_in_type:'date', smoker:0, pets:'', documents_json:'[]', about_text:'', formal:1, custom_template:'' };
+  return { user_id: userId, _empty: true, ...EMPTY_PROFILE };
 }
 
-// A member counts as "having a profile" only if they actually filled in
-// something. Members without one must not contribute defaults to a group
-// message (e.g. the unsaved default smoker=0 would otherwise be rendered as
-// "wir sind alle Nichtraucher" for people who never said so).
-function isProfileFilled(p) {
-  if (!p || p._empty) return false;
-  return !!(p.display_name || p.occupation || p.household_size || p.move_in_date ||
-            p.pets || p.about_text || parseDocuments(p).length);
+function profileResponse(userId) {
+  const profile = getProfile(userId);
+  return {
+    profile: { ...profile, share: P.parseShare(profile) },
+    completeness: P.completeness(profile),
+    options: P.OPTIONS,
+    shareKeys: P.SHARE_KEYS.map(({ key, label }) => ({ key, label })),
+  };
 }
 
 app.get('/api/profile', requireAuth, (req, res) => {
-  res.json({ profile: getProfile(req.session.userId) });
+  res.json(profileResponse(req.session.userId));
 });
 
 app.put('/api/profile', requireAuth, (req, res) => {
-  const b = req.body || {};
-  const clean = (v, max = 500) => (typeof v === 'string' ? v : '').trim().substring(0, max);
-  const existing = dbGet('SELECT user_id FROM applicant_profiles WHERE user_id=?', [req.session.userId]);
-  const moveType = ['asap','flexible','date'].includes(b.move_in_type) ? b.move_in_type : 'date';
-  const documentsJson = JSON.stringify(cleanDocuments(b.documents));
-  const vals = [
-    clean(b.display_name, 120), clean(b.occupation, 120), clean(b.household_size, 60),
-    clean(b.move_in_date, 60), moveType, b.smoker ? 1 : 0, clean(b.pets, 120),
-    documentsJson, clean(b.about_text, 1000), b.formal ? 1 : 0,
-    clean(b.custom_template, 4000),
-  ];
-  if (existing) {
-    dbRun(`UPDATE applicant_profiles SET display_name=?,occupation=?,household_size=?,move_in_date=?,
-      move_in_type=?,smoker=?,pets=?,documents_json=?,about_text=?,formal=?,custom_template=?,updated_at=CURRENT_TIMESTAMP
-      WHERE user_id=?`, [...vals, req.session.userId]);
+  const uid  = req.session.userId;
+  const vals = P.normalizeInput(req.body, getProfile(uid));
+  const cols = Object.keys(vals);
+  if (dbGet('SELECT 1 FROM applicant_profiles WHERE user_id=?', [uid])) {
+    dbRun(`UPDATE applicant_profiles SET ${cols.map(c => `${c}=?`).join(',')},updated_at=CURRENT_TIMESTAMP WHERE user_id=?`,
+      [...cols.map(c => vals[c]), uid]);
   } else {
-    dbRun(`INSERT INTO applicant_profiles
-      (display_name,occupation,household_size,move_in_date,move_in_type,smoker,pets,documents_json,about_text,formal,custom_template,user_id)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, [...vals, req.session.userId]);
+    dbRun(`INSERT INTO applicant_profiles (${cols.join(',')},user_id) VALUES (${cols.map(() => '?').join(',')},?)`,
+      [...cols.map(c => vals[c]), uid]);
   }
   saveDb();
-  res.json({ success: true, profile: getProfile(req.session.userId) });
+  res.json({ success: true, ...profileResponse(uid) });
 });
 
 // Per-user, per-group custom template. Each group member can set their own
@@ -626,17 +616,18 @@ function getGroupTemplate(userId, groupId) {
   return row ? row.template : '';
 }
 
+const isGroupMember = (groupId, userId) =>
+  !!dbGet('SELECT 1 FROM group_members WHERE group_id=? AND user_id=?', [groupId, userId]);
+
 app.get('/api/groups/:id/template', requireAuth, (req, res) => {
   const gid = req.params.id;
-  if (!dbGet('SELECT 1 FROM group_members WHERE group_id=? AND user_id=?', [gid, req.session.userId]))
-    return res.status(403).json({ error: 'Kein Zugriff' });
+  if (!isGroupMember(gid, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff' });
   res.json({ template: getGroupTemplate(req.session.userId, gid) });
 });
 
 app.put('/api/groups/:id/template', requireAuth, (req, res) => {
   const gid = req.params.id;
-  if (!dbGet('SELECT 1 FROM group_members WHERE group_id=? AND user_id=?', [gid, req.session.userId]))
-    return res.status(403).json({ error: 'Kein Zugriff' });
+  if (!isGroupMember(gid, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff' });
   const tpl = (typeof req.body?.template === 'string' ? req.body.template : '').trim().substring(0, 4000);
   const existing = dbGet('SELECT 1 FROM group_templates WHERE user_id=? AND group_id=?', [req.session.userId, gid]);
   if (existing) {
@@ -650,26 +641,37 @@ app.put('/api/groups/:id/template', requireAuth, (req, res) => {
   res.json({ success: true });
 });
 
-// Move-in wording from the structured type/date. `withZum` adds the "zum"
-// before a concrete date (guided sentence); the {einzug} placeholder wants
-// the bare value so templates can write "ab {einzug}".
-function movePhraseOf(p, withZum) {
-  const type = p.move_in_type || (p.move_in_date ? 'date' : '');
-  if (type === 'asap')     return 'schnellstmöglich';
-  if (type === 'flexible') return 'flexibel';
-  if (type === 'date' && p.move_in_date) return withZum ? `zum ${p.move_in_date}` : p.move_in_date;
-  return '';
+// Group-wide move-in agreement ("Angleichen"): when members' own move-in
+// wishes differ, any member can fix one date/mode for the whole group. It then
+// replaces each member's own move-in in the group's messages and overview.
+function getGroupOverride(groupId) {
+  const row = dbGet('SELECT move_in_type, move_in_date FROM group_settings WHERE group_id=?', [groupId]);
+  return row && row.move_in_type ? row : null;
 }
 
-function parseDocuments(profile) {
-  try { return JSON.parse(profile?.documents_json || '[]'); } catch (_) { return []; }
-}
+app.get('/api/groups/:id/move-in-override', requireAuth, (req, res) => {
+  if (!isGroupMember(req.params.id, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff' });
+  res.json({ override: getGroupOverride(req.params.id) });
+});
 
-// Joins items German-list style: "A, B und C" (not an Oxford comma).
-function germanList(items) {
-  if (items.length <= 1) return items[0] || '';
-  return items.slice(0, -1).join(', ') + ' und ' + items[items.length - 1];
-}
+app.put('/api/groups/:id/move-in-override', requireAuth, (req, res) => {
+  const gid = req.params.id;
+  if (!isGroupMember(gid, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff' });
+  const type = req.body?.move_in_type;
+  if (type !== '' && !P.OPTIONS.move_in_type.some(o => o.value === type))
+    return res.status(400).json({ error: 'Ungültiger Einzugs-Typ' });
+  const date = type === 'date' ? (typeof req.body?.move_in_date === 'string' ? req.body.move_in_date : '').trim().substring(0, 60) : '';
+  if (type === 'date' && !date) return res.status(400).json({ error: 'Datum erforderlich' });
+  if (dbGet('SELECT 1 FROM group_settings WHERE group_id=?', [gid])) {
+    dbRun('UPDATE group_settings SET move_in_type=?, move_in_date=?, updated_by=?, updated_at=CURRENT_TIMESTAMP WHERE group_id=?',
+      [type, date, req.session.userId, gid]);
+  } else {
+    dbRun('INSERT INTO group_settings (group_id, move_in_type, move_in_date, updated_by) VALUES (?,?,?,?)',
+      [gid, type, date, req.session.userId]);
+  }
+  saveDb();
+  res.json({ success: true, override: getGroupOverride(gid) });
+});
 
 // Collects the profiles to use for a group message. `onlyIds` (optional)
 // restricts it to a chosen subset of members; members without a filled
@@ -684,205 +686,89 @@ function collectGroupProfiles(groupId, onlyIds = null) {
   const profiles = [], missing = [];
   for (const m of members) {
     const pr = getProfile(m.id);
-    if (isProfileFilled(pr)) profiles.push(pr); else missing.push(m.username);
+    if (P.isFilled(pr)) profiles.push(pr); else missing.push(m.username);
   }
   return { profiles, missing };
 }
+
+// The generator's per-message Bausteine: { household: false, … } switches a
+// block off for this message. Unknown keys / non-booleans are ignored.
+function cleanBlocks(raw) {
+  const out = {};
+  if (raw && typeof raw === 'object') {
+    for (const key of P.SHARE_KEY_NAMES) if (typeof raw[key] === 'boolean') out[key] = raw[key];
+  }
+  return out;
+}
+
+// Group overview for the "Gruppen-Profil" tab: who has a profile (and how
+// complete), how the group presents itself, and whether move-in wishes clash.
+app.get('/api/groups/:id/profile-overview', requireAuth, (req, res) => {
+  const gid = req.params.id;
+  if (!isGroupMember(gid, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff' });
+  const members = dbAll(`SELECT u.id, u.username FROM group_members gm JOIN users u ON u.id=gm.user_id
+                         WHERE gm.group_id=? ORDER BY gm.joined_at`, [gid]);
+  const overview = P.groupOverview(members.map(m => ({ user: m, profile: getProfile(m.id) })), getGroupOverride(gid));
+  res.json({ ...overview, me: req.session.userId });
+});
+
+// "Erinnern": nudge a group member who hasn't filled in a profile yet.
+// Rate-limited per (sender, target, group) so it can't be used to spam.
+const _profileReminders = new Map();
+const PROFILE_REMINDER_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+
+app.post('/api/groups/:id/remind-profile/:userId', requireAuth, async (req, res) => {
+  const gid    = req.params.id;
+  const target = parseInt(req.params.userId);
+  const sender = dbGet('SELECT * FROM users WHERE id=?', [req.session.userId]);
+
+  if (!isGroupMember(gid, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff' });
+  if (!isGroupMember(gid, target)) return res.status(404).json({ error: 'Nutzer nicht in dieser Gruppe' });
+  if (target === req.session.userId) return res.status(400).json({ error: 'Du kannst dich nicht selbst erinnern' });
+  if (P.isFilled(getProfile(target))) return res.status(400).json({ error: 'Dieses Mitglied hat bereits ein Profil' });
+
+  const key  = `${req.session.userId}:${target}:${gid}`;
+  const last = _profileReminders.get(key) || 0;
+  if (Date.now() - last < PROFILE_REMINDER_COOLDOWN_MS)
+    return res.status(429).json({ error: 'Du hast schon vor Kurzem erinnert – bitte später nochmal' });
+
+  const group      = dbGet('SELECT * FROM groups_table WHERE id=?', [gid]);
+  const targetUser = dbGet('SELECT * FROM users WHERE id=?', [target]);
+  if (!targetUser || !group) return res.status(404).json({ error: 'Nicht gefunden' });
+  _profileReminders.set(key, Date.now());
+
+  const title = `${sender?.username || 'Jemand'} bittet dich um dein Bewerber-Profil`;
+  const body  = `Gruppe: ${group.name} – damit eure gemeinsamen Anfragen vollständig sind.`;
+  if (shouldNotify(targetUser, 'nudge', 'push'))  await sendPushToUser(target, { title, body, url: '/?view=settings', icon: '/icon-192.png' });
+  if (shouldNotify(targetUser, 'nudge', 'ntfy'))  await sendNtfy(targetUser, title, body, 'settings');
+  if (shouldNotify(targetUser, 'nudge', 'email')) {
+    await mailer.sendProfileReminderMail(targetUser.email, targetUser.username, sender?.username || 'Jemand', group.name, targetUser.unsubscribe_token || '');
+  }
+  console.log(`[Profil-Erinnerung] ${sender?.username} → ${targetUser.username} in "${group.name}"`);
+  res.json({ success: true });
+});
 
 // Live preview for the group template editor: renders the (unsaved) template
 // text against a sample listing using the real profiles of the group's
 // members, so the aggregated placeholders can be checked before saving.
 app.post('/api/groups/:id/template/preview', requireAuth, (req, res) => {
   const gid = req.params.id;
-  if (!dbGet('SELECT 1 FROM group_members WHERE group_id=? AND user_id=?', [gid, req.session.userId]))
-    return res.status(403).json({ error: 'Kein Zugriff' });
+  if (!isGroupMember(gid, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff' });
   const tpl = (typeof req.body?.template === 'string' ? req.body.template : '').substring(0, 4000);
-  const sample = SAMPLE_LISTING;
   const requester = getProfile(req.session.userId);
   let { profiles, missing } = collectGroupProfiles(gid);
   if (!profiles.length) profiles = [requester];
+  const vis = profiles.map(pr => P.visibleProfile(pr, { override: getGroupOverride(gid) }));
   if (!tpl.trim()) {
-    return res.json({ message: buildGuidedMessage(sample, profiles, requester.formal ? 1 : 0),
+    return res.json({ message: P.buildGuidedMessage(SAMPLE_LISTING, vis, requester.formal ? 1 : 0),
                       missingProfiles: missing, unknownPlaceholders: [], guided: true });
   }
-  const { text, unknown } = applyTemplate(tpl, buildPlaceholders(sample, requester, profiles));
+  const { text, unknown } = P.applyTemplate(tpl, P.buildPlaceholders(SAMPLE_LISTING, vis[0], vis));
   res.json({ message: text, missingProfiles: missing, unknownPlaceholders: unknown });
 });
 
-// Build the {placeholder} substitution map from a listing + profile(s).
-// For a group, person-related placeholders aggregate every filled member
-// profile ({name} -> "Anna, Ben und Chris"); for a solo request `profiles`
-// is just [profile], so behaviour is unchanged.
-function buildPlaceholders(listing, profile, profiles = [profile]) {
-  const uniq = arr => [...new Set(arr.filter(Boolean))];
-  const docs = new Map();
-  for (const pr of profiles) for (const d of parseDocuments(pr)) {
-    if (d.doc && !docs.has(d.doc.toLowerCase())) docs.set(d.doc.toLowerCase(), d);
-  }
-  const unterlagen = [...docs.values()]
-    .map(d => `${d.doc} (${DOC_STATUS_LABEL[d.status]?.[isPluralDoc(d.doc) ? 'many' : 'one'] || d.status})`)
-    .join(', ');
-  const names = uniq(profiles.map(x => x.display_name));
-  const namen = germanList(names);
-  return {
-    titel:   listing.title || '',
-    preis:   listing.price_cold || listing.price || '',
-    warm:    listing.price || '',
-    kalt:    listing.price_cold || '',
-    zimmer:  listing.rooms || '',
-    groesse: listing.size || '',
-    größe:   listing.size || '',
-    lage:    listing.location || '',
-    ort:     listing.location || '',
-    name:    namen,
-    namen,
-    personen: String(Math.max(profiles.length, 1)),
-    beruf:   uniq(profiles.map(x => x.occupation)).join(', '),
-    einzug:  uniq(profiles.map(x => movePhraseOf(x, false))).join(' bzw. '),
-    haushalt: uniq(profiles.map(x => x.household_size)).join(', '),
-    unterlagen,
-  };
-}
-
-// Replaces {placeholders}. Known placeholders whose value is empty are
-// removed (instead of leaking a literal "{beruf}" into a message that gets
-// sent to a landlord); unknown ones (typos) stay visible and are reported
-// back in `unknown` so the UI can warn about them.
-function applyTemplate(tpl, placeholders) {
-  const unknown = [];
-  const text = tpl.replace(/\{([\wäöüÄÖÜß]+)\}/g, (m, key) => {
-    const k = key.toLowerCase();
-    if (placeholders[k] === undefined) { if (!unknown.includes(m)) unknown.push(m); return m; }
-    return placeholders[k];
-  })
-    .replace(/[ \t]+([,.;:!?])/g, '$1')
-    .replace(/(\S)[ \t]{2,}/g, '$1 ');
-  return { text, unknown };
-}
-
-// Variant A1 — guided template built from structured profile fields.
-function buildGuidedMessage(listing, profiles, formal) {
-  const anrede = formal ? 'Sie' : 'dich';
-  const greet  = formal ? 'Sehr geehrte Damen und Herren,' : 'Hallo,';
-  const p = profiles[0] || {};
-  const isGroup = profiles.length > 1;
-
-  const lines = [];
-  lines.push(greet);
-  lines.push('');
-
-  const titleRef = listing.title ? `Ihre Anzeige „${listing.title}"` : 'Ihre Wohnungsanzeige';
-  const details = [];
-  if (listing.size)  details.push(listing.size);
-  if (listing.rooms) details.push(`${listing.rooms} Zimmer`);
-  const detailStr = details.length ? ` (${details.join(', ')})` : '';
-
-  if (isGroup) {
-    const names = profiles.map(x => x.display_name).filter(Boolean);
-    const whoList = profiles.map(x => {
-      const bits = [x.display_name].filter(Boolean);
-      if (x.occupation) bits.push(x.occupation);
-      return bits.join(', ');
-    }).filter(Boolean);
-    lines.push(`mit großem Interesse haben wir ${titleRef}${detailStr} gesehen und würden uns sehr über eine Besichtigung freuen.`);
-    lines.push('');
-    if (whoList.length) {
-      lines.push(`Wir bewerben uns gemeinsam als ${profiles.length} Personen: ${whoList.join('; ')}.`);
-    }
-  } else {
-    const who = [];
-    if (p.display_name) who.push(`Mein Name ist ${p.display_name}`);
-    if (p.occupation)   who.push(formal ? `ich bin ${p.occupation}` : `ich bin ${p.occupation}`);
-    lines.push(`mit großem Interesse habe ich ${titleRef}${detailStr} gesehen und würde mich sehr über eine Besichtigung freuen.`);
-    lines.push('');
-    if (who.length) lines.push(who.join(', ') + '.');
-  }
-
-  // Shared facts — each phrased as a complete, grammatical sentence.
-  const facts = [];
-
-  // Move-in: build a grammatical phrase from the structured type/date
-  // instead of just gluing a raw string after "Einzug wäre ... ab".
-  // "asap" → "schnellstmöglich möglich"; "flexible" → "flexibel möglich";
-  // "date" → "zum <datum> möglich". Mixed types across a group collapse to
-  // the most flexible wording.
-  const movePhrase = (p) => movePhraseOf(p, true);
-  const movePhrases = [...new Set(profiles.map(movePhrase).filter(Boolean))];
-  if (movePhrases.length === 1) {
-    facts.push(`${isGroup ? 'einziehen könnten wir' : 'einziehen könnte ich'} ${movePhrases[0]}`);
-  } else if (movePhrases.length > 1) {
-    facts.push(`${isGroup ? 'einziehen könnten wir' : 'einziehen könnte ich'} ${movePhrases.join(' bzw. ')}`);
-  }
-
-  const allNonSmoker = profiles.some(isProfileFilled) && profiles.every(x => !x.smoker);
-  if (allNonSmoker) facts.push(isGroup ? 'wir sind alle Nichtraucher' : 'ich bin Nichtraucher');
-
-  const pets = [...new Set(profiles.map(x => x.pets).filter(Boolean))];
-  if (pets.length) {
-    const noPets = pets.every(p => /^(keine?|nein|-)$/i.test(p.trim()));
-    if (noPets) facts.push(isGroup ? 'wir haben keine Haustiere' : 'ich habe keine Haustiere');
-    else        facts.push(`als Haustier${pets.length > 1 ? 'e' : ''} ${isGroup ? 'bringen wir' : 'bringe ich'} ${pets.join(' und ')} mit`);
-  }
-
-  if (facts.length) {
-    lines.push('');
-    // Join into flowing sentences, each capitalized.
-    const sentences = facts.map(f => f.charAt(0).toUpperCase() + f.slice(1));
-    lines.push(sentences.join('. ') + '.');
-  }
-
-  // Supporting documents (SCHUFA-Auskunft, Mieterselbstauskunft, …) are
-  // grouped by status so they read as flowing sentences — "SCHUFA-Auskunft
-  // und Mieterselbstauskunft liegen vor. Gehaltsnachweise sind beantragt."
-  // — instead of a flat "Dokument: Status" label dump. Deduplicated by
-  // document name across a group (first occurrence wins) so a document
-  // every roommate listed is only mentioned once.
-  const docsByName = new Map();
-  for (const prof of profiles) {
-    for (const d of parseDocuments(prof)) {
-      const key = d.doc.toLowerCase();
-      if (d.doc && !docsByName.has(key)) docsByName.set(key, d);
-    }
-  }
-  const documents = [...docsByName.values()];
-  if (documents.length) {
-    const byStatus = {};
-    for (const d of documents) (byStatus[d.status] ||= []).push(d.doc);
-    const statusSentences = [];
-    for (const status of Object.keys(DOC_STATUS_LABEL)) {
-      const names = byStatus[status];
-      if (!names?.length) continue;
-      const label = DOC_STATUS_LABEL[status][(names.length > 1 || names.some(isPluralDoc)) ? 'many' : 'one'];
-      statusSentences.push(`${germanList(names)} ${label}`);
-    }
-    if (statusSentences.length) {
-      lines.push('');
-      lines.push(statusSentences.map(s => s.charAt(0).toUpperCase() + s.slice(1) + '.').join(' '));
-    }
-  }
-
-  // Free-text about sections
-  const abouts = profiles.map(x => x.about_text).filter(Boolean);
-  if (abouts.length) {
-    lines.push('');
-    lines.push(abouts.join('\n\n'));
-  }
-
-  lines.push('');
-  const closeVerb = isGroup ? 'würden wir uns' : 'würde ich mich';
-  lines.push(formal
-    ? `Über eine Rückmeldung ${closeVerb} sehr freuen.`
-    : `Über eine kurze Rückmeldung ${closeVerb} sehr freuen.`);
-  lines.push('');
-  lines.push(formal ? 'Mit freundlichen Grüßen' : 'Viele Grüße');
-  const sigNames = profiles.map(x => x.display_name).filter(Boolean);
-  if (sigNames.length) lines.push(sigNames.join(', '));
-
-  return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
-}
-
 app.post('/api/message/generate', requireAuth, async (req, res) => {
-  const { listingId, groupId, mode } = req.body || {};
+  const { listingId, groupId, mode, tone } = req.body || {};
   const listing = dbGet('SELECT * FROM listings WHERE id=?', [listingId]);
   if (!listing) return res.status(404).json({ error: 'Inserat nicht gefunden' });
 
@@ -894,19 +780,24 @@ app.post('/api/message/generate', requireAuth, async (req, res) => {
   // Members who haven't filled in a profile are left out of the message and
   // reported back in `missingProfiles` so the UI can warn about them.
   const requester = getProfile(req.session.userId);
-  let profiles;
+  let rawProfiles;
   let missingProfiles = [];
+  let override = null;
   if (groupId) {
-    const isMember = dbGet('SELECT 1 FROM group_members WHERE group_id=? AND user_id=?', [groupId, req.session.userId]);
-    if (!isMember) return res.status(403).json({ error: 'Kein Zugriff auf diese Gruppe' });
+    if (!isGroupMember(groupId, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff auf diese Gruppe' });
     const col = collectGroupProfiles(groupId, req.body.memberIds);
-    profiles = col.profiles;
+    rawProfiles = col.profiles;
     missingProfiles = col.missing;
-    if (!profiles.length) profiles = [requester];
+    override = getGroupOverride(groupId);
+    if (!rawProfiles.length) rawProfiles = [requester];
   } else {
-    profiles = [requester];
+    rawProfiles = [requester];
   }
-  const formal = requester.formal ? 1 : 0;
+  // Privacy: each person's "In Nachricht" settings plus this message's
+  // Bausteine decide which fields reach the text (guided, template and AI).
+  const blocks   = cleanBlocks(req.body.blocks);
+  const profiles = rawProfiles.map(pr => P.visibleProfile(pr, { blocks, override }));
+  const formal   = tone === 'formal' ? 1 : tone === 'informal' ? 0 : (requester.formal ? 1 : 0);
 
   // ── Variant B: AI generation (only if server-side LLM creds exist) ──
   if (mode === 'ai') {
@@ -914,21 +805,9 @@ app.post('/api/message/generate', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'KI-Modus ist auf diesem Server nicht konfiguriert' });
     }
     try {
-      const profileSummary = profiles.map((p, i) => {
-        const parts = [];
-        if (p.display_name) parts.push(`Name: ${p.display_name}`);
-        if (p.occupation)   parts.push(`Beruf: ${p.occupation}`);
-        if (p.household_size) parts.push(`Haushalt: ${p.household_size}`);
-        if (p.move_in_date) parts.push(`Einzug ab: ${p.move_in_date}`);
-        parts.push(p.smoker ? 'Raucher' : 'Nichtraucher');
-        if (p.pets) parts.push(`Haustiere: ${p.pets}`);
-        const docs = parseDocuments(p);
-        if (docs.length) parts.push(`Unterlagen: ${docs.map(d => `${d.doc} (${DOC_STATUS_LABEL[d.status]?.[isPluralDoc(d.doc) ? 'many' : 'one'] || d.status})`).join(', ')}`);
-        if (p.about_text) parts.push(`Über: ${p.about_text}`);
-        return `Person ${i + 1}: ${parts.join(', ')}`;
-      }).join('\n');
+      const profileSummary = P.summarizeForAi(profiles);
 
-      const prompt = `Schreibe eine höfliche, authentische deutsche Nachricht an einen Vermieter als Antwort auf eine Wohnungsanzeige. ${formal ? 'Nutze die förmliche Sie-Anrede.' : 'Nutze eine freundliche, lockere Du/Hallo-Anrede.'} Halte sie knapp (max. 150 Wörter), ehrlich und ohne übertriebene Floskeln.
+      const prompt = `Schreibe eine höfliche, authentische deutsche Nachricht an einen Vermieter als Antwort auf eine Wohnungsanzeige. ${formal ? 'Nutze die förmliche Sie-Anrede.' : 'Nutze eine freundliche, lockere Du/Hallo-Anrede.'} Halte sie knapp (max. 150 Wörter), ehrlich und ohne übertriebene Floskeln. Verwende ausschließlich die unten genannten Angaben und erfinde nichts dazu.
 
 Anzeige:
 Titel: ${listing.title || ''}
@@ -982,36 +861,41 @@ Gib NUR den Nachrichtentext zurück, ohne Betreff, ohne Erklärungen.`;
     const groupTpl = groupId ? getGroupTemplate(req.session.userId, groupId) : '';
     const tpl = (groupTpl && groupTpl.trim()) ? groupTpl : requester.custom_template;
     if (tpl && tpl.trim()) {
-      const { text, unknown } = applyTemplate(tpl, buildPlaceholders(listing, requester, profiles));
+      const { text, unknown } = P.applyTemplate(tpl, P.buildPlaceholders(listing, profiles[0], profiles));
       return res.json({ message: text, mode: 'template', missingProfiles, unknownPlaceholders: unknown,
                         templateSource: (groupTpl && groupTpl.trim()) ? 'group' : 'personal' });
     }
-    return res.json({ message: buildGuidedMessage(listing, profiles, formal), mode: 'guided', missingProfiles,
+    return res.json({ message: P.buildGuidedMessage(listing, profiles, formal), mode: 'guided', missingProfiles,
                       info: 'Noch keine eigene Vorlage hinterlegt – es wird die geführte Nachricht angezeigt.' });
   }
 
   // ── Variant A1: guided template (default) ──
-  return res.json({ message: buildGuidedMessage(listing, profiles, formal), mode: 'guided', missingProfiles });
+  return res.json({ message: P.buildGuidedMessage(listing, profiles, formal), mode: 'guided', missingProfiles });
 });
 
 // Lets the frontend know whether the AI option should be shown at all,
-// without ever exposing the key itself.
+// without ever exposing the key itself — plus what the generator needs to
+// render its controls: group members (with profile state), the Bausteine
+// (which blocks have data / are shared) and whether the own profile is empty.
 app.get('/api/message/capabilities', requireAuth, (req, res) => {
   const gid = parseInt(req.query.groupId);
-  const hasGroupTemplate = !!gid
-    && !!dbGet('SELECT 1 FROM group_members WHERE group_id=? AND user_id=?', [gid, req.session.userId])
-    && !!getGroupTemplate(req.session.userId, gid).trim();
+  const isMember = !!gid && isGroupMember(gid, req.session.userId);
+  const hasGroupTemplate = isMember && !!getGroupTemplate(req.session.userId, gid).trim();
   let members = null;
-  if (gid && dbGet('SELECT 1 FROM group_members WHERE group_id=? AND user_id=?', [gid, req.session.userId])) {
+  let scope = [getProfile(req.session.userId)];
+  if (isMember) {
     members = dbAll(`SELECT u.id, u.username FROM group_members gm JOIN users u ON u.id=gm.user_id
                      WHERE gm.group_id=? ORDER BY gm.joined_at`, [gid])
-      .map(m => ({ id: m.id, username: m.username, hasProfile: isProfileFilled(getProfile(m.id)) }));
+      .map(m => ({ id: m.id, username: m.username, hasProfile: P.isFilled(getProfile(m.id)) }));
+    const filled = collectGroupProfiles(gid).profiles;
+    if (filled.length) scope = filled;
   }
   res.json({
     ai: !!(process.env.LLM_API_URL && process.env.LLM_API_KEY),
     hasGroupTemplate,
     members,
-    ownProfileEmpty: !isProfileFilled(getProfile(req.session.userId)),
+    blocks: P.blockStatus(scope),
+    ownProfileEmpty: !P.isFilled(getProfile(req.session.userId)),
   });
 });
 
@@ -1021,29 +905,18 @@ app.get('/api/message/capabilities', requireAuth, (req, res) => {
 // without having to save first and open a real listing).
 app.post('/api/message/preview', requireAuth, (req, res) => {
   const b = req.body || {};
-  const sampleListing = SAMPLE_LISTING;
-  const profile = {
-    display_name: b.display_name || 'Max Mustermann',
-    occupation: b.occupation || '',
-    household_size: b.household_size || '',
-    move_in_date: b.move_in_date || '',
-    move_in_type: ['asap','flexible','date'].includes(b.move_in_type) ? b.move_in_type : 'date',
-    smoker: b.smoker ? 1 : 0,
-    pets: b.pets || '',
-    documents_json: JSON.stringify(cleanDocuments(b.documents)),
-    about_text: b.about_text || '',
-    formal: b.formal ? 1 : 0,
-    custom_template: b.custom_template || '',
-  };
+  const vals = P.normalizeInput(b, EMPTY_PROFILE);
+  const profile = { ...vals, display_name: vals.display_name || 'Max Mustermann' };
+  const vis = P.visibleProfile(profile, { blocks: cleanBlocks(b.blocks) });
   let message;
   let unknown = [];
   if (b.mode === 'template' && profile.custom_template.trim()) {
-    const r = applyTemplate(profile.custom_template, buildPlaceholders(sampleListing, profile));
+    const r = P.applyTemplate(profile.custom_template, P.buildPlaceholders(SAMPLE_LISTING, vis));
     message = r.text; unknown = r.unknown;
   } else {
-    message = buildGuidedMessage(sampleListing, [profile], profile.formal);
+    message = P.buildGuidedMessage(SAMPLE_LISTING, [vis], profile.formal);
   }
-  res.json({ message, unknownPlaceholders: unknown });
+  res.json({ message, unknownPlaceholders: unknown, completeness: P.completeness(profile) });
 });
 
 // ── Web Push ───────────────────────────────────────────────
