@@ -214,7 +214,6 @@ async function initDb() {
       lease_duration TEXT DEFAULT '',
       smoker         INTEGER DEFAULT 0,
       pets           TEXT DEFAULT '',
-      employment_text TEXT DEFAULT '',
       income_range   TEXT DEFAULT '',
       documents_json TEXT DEFAULT '[]',
       about_text     TEXT DEFAULT '',
@@ -674,7 +673,7 @@ app.put('/api/groups/:id/template', requireAuth, (req, res) => {
 // generator takes them from the members' personal profiles.
 const GROUP_PROFILE_DEFAULTS = {
   household_type:'', persons:0, children:0, move_in_type:'', move_in_date:'', lease_duration:'', smoker:0,
-  pets:'', employment_text:'', income_range:'', documents_json:'[]', about_text:'', phone:'', availability:'', share_json:'{}',
+  pets:'', income_range:'', documents_json:'[]', about_text:'', phone:'', availability:'', share_json:'{}',
 };
 
 function getGroupProfile(groupId) {
@@ -687,8 +686,8 @@ function groupMembers(groupId) {
                 WHERE gm.group_id=? ORDER BY gm.joined_at`, [groupId]);
 }
 
-// The group profile has no personal "Vorstellung" block (names come from the members).
-const groupShare = gp => { const sh = P.parseShare(gp); delete sh.intro; return sh; };
+// The group profile has no personal blocks (name, occupation, employment come from the members).
+const groupShare = gp => { const sh = P.parseShare(gp); P.MEMBER_FED_KEYS.forEach(k => delete sh[k]); return sh; };
 
 function groupProfileResponse(groupId, userId) {
   const gp = getGroupProfile(groupId);
@@ -699,7 +698,7 @@ function groupProfileResponse(groupId, userId) {
     profile: { ...gp, share: groupShare(gp) },
     completeness: P.completenessGroup(gp),
     options: P.OPTIONS,
-    shareKeys: P.SHARE_KEYS.filter(k => k.key !== 'intro').map(({ key, label }) => ({ key, label })),
+    shareKeys: P.SHARE_KEYS.filter(k => !P.MEMBER_FED_KEYS.includes(k.key)).map(({ key, label }) => ({ key, label })),
     members: status, autoPersons, me: userId,
   };
 }
@@ -741,7 +740,7 @@ app.post('/api/groups/:id/profile/adopt', requireAuth, (req, res) => {
   const take = {
     household_type: me.household_type, persons: me.persons, children: me.children,
     move_in_type: me.move_in_type, move_in_date: me.move_in_date, lease_duration: me.lease_duration,
-    pets: me.pets, employment_text: P.employmentSentence(me), income_range: me.income_range,
+    pets: me.pets, income_range: me.income_range,
     documents_json: me.documents_json, about_text: me.about_text, phone: me.phone, availability: me.availability,
   };
   const isEmpty = (k, v) => v === '' || v === 0 || v === null || v === undefined || (k === 'documents_json' && v === '[]');
@@ -768,7 +767,7 @@ function collectGroupProfiles(groupId, onlyIds = null) {
   }
   const profiles = [], missing = [];
   for (const m of members) {
-    const pr = getProfile(m.id);
+    const pr = { ...getProfile(m.id), _username: m.username };       // fallback name when display_name is empty
     if (P.isFilled(pr)) profiles.push(pr); else missing.push(m.username);
   }
   return { profiles, missing };

@@ -117,7 +117,7 @@ function hasData(p, key) {
     case 'lease':        return !!(p.lease_duration && p.lease_duration !== 'any');
     case 'smoking':      return true;
     case 'pets':         return !!p.pets;
-    case 'employment':   return !!(p.employment || p.employment_text);
+    case 'employment':   return !!p.employment;
     case 'income':       return !!p.income_range;
     case 'documents':    return parseDocuments(p).length > 0;
     case 'about':        return !!p.about_text;
@@ -220,7 +220,7 @@ const completeness = p => completenessFrom(CHECKS, p, SECTIONS);
 function isFilled(p) {
   if (!p || p._empty) return false;
   return !!(p.display_name || p.occupation || p.household_size || p.household_type || p.move_in_date ||
-            p.pets || p.about_text || p.employment || p.employment_text || p.income_range || p.phone || p.availability ||
+            p.pets || p.about_text || p.employment || p.income_range || p.phone || p.availability ||
             parseDocuments(p).length);
 }
 
@@ -255,7 +255,10 @@ function householdOf(profiles) {
 // A group searches as "we": its own profile holds everything that is shared
 // (household, move-in, pets, documents, contact …). Names and occupations are
 // not stored there — they come from the members' personal profiles.
-const GROUP_SHARE_KEY_NAMES = SHARE_KEY_NAMES.filter(k => k !== 'intro');
+// Personal facts (name, occupation, employment) belong to the person: they come from the members' profiles,
+// never from the group profile — otherwise the job would show up twice.
+const MEMBER_FED_KEYS = ['intro', 'employment'];
+const GROUP_SHARE_KEY_NAMES = SHARE_KEY_NAMES.filter(k => !MEMBER_FED_KEYS.includes(k));
 
 function normalizeGroupProfile(b, base = {}) {
   b = b || {};
@@ -285,7 +288,6 @@ function normalizeGroupProfile(b, base = {}) {
     lease_duration: oneOf('lease_duration', base.lease_duration || ''),
     smoker:         has('smoker') ? (b.smoker ? 1 : 0) : (base.smoker ? 1 : 0),
     pets:           str('pets', 120, base.pets || ''),
-    employment_text: str('employment_text', 300, base.employment_text || ''),
     income_range:   oneOf('income_range', base.income_range || ''),
     documents_json: has('documents') ? JSON.stringify(cleanDocuments(b.documents)) : (base.documents_json || '[]'),
     about_text:     str('about_text', 1000, base.about_text || ''),
@@ -310,7 +312,6 @@ const GROUP_CHECKS = [
   { id: 'household_type', section: 'housing',   label: 'Wohnform',            ok: p => !!p.household_type },
   { id: 'move_in',        section: 'housing',   label: 'Einzug',              ok: p => !!movePhraseOf(p, true) },
   { id: 'pets',           section: 'housing',   label: 'Haustiere',           ok: p => !!p.pets },
-  { id: 'employment',     section: 'income',    label: 'Berufliche Situation', ok: p => !!p.employment_text },
   { id: 'documents',      section: 'documents', label: 'Unterlagen',          ok: p => parseDocuments(p).length > 0 },
   { id: 'about_text',     section: 'about',     label: 'Über uns',            ok: p => !!p.about_text },
   { id: 'phone',          section: 'contact',   label: 'Telefonnummer',       ok: p => !!p.phone },
@@ -334,7 +335,7 @@ function visibleProfile(p, { blocks = {} } = {}) {
   if (!allowed('lease'))        v.lease_duration = '';
   if (!allowed('smoking'))      v._hideSmoker = true;
   if (!allowed('pets'))         v.pets = '';
-  if (!allowed('employment'))   { v.employment = ''; v.employment_permanent = 0; v.employment_text = ''; }
+  if (!allowed('employment'))   { v.employment = ''; v.employment_permanent = 0; }
   if (!allowed('income'))       v.income_range = '';
   if (!allowed('documents'))    v.documents_json = '[]';
   if (!allowed('about'))        v.about_text = '';
@@ -346,10 +347,10 @@ function visibleProfile(p, { blocks = {} } = {}) {
 // Which Bausteine make sense for these (raw) profiles: does anyone have data
 // for it, and does anyone with data allow sharing it? Drives the toggles in
 // the generator ("Im Profil auf 'nur auf Nachfrage' gesetzt").
-function blockStatus(profiles, introProfiles = null) {
+function blockStatus(profiles, members = null) {
   return SHARE_KEYS.map(({ key, label }) => {
-    // group search: the "Vorstellung" block is fed by the members' personal profiles
-    const withData = (key === 'intro' && introProfiles ? introProfiles : profiles).filter(p => hasData(p, key));
+    // group search: "Vorstellung" and "Beschäftigung" are fed by the members' personal profiles
+    const withData = (members && MEMBER_FED_KEYS.includes(key) ? members : profiles).filter(p => hasData(p, key));
     return {
       key, label,
       hasData: withData.length > 0,
@@ -366,7 +367,6 @@ const employmentText = p => {
 };
 
 // Free sentence for the group profile's "Berufliche Situation" when adopting a personal profile.
-const employmentSentence = p => { const t = employmentText(p); return t ? `Wir sind ${t}.` : ''; };
 
 // Build the {placeholder} substitution map from a listing + profile(s).
 // For a group, person-related placeholders aggregate every filled member
@@ -405,7 +405,7 @@ function buildPlaceholders(listing, profile, profiles = [profile], members = nul
     haushalt: uniq(profiles.map(x => x.household_size)).join(', ') || (persons > 1 ? `${persons} Personen` : ''),
     wohnform: uniq(profiles.map(x => optionLabel('household_type', x.household_type))).join(', '),
     mietdauer: uniq(profiles.map(x => x.lease_duration === 'any' ? '' : optionLabel('lease_duration', x.lease_duration))).join(', '),
-    beschaeftigung: uniq(profiles.map(x => x.employment_text || employmentText(x))).join(', '),
+    beschaeftigung: uniq(people.map(employmentText)).join(', '),
     einkommen: uniq(profiles.map(x => optionLabel('income_range', x.income_range))).join(', '),
     telefon: uniq(profiles.map(x => x.phone)).join(' oder '),
     erreichbarkeit: uniq(profiles.map(x => x.availability)).join(' bzw. '),
@@ -457,6 +457,13 @@ function petItems(profiles) {
   return { none: none && !items.length, items };
 }
 
+// Does the free-text occupation already express the employment status? ("Duale Studentin" says
+// "im Studium", "Fachinformatiker in Ausbildung" says "in Ausbildung".) Then we don't repeat it.
+const EMPLOYMENT_HINTS = { trainee: /ausbild|azubi|auszubild/i, student: /stud/i, self_employed: /selbst|freiberuf|gründ/i,
+                           retired: /rent|pension/i, employed: /angestellt/i };
+const employmentIsRedundant = p => !!(p.employment && p.occupation && EMPLOYMENT_HINTS[p.employment]?.test(p.occupation)
+                                       && !(p.employment === 'employed' && p.employment_permanent));
+
 // Variant A1 — guided template built from structured profile fields. Written as flowing
 // German: related facts share a sentence, subjects vary, grammar follows tone and head count
 // ("beide"/"alle", "zu zweit", "Ihre"/"deine"). Expects visibleProfile() copies (hidden
@@ -474,8 +481,8 @@ function buildGuidedMessage(listing, profiles, formal, members = null) {
   // First names are enough once introduced — unless they collide (two Philipps).
   const first = x => (x.display_name || '').trim().split(/\s+/)[0];
   const nameOf = (x, i) => {
-    if (!x.display_name) return `Person ${i + 1}`;
-    return profiles.filter(y => first(y) === first(x)).length > 1 ? x.display_name.trim() : first(x);
+    if (!x.display_name) return x._username ? cap(x._username) : `Person ${i + 1}`;
+    return people.filter(y => first(y) === first(x)).length > 1 ? x.display_name.trim() : first(x);
   };
 
   const paragraphs = [];
@@ -553,21 +560,18 @@ function buildGuidedMessage(listing, profiles, formal, members = null) {
   if (smokeClause && petClause) facts.push(`${Wir} ${smokeClause} und ${petClause}.`);
   else if (smokeClause || petClause) facts.push(`${Wir} ${smokeClause || petClause}.`);
 
-  // Employment: one statement if everyone matches, otherwise per person.
-  const emp = profiles.map((x, i) => ({ name: nameOf(x, i), text: employmentText(x) })).filter(e => e.text);
+  // Employment comes from the people themselves (their personal profiles). It is left out when the
+  // occupation already says it ("Duale Studentin" + "im Studium"), so nothing is stated twice.
+  // One statement if everyone matches, otherwise per person.
+  const emp = people.map((x, i) => ({ name: nameOf(x, i), text: employmentText(x), redundant: employmentIsRedundant(x) }))
+                    .filter(e => e.text && !e.redundant);
   // "Wir sind beide …" only when the profiles cover every person (a family of six with one
   // profile must not claim that the children are employed).
   if (emp.length) {
-    const everyoneCovered = emp.length === profiles.length && profiles.length === persons;
-    if (!plural || profiles.length === 1) facts.push(`Ich bin ${emp[0].text}.`);
+    const everyoneCovered = emp.length === people.length && people.length === persons;
+    if (!plural || people.length === 1) facts.push(`Ich bin ${emp[0].text}.`);
     else if (everyoneCovered && new Set(emp.map(e => e.text)).size === 1) facts.push(`Wir sind ${both} ${emp[0].text}.`);
     else facts.push(cap(germanList(emp.map(e => `${e.name} ist ${e.text}`))) + '.');
-  }
-
-  // Group profile: one free sentence about how the members are employed.
-  for (const x of profiles) {
-    const t = (x.employment_text || '').trim();
-    if (t) facts.push(/[.!?]$/.test(t) ? cap(t) : cap(t) + '.');
   }
 
   // Income — only present if the person(s) chose to share it.
@@ -649,7 +653,7 @@ function summarizeForAi(profiles, members = null) {
     if (p.lease_duration && p.lease_duration !== 'any') parts.push(`Mietdauer: ${optionLabel('lease_duration', p.lease_duration)}`);
     if (!p._hideSmoker) parts.push(p.smoker ? 'Raucher' : 'Nichtraucher');
     if (p.pets) parts.push(`Haustiere: ${p.pets}`);
-    const emp = p.employment_text || employmentText(p);
+    const emp = employmentText(p);
     if (emp) parts.push(`Beschäftigung: ${emp}`);
     if (p.income_range) parts.push(`Netto-Einkommen: ${optionLabel('income_range', p.income_range)}`);
     const docs = parseDocuments(p);
@@ -676,7 +680,7 @@ function groupMembersStatus(entries) {
 
 module.exports = {
   OPTIONS, SHARE_KEYS, SHARE_KEY_NAMES, SECTIONS, DOC_STATUS_LABEL,
-  householdOf, normalizeGroupProfile, groupAsProfile, completenessGroup, employmentSentence, GROUP_SHARE_KEY_NAMES, cleanDocuments, parseDocuments, parseShare, hasData, normalizeInput,
+  householdOf, normalizeGroupProfile, groupAsProfile, completenessGroup, GROUP_SHARE_KEY_NAMES, MEMBER_FED_KEYS, cleanDocuments, parseDocuments, parseShare, hasData, normalizeInput,
   completeness, isFilled, movePhraseOf, personsOf, childrenOf, visibleProfile, blockStatus,
   buildPlaceholders, applyTemplate, buildGuidedMessage, summarizeForAi, groupMembersStatus,
   germanList, isPluralDoc, optionLabel,

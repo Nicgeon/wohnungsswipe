@@ -40,9 +40,9 @@ const PF_SECTIONS = [
 // A group searches as "we": same page, own sections. "Mitglieder" replaces "Persönliches" — names and
 // occupations are taken from the members' personal profiles, everything else is shared and edited here.
 const PF_GROUP_SECTIONS = PF_SECTIONS.map(s => {
-  if (s.id === 'personal') return { id: 'members', title: 'Mitglieder', desc: 'Wer sucht mit? Namen und Berufe holt die App aus den persönlichen Profilen der Mitglieder.' };
+  if (s.id === 'personal') return { id: 'members', title: 'Mitglieder', desc: 'Wer sucht mit? Namen, Berufe und Beschäftigung holt die App aus den persönlichen Profilen der Mitglieder – dort pflegt sie jeder selbst.' };
   if (s.id === 'housing')  return { ...s, desc: 'Wie wohnt ihr, wann wollt ihr einziehen? Gilt für alle Nachrichten aus dieser Gruppe.' };
-  if (s.id === 'income')   return { ...s, title: 'Beruf & Einkommen', desc: 'Wie sind die Mitglieder beruflich aufgestellt? Das Einkommen erscheint nur, wenn ihr es freigebt.' };
+  if (s.id === 'income')   return { ...s, title: 'Einkommen', desc: 'Netto-Haushaltseinkommen der Gruppe – erscheint nur, wenn ihr es freigebt. Beruf und Beschäftigung kommen aus den Mitglieder-Profilen.' };
   if (s.id === 'about')    return { ...s, title: 'Über uns', desc: 'Ein paar Sätze, die euch als Gruppe beschreiben.' };
   if (s.id === 'template') return { ...s, desc: 'Optional: Dein eigener Text für Nachrichten aus dieser Gruppe (nur für dich).' };
   return s;
@@ -98,7 +98,6 @@ function pfFromServer(profile) {
     move_in_type: profile.move_in_type || '', move_in_date: profile.move_in_date || '',
     lease_duration: profile.lease_duration || '', smoker: profile.smoker ? 1 : 0, pets: profile.pets || '',
     employment: profile.employment || '', employment_permanent: !!profile.employment_permanent,
-    employment_text: profile.employment_text || '',
     income_range: profile.income_range || '', documents: docs,
     about_text: profile.about_text || '', phone: profile.phone || '', availability: profile.availability || '',
     formal: !!profile.formal, custom_template: profile.custom_template || '',
@@ -112,7 +111,7 @@ function pfPayload() {
     return {
       household_type: p.household_type, persons: p.persons, children: p.children,
       move_in_type: p.move_in_type, move_in_date: p.move_in_date, lease_duration: p.lease_duration,
-      smoker: !!p.smoker, pets: p.pets, employment_text: p.employment_text, income_range: p.income_range,
+      smoker: !!p.smoker, pets: p.pets, income_range: p.income_range,
       documents: p.documents.filter(d => d.doc.trim()), about_text: p.about_text, phone: p.phone,
       availability: p.availability, share: p.share,
     };
@@ -267,9 +266,7 @@ function pfSectionBody(id) {
         <div data-show-if="pets!=keine">${pfInputHtml('pets_extra', 'Anderes Tier (optional)')}</div>`, 'pets')}
       ${pfFieldHtml('Rauchen', pfToggleHtml('nonsmoker', 'Nichtraucher'), 'smoking')}`;
     case 'income': return `
-      ${pf.target !== 'me'
-        ? pfFieldHtml('Berufliche Situation', `<textarea class="pf-input" rows="3" data-input="employment_text" placeholder="z.B. Wir sind beide unbefristet angestellt."></textarea>`, 'employment')
-        : `${pfFieldHtml('Beschäftigung', pfChipsHtml('employment', o.employment || []), 'employment')}
+      ${pf.target !== 'me' ? '' : `${pfFieldHtml('Beschäftigung', pfChipsHtml('employment', o.employment || []), 'employment')}
       <div data-show-if="employment=employed">${pfToggleHtml('employment_permanent', 'Unbefristetes Arbeitsverhältnis')}</div>`}
       ${pfFieldHtml('Netto-Haushaltseinkommen', pfChipsHtml('income_range', o.income_range || [], 'pf-chips-grid2'), 'income')}
       <p class="pf-hint">Das Einkommen steht nur in der Nachricht, wenn du „In Nachricht“ aktivierst. Sonst bleibt es privat in deinem Profil.</p>`;
@@ -438,9 +435,8 @@ function pfSummary(id) {
     case 'housing': return [optLabel('household_type', p.household_type), pf.target !== 'me' ? `${p.persons || pf.autoPersons} Person${(p.persons || pf.autoPersons) === 1 ? '' : 'en'}` : '', (() => {
         const t = p.move_in_type === 'date' ? (p.move_in_date && `Einzug ${p.move_in_date}`) : p.move_in_type ? `Einzug ${optLabel('move_in_type', p.move_in_type).toLowerCase()}` : '';
         return t; })(), p.smoker ? '' : 'Nichtraucher', pf.pets.none ? 'keine Haustiere' : p.pets].filter(Boolean).join(' · ') || 'Wohnform, Einzug, Haustiere …';
-    case 'income': return [pf.target !== 'me' ? p.employment_text.replace(/\s+/g, ' ').slice(0, 60)
-          : optLabel('employment', p.employment) && (optLabel('employment', p.employment) + (p.employment === 'employed' && p.employment_permanent ? ', unbefristet' : '')),
-        p.income_range ? (yes.income === true ? optLabel('income_range', p.income_range) : 'Einkommen nur auf Nachfrage') : ''].filter(Boolean).join(' · ') || (pf.target !== 'me' ? 'Berufliche Situation und Einkommen' : 'Beschäftigung und Einkommen');
+    case 'income': return [pf.target !== 'me' ? '' : optLabel('employment', p.employment) && (optLabel('employment', p.employment) + (p.employment === 'employed' && p.employment_permanent ? ', unbefristet' : '')),
+        p.income_range ? (yes.income === true ? optLabel('income_range', p.income_range) : 'Einkommen nur auf Nachfrage') : ''].filter(Boolean).join(' · ') || (pf.target !== 'me' ? 'Netto-Haushaltseinkommen' : 'Beschäftigung und Einkommen');
     case 'documents': { const n = p.documents.filter(d => d.doc.trim()), ok = n.filter(d => d.status === 'vorhanden').length;
         return n.length ? `${ok} von ${n.length} sofort verfügbar` : 'Noch keine Unterlagen'; }
     case 'about': return p.about_text ? p.about_text.replace(/\s+/g, ' ').slice(0, 70) + (p.about_text.length > 70 ? ' …' : '') : 'Kurzer Text über dich';
