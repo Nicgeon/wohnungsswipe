@@ -561,9 +561,20 @@ function cleanDocuments(docs) {
 }
 
 function getProfile(userId) {
-  return dbGet('SELECT * FROM applicant_profiles WHERE user_id=?', [userId])
-    || { user_id: userId, display_name:'', occupation:'', household_size:'', move_in_date:'',
+  const row = dbGet('SELECT * FROM applicant_profiles WHERE user_id=?', [userId]);
+  if (row) return row;
+  return { user_id: userId, _empty: true, display_name:'', occupation:'', household_size:'', move_in_date:'',
          move_in_type:'date', smoker:0, pets:'', documents_json:'[]', about_text:'', formal:1, custom_template:'' };
+}
+
+// A member counts as "having a profile" only if they actually filled in
+// something. Members without one must not contribute defaults to a group
+// message (e.g. the unsaved default smoker=0 would otherwise be rendered as
+// "wir sind alle Nichtraucher" for people who never said so).
+function isProfileFilled(p) {
+  if (!p || p._empty) return false;
+  return !!(p.display_name || p.occupation || p.household_size || p.move_in_date ||
+            p.pets || p.about_text || parseDocuments(p).length);
 }
 
 app.get('/api/profile', requireAuth, (req, res) => {
@@ -638,11 +649,21 @@ function germanList(items) {
   return items.slice(0, -1).join(', ') + ' und ' + items[items.length - 1];
 }
 
-// Build the {placeholder} substitution map from a listing + profile.
-function buildPlaceholders(listing, profile) {
-  const unterlagen = parseDocuments(profile)
+// Build the {placeholder} substitution map from a listing + profile(s).
+// For a group, person-related placeholders aggregate every filled member
+// profile ({name} -> "Anna, Ben und Chris"); for a solo request `profiles`
+// is just [profile], so behaviour is unchanged.
+function buildPlaceholders(listing, profile, profiles = [profile]) {
+  const uniq = arr => [...new Set(arr.filter(Boolean))];
+  const docs = new Map();
+  for (const pr of profiles) for (const d of parseDocuments(pr)) {
+    if (d.doc && !docs.has(d.doc.toLowerCase())) docs.set(d.doc.toLowerCase(), d);
+  }
+  const unterlagen = [...docs.values()]
     .map(d => `${d.doc} (${DOC_STATUS_LABEL[d.status]?.one || d.status})`)
     .join(', ');
+  const names = uniq(profiles.map(x => x.display_name));
+  const namen = germanList(names);
   return {
     titel:   listing.title || '',
     preis:   listing.price_cold || listing.price || '',
@@ -653,19 +674,30 @@ function buildPlaceholders(listing, profile) {
     größe:   listing.size || '',
     lage:    listing.location || '',
     ort:     listing.location || '',
-    name:    profile.display_name || '',
-    beruf:   profile.occupation || '',
-    einzug:  profile.move_in_date || '',
-    haushalt: profile.household_size || '',
+    name:    namen,
+    namen,
+    personen: String(Math.max(profiles.length, 1)),
+    beruf:   uniq(profiles.map(x => x.occupation)).join(', '),
+    einzug:  uniq(profiles.map(x => x.move_in_date)).join(' bzw. '),
+    haushalt: uniq(profiles.map(x => x.household_size)).join(', '),
     unterlagen,
   };
 }
 
+// Replaces {placeholders}. Known placeholders whose value is empty are
+// removed (instead of leaking a literal "{beruf}" into a message that gets
+// sent to a landlord); unknown ones (typos) stay visible and are reported
+// back in `unknown` so the UI can warn about them.
 function applyTemplate(tpl, placeholders) {
-  return tpl.replace(/\{(\w+)\}/g, (m, key) => {
+  const unknown = [];
+  const text = tpl.replace(/\{([\wäöüÄÖÜß]+)\}/g, (m, key) => {
     const k = key.toLowerCase();
-    return (placeholders[k] !== undefined && placeholders[k] !== '') ? placeholders[k] : m;
-  });
+    if (placeholders[k] === undefined) { if (!unknown.includes(m)) unknown.push(m); return m; }
+    return placeholders[k];
+  })
+    .replace(/[ \t]+([,.;:!?])/g, '$1')
+    .replace(/(\S)[ \t]{2,}/g, '$1 ');
+  return { text, unknown };
 }
 
 // Variant A1 — guided template built from structured profile fields.
@@ -692,10 +724,10 @@ function buildGuidedMessage(listing, profiles, formal) {
       if (x.occupation) bits.push(x.occupation);
       return bits.join(', ');
     }).filter(Boolean);
-    lines.push(`mit großem Interesse ${formal ? 'haben wir' : 'haben wir'} ${titleRef}${detailStr} gesehen und würden uns sehr über eine Besichtigung freuen.`);
+    lines.push(`mit großem Interesse haben wir ${titleRef}${detailStr} gesehen und würden uns sehr über eine Besichtigung freuen.`);
     lines.push('');
     if (whoList.length) {
-      lines.push(`Wir sind eine Wohngemeinschaft aus ${profiles.length} Personen: ${whoList.join('; ')}.`);
+      lines.push(`Wir bewerben uns gemeinsam als ${profiles.length} Personen: ${whoList.join('; ')}.`);
     }
   } else {
     const who = [];
@@ -728,7 +760,7 @@ function buildGuidedMessage(listing, profiles, formal) {
     facts.push(`${isGroup ? 'einziehen könnten wir' : 'einziehen könnte ich'} ${movePhrases.join(' bzw. ')}`);
   }
 
-  const allNonSmoker = profiles.every(x => !x.smoker);
+  const allNonSmoker = profiles.some(isProfileFilled) && profiles.every(x => !x.smoker);
   if (allNonSmoker) facts.push(isGroup ? 'wir sind alle Nichtraucher' : 'ich bin Nichtraucher');
 
   const pets = [...new Set(profiles.map(x => x.pets).filter(Boolean))];
@@ -783,9 +815,10 @@ function buildGuidedMessage(listing, profiles, formal) {
   }
 
   lines.push('');
+  const closeVerb = isGroup ? 'würden wir uns' : 'würde ich mich';
   lines.push(formal
-    ? 'Über eine Rückmeldung würde ich mich sehr freuen.'
-    : 'Über eine kurze Rückmeldung würde ich mich sehr freuen.');
+    ? `Über eine Rückmeldung ${closeVerb} sehr freuen.`
+    : `Über eine kurze Rückmeldung ${closeVerb} sehr freuen.`);
   lines.push('');
   lines.push(formal ? 'Mit freundlichen Grüßen' : 'Viele Grüße');
   const sigNames = profiles.map(x => x.display_name).filter(Boolean);
@@ -804,17 +837,25 @@ app.post('/api/message/generate', requireAuth, async (req, res) => {
   // individual profile is used — a user's solo profile may legitimately
   // differ from how they'd describe themselves as part of a group, so we
   // never merge/override, we just collect each member's own saved profile.
+  // Members who haven't filled in a profile are left out of the message and
+  // reported back in `missingProfiles` so the UI can warn about them.
+  const requester = getProfile(req.session.userId);
   let profiles;
+  let missingProfiles = [];
   if (groupId) {
     const isMember = dbGet('SELECT 1 FROM group_members WHERE group_id=? AND user_id=?', [groupId, req.session.userId]);
     if (!isMember) return res.status(403).json({ error: 'Kein Zugriff auf diese Gruppe' });
-    const memberIds = dbAll('SELECT user_id FROM group_members WHERE group_id=?', [groupId]).map(r => r.user_id);
-    profiles = memberIds.map(getProfile);
+    const members = dbAll(`SELECT u.id, u.username FROM group_members gm JOIN users u ON u.id=gm.user_id
+                           WHERE gm.group_id=? ORDER BY gm.joined_at`, [groupId]);
+    profiles = [];
+    for (const m of members) {
+      const pr = getProfile(m.id);
+      if (isProfileFilled(pr)) profiles.push(pr); else missingProfiles.push(m.username);
+    }
+    if (!profiles.length) profiles = [requester];
   } else {
-    profiles = [getProfile(req.session.userId)];
+    profiles = [requester];
   }
-
-  const requester = getProfile(req.session.userId);
   const formal = requester.formal ? 1 : 0;
 
   // ── Variant B: AI generation (only if server-side LLM creds exist) ──
@@ -877,7 +918,7 @@ Gib NUR den Nachrichtentext zurück, ohne Betreff, ohne Erklärungen.`;
                 || data.message?.content
                 || '';
       if (!text.trim()) return res.status(502).json({ error: 'KI lieferte keine Antwort' });
-      return res.json({ message: text.trim(), mode: 'ai' });
+      return res.json({ message: text.trim(), mode: 'ai', missingProfiles });
     } catch (e) {
       console.warn(`[Message] KI-Ausnahme: ${e.message}`);
       return res.status(502).json({ error: 'KI-Dienst-Fehler – nutze stattdessen die Vorlage' });
@@ -891,19 +932,26 @@ Gib NUR den Nachrichtentext zurück, ohne Betreff, ohne Erklärungen.`;
     const groupTpl = groupId ? getGroupTemplate(req.session.userId, groupId) : '';
     const tpl = (groupTpl && groupTpl.trim()) ? groupTpl : requester.custom_template;
     if (tpl && tpl.trim()) {
-      const placeholders = buildPlaceholders(listing, requester);
-      return res.json({ message: applyTemplate(tpl, placeholders), mode: 'template' });
+      const { text, unknown } = applyTemplate(tpl, buildPlaceholders(listing, requester, profiles));
+      return res.json({ message: text, mode: 'template', missingProfiles, unknownPlaceholders: unknown,
+                        templateSource: (groupTpl && groupTpl.trim()) ? 'group' : 'personal' });
     }
+    return res.json({ message: buildGuidedMessage(listing, profiles, formal), mode: 'guided', missingProfiles,
+                      info: 'Noch keine eigene Vorlage hinterlegt – es wird die geführte Nachricht angezeigt.' });
   }
 
   // ── Variant A1: guided template (default) ──
-  return res.json({ message: buildGuidedMessage(listing, profiles, formal), mode: 'guided' });
+  return res.json({ message: buildGuidedMessage(listing, profiles, formal), mode: 'guided', missingProfiles });
 });
 
 // Lets the frontend know whether the AI option should be shown at all,
 // without ever exposing the key itself.
 app.get('/api/message/capabilities', requireAuth, (req, res) => {
-  res.json({ ai: !!(process.env.LLM_API_URL && process.env.LLM_API_KEY) });
+  const gid = parseInt(req.query.groupId);
+  const hasGroupTemplate = !!gid
+    && !!dbGet('SELECT 1 FROM group_members WHERE group_id=? AND user_id=?', [gid, req.session.userId])
+    && !!getGroupTemplate(req.session.userId, gid).trim();
+  res.json({ ai: !!(process.env.LLM_API_URL && process.env.LLM_API_KEY), hasGroupTemplate });
 });
 
 // Live preview for the settings page: renders the guided OR custom-template
@@ -932,12 +980,14 @@ app.post('/api/message/preview', requireAuth, (req, res) => {
     custom_template: b.custom_template || '',
   };
   let message;
+  let unknown = [];
   if (b.mode === 'template' && profile.custom_template.trim()) {
-    message = applyTemplate(profile.custom_template, buildPlaceholders(sampleListing, profile));
+    const r = applyTemplate(profile.custom_template, buildPlaceholders(sampleListing, profile));
+    message = r.text; unknown = r.unknown;
   } else {
     message = buildGuidedMessage(sampleListing, [profile], profile.formal);
   }
-  res.json({ message });
+  res.json({ message, unknownPlaceholders: unknown });
 });
 
 // ── Web Push ───────────────────────────────────────────────

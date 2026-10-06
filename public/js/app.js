@@ -1442,12 +1442,15 @@ async function openGroupDetail(group) {
     <details class="settings-cat" style="margin-bottom:16px">
       <summary>✉️ Nachrichten-Vorlage für diese Gruppe</summary>
       <div class="settings-section">
-        <p class="notify-sub" style="margin-bottom:8px">Eigene Vorlage für Anfragen aus dieser Gruppe. Überschreibt deine persönliche Vorlage, wenn du aus dieser Gruppe heraus eine Nachricht vorbereitest. Leer lassen = persönliche Vorlage nutzen.</p>
+        <p class="notify-sub" style="margin-bottom:8px">Eigene Vorlage für Anfragen aus dieser Gruppe. Überschreibt deine persönliche Vorlage, wenn du aus dieser Gruppe heraus eine Nachricht vorbereitest. Leer lassen = persönliche Vorlage nutzen. <code>{name}</code>/<code>{namen}</code>, <code>{beruf}</code>, <code>{einzug}</code> und <code>{unterlagen}</code> fassen alle Mitglieder mit ausgefülltem Profil zusammen, <code>{personen}</code> ist ihre Anzahl.</p>
         <div class="placeholder-chips" id="group-tpl-chips"></div>
         <div class="field-group">
-          <textarea id="group-tpl-text" rows="4" placeholder="z.B. Hallo, wir als WG interessieren uns für {titel} ({zimmer} Zi., {groesse})…"></textarea>
+          <textarea id="group-tpl-text" rows="4" disabled placeholder="Wird geladen…"></textarea>
         </div>
-        <button class="btn-primary" id="group-tpl-save">Gruppen-Vorlage speichern</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn-primary" id="group-tpl-save" disabled style="flex:1">Gruppen-Vorlage speichern</button>
+          <button class="btn-secondary" id="group-tpl-reset" disabled>Zurücksetzen</button>
+        </div>
         <p class="form-success" id="group-tpl-ok"></p>
       </div>
     </details>
@@ -1477,16 +1480,33 @@ async function openGroupDetail(group) {
         ta.focus(); ta.selectionStart = ta.selectionEnd = s + token.length;
       });
     });
-    // Load existing group template
+    // Load existing group template. The editor stays disabled until the load
+    // finished, so a fast click on "save" can't overwrite the stored
+    // template with an empty textarea.
+    const saveBtn  = $id('group-tpl-save');
+    const resetBtn = $id('group-tpl-reset');
+    let loaded = false;
     try {
       const d = await api(`/api/groups/${group.id}/template`);
+      if (d.error) throw new Error(d.error);
       ta.value = d.template || '';
-    } catch (_) {}
-    $id('group-tpl-save').addEventListener('click', async () => {
+      loaded = true;
+    } catch (_) {
+      ta.placeholder = 'Vorlage konnte nicht geladen werden – bitte Gruppe neu öffnen.';
+    }
+    ta.disabled = !loaded; saveBtn.disabled = !loaded; resetBtn.disabled = !loaded;
+    if (loaded) ta.placeholder = 'z.B. Hallo, wir als WG interessieren uns für {titel} ({zimmer} Zi., {groesse})…';
+    const putTemplate = async (text, okMsg) => {
       clr('group-tpl-ok');
-      const r = await api(`/api/groups/${group.id}/template`, { method: 'PUT', body: { template: ta.value } });
-      if (r.success) { setOk('group-tpl-ok', '✓ Gespeichert'); toast('✅ Gruppen-Vorlage gespeichert'); }
+      const r = await api(`/api/groups/${group.id}/template`, { method: 'PUT', body: { template: text } });
+      if (r.success) { setOk('group-tpl-ok', '✓ ' + okMsg); toast('✅ ' + okMsg); }
       else toast('❌ ' + (r.error || 'Fehler'));
+    };
+    saveBtn.addEventListener('click', () => putTemplate(ta.value, 'Gruppen-Vorlage gespeichert'));
+    resetBtn.addEventListener('click', async () => {
+      if (!ta.value.trim() || !confirm('Gruppen-Vorlage löschen und wieder die persönliche Vorlage verwenden?')) return;
+      await putTemplate('', 'Gruppen-Vorlage zurückgesetzt');
+      ta.value = '';
     });
   })();
 
@@ -2273,7 +2293,7 @@ async function openSharedListingFromUrl() {
 // ══════════════════════════════════════════════════════════
 //  APPLICANT PROFILE
 // ══════════════════════════════════════════════════════════
-const PLACEHOLDER_LIST = ['titel','preis','kalt','warm','zimmer','groesse','lage','name','beruf','einzug','haushalt','unterlagen'];
+const PLACEHOLDER_LIST = ['titel','preis','kalt','warm','zimmer','groesse','lage','name','namen','personen','beruf','einzug','haushalt','unterlagen'];
 
 const DOC_STATUS_OPTIONS = [
   { value: 'vorhanden',   label: 'vorhanden' },
@@ -2381,7 +2401,8 @@ function refreshProfilePreview() {
     body.mode = body.custom_template.trim() ? 'template' : 'guided';
     try {
       const d = await api('/api/message/preview', { method: 'POST', body });
-      $id('prof-preview').textContent = d.message || '—';
+      $id('prof-preview').textContent = (d.message || '—') +
+        (d.unknownPlaceholders?.length ? `\n\n⚠️ Unbekannte Platzhalter: ${d.unknownPlaceholders.join(' ')}` : '');
     } catch (e) { /* preview is best-effort */ }
   }, 350);
 }
@@ -2435,22 +2456,26 @@ const messageModal = {
     this.listing = listing;
     this.groupId = opts.groupId || null;
     $id('message-context').textContent = this.groupId
-      ? `Anfrage für die Gruppe – Profile aller Mitglieder werden zusammengeführt.`
+      ? `Anfrage für die Gruppe – Profile aller Mitglieder mit ausgefülltem Profil werden zusammengeführt.`
       : `Anfrage für: ${listing.title || 'Inserat'}`;
     $id('message-open-link').href = listing.url || '#';
-    clr('message-error');
+    clr('message-error', 'message-warn');
 
-    // Show AI tab only if the server has it configured
+    // Show AI tab only if the server has it configured; start on the
+    // custom-template tab when the user has a template for this group, so it
+    // is actually used instead of hidden behind a click.
+    let hasGroupTemplate = false;
     try {
-      const cap = await api('/api/message/capabilities');
+      const cap = await api('/api/message/capabilities' + (this.groupId ? `?groupId=${this.groupId}` : ''));
       this.aiAvailable = !!cap.ai;
+      hasGroupTemplate = !!cap.hasGroupTemplate;
     } catch (_) { this.aiAvailable = false; }
     $id('msg-mode-ai').style.display = this.aiAvailable ? '' : 'none';
 
-    // Reset to guided mode
-    document.querySelectorAll('.msg-mode-tab').forEach(t => t.classList.toggle('active', t.dataset.msgmode === 'guided'));
+    const startMode = hasGroupTemplate ? 'template' : 'guided';
+    document.querySelectorAll('.msg-mode-tab').forEach(t => t.classList.toggle('active', t.dataset.msgmode === startMode));
     $id('message-modal').style.display = 'flex';
-    await this.generate('guided');
+    await this.generate(startMode);
   },
 
   close() { $id('message-modal').style.display = 'none'; this.listing = null; },
@@ -2461,7 +2486,7 @@ const messageModal = {
 
   async generate(mode) {
     if (!this.listing) return;
-    clr('message-error');
+    clr('message-error', 'message-warn');
     const ta = $id('message-text');
     ta.value = '⏳ Wird erstellt…';
     const r = await api('/api/message/generate', { method: 'POST', body: {
@@ -2478,6 +2503,15 @@ const messageModal = {
       return;
     }
     ta.value = r.message || '';
+
+    // Non-blocking hints: members left out, typo'd placeholders, fallback.
+    const warns = [];
+    if (r.missingProfiles?.length)
+      warns.push(`Kein Bewerber-Profil von: ${r.missingProfiles.join(', ')} – diese Mitglieder fehlen in der Nachricht.`);
+    if (r.unknownPlaceholders?.length)
+      warns.push(`Unbekannte Platzhalter in der Vorlage: ${r.unknownPlaceholders.join(' ')}`);
+    if (r.info) warns.push(r.info);
+    setErr('message-warn', warns.join(' '));
   },
 };
 
