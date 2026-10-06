@@ -989,3 +989,22 @@ a { color:var(--accent); text-decoration:none; }
   .doc-row select { grid-area:status; }
   .doc-remove { grid-area:remove; }
 }
+
+/* ── Message modal: member selection & group template preview ── */
+.msg-members { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:12px; align-items:center; }
+.msg-members-label { font-size:var(--fs-tiny); color:var(--text2); margin-right:2px; }
+.msg-member {
+  display:inline-flex; align-items:center; gap:5px; background:var(--bg3);
+  border:1px solid var(--border); border-radius:999px; padding:4px 10px;
+  font-size:var(--fs-small); color:var(--text2); cursor:pointer; user-select:none;
+}
+.msg-member input { accent-color:var(--accent); margin:0; }
+.msg-member.on { border-color:var(--accent); color:var(--accent); background:rgba(232,201,122,.1); }
+.msg-member.off { opacity:.5; cursor:not-allowed; }
+.group-tpl-preview { margin-top:10px; }
+
+#message-text {
+  width:100%; background:var(--bg3); color:var(--text); border:1px solid var(--border);
+  border-radius:11px; padding:10px 12px; font-family:inherit; resize:vertical; outline:none;
+}
+#message-text:focus { border-color:var(--accent); box-shadow:0 0 0 3px rgba(232,201,122,.12); }

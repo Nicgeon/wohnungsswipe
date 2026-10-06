@@ -1447,6 +1447,8 @@ async function openGroupDetail(group) {
         <div class="field-group">
           <textarea id="group-tpl-text" rows="4" disabled placeholder="Wird geladen…"></textarea>
         </div>
+        <div class="section-label" style="margin:10px 0 6px;font-size:var(--fs-tiny)">Vorschau (Beispiel-Inserat, echte Mitglieder-Profile)</div>
+        <div class="msg-preview group-tpl-preview" id="group-tpl-preview" style="margin:0 0 10px">—</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn-primary" id="group-tpl-save" disabled style="flex:1">Gruppen-Vorlage speichern</button>
           <button class="btn-secondary" id="group-tpl-reset" disabled>Zurücksetzen</button>
@@ -1496,6 +1498,26 @@ async function openGroupDetail(group) {
     }
     ta.disabled = !loaded; saveBtn.disabled = !loaded; resetBtn.disabled = !loaded;
     if (loaded) ta.placeholder = 'z.B. Hallo, wir als WG interessieren uns für {titel} ({zimmer} Zi., {groesse})…';
+    // Live preview against the group's real member profiles (debounced).
+    let tplTimer = null;
+    const refreshTplPreview = () => {
+      clearTimeout(tplTimer);
+      tplTimer = setTimeout(async () => {
+        const box = $id('group-tpl-preview');
+        if (!box) return;
+        try {
+          const d = await api(`/api/groups/${group.id}/template/preview`, { method: 'POST', body: { template: ta.value } });
+          if (d.error) { box.textContent = d.error; return; }
+          const notes = [];
+          if (d.guided) notes.push('Keine Gruppen-Vorlage – es gilt deine persönliche Vorlage bzw. die geführte Nachricht (hier: geführt).');
+          if (d.missingProfiles?.length) notes.push(`Kein Profil von: ${d.missingProfiles.join(', ')}`);
+          if (d.unknownPlaceholders?.length) notes.push(`Unbekannte Platzhalter: ${d.unknownPlaceholders.join(' ')}`);
+          box.textContent = (d.message || '—') + (notes.length ? '\n\n⚠️ ' + notes.join('\n⚠️ ') : '');
+        } catch (_) { /* preview is best-effort */ }
+      }, 350);
+    };
+    ta.addEventListener('input', refreshTplPreview);
+    refreshTplPreview();
     const putTemplate = async (text, okMsg) => {
       clr('group-tpl-ok');
       const r = await api(`/api/groups/${group.id}/template`, { method: 'PUT', body: { template: text } });
@@ -1507,6 +1529,7 @@ async function openGroupDetail(group) {
       if (!ta.value.trim() || !confirm('Gruppen-Vorlage löschen und wieder die persönliche Vorlage verwenden?')) return;
       await putTemplate('', 'Gruppen-Vorlage zurückgesetzt');
       ta.value = '';
+      refreshTplPreview();
     });
   })();
 
@@ -2348,6 +2371,15 @@ $id('prof-doc-add')?.addEventListener('click', () => {
   wrap.querySelector('[data-doc-row]:last-child .doc-name')?.focus();
 });
 
+// Unsaved-changes tracking for the profile form: messages are generated from
+// the SAVED profile, so a visible hint avoids "why isn't my edit in there?".
+let profileDirty = false;
+function setProfileDirty(v) {
+  profileDirty = v;
+  const el = $id('profile-dirty');
+  if (el) el.style.display = v ? '' : 'none';
+}
+
 async function loadApplicantProfile() {
   const d = await api('/api/profile');
   const p = d.profile || {};
@@ -2367,6 +2399,7 @@ async function loadApplicantProfile() {
   renderPlaceholderChips();
   updateMoveInDateVisibility();
   refreshProfilePreview();
+  setProfileDirty(false);
 }
 
 // Show the date field only when "festes Datum" is selected.
@@ -2428,8 +2461,21 @@ function renderPlaceholderChips() {
 $id('save-profile-btn')?.addEventListener('click', async () => {
   clr('profile-ok');
   const d = await api('/api/profile', { method: 'PUT', body: readProfileForm() });
-  if (d.success) { setOk('profile-ok', '✓ Profil gespeichert'); toast('✅ Bewerber-Profil gespeichert'); }
+  if (d.success) { setProfileDirty(false); setOk('profile-ok', '✓ Profil gespeichert'); toast('✅ Bewerber-Profil gespeichert'); }
 });
+
+// Any edit inside the profile section (incl. document rows and placeholder
+// chips) marks the form dirty; delegated so dynamically added rows count.
+(() => {
+  const root = $id('prof-name')?.closest('.settings-section');
+  if (!root) return;
+  const mark = () => setProfileDirty(true);
+  root.addEventListener('input', mark);
+  root.addEventListener('change', mark);
+  root.addEventListener('click', e => {
+    if (e.target.closest('.doc-remove, #prof-doc-add, .ph-chip')) mark();
+  });
+})();
 
 // Live preview + move-in-date visibility react to every profile edit.
 ['prof-name','prof-occupation','prof-household','prof-movein','prof-pets',
@@ -2451,6 +2497,9 @@ const messageModal = {
   listing: null,
   groupId: null,
   aiAvailable: false,
+  members: [],          // group members with {id, username, hasProfile}
+  selected: new Set(),  // member ids included in the generated message
+  edited: false,        // user typed in the textarea since the last generate
 
   async open(listing, opts = {}) {
     this.listing = listing;
@@ -2460,6 +2509,7 @@ const messageModal = {
       : `Anfrage für: ${listing.title || 'Inserat'}`;
     $id('message-open-link').href = listing.url || '#';
     clr('message-error', 'message-warn');
+    this.edited = false;
 
     // Show AI tab only if the server has it configured; start on the
     // custom-template tab when the user has a template for this group, so it
@@ -2469,7 +2519,11 @@ const messageModal = {
       const cap = await api('/api/message/capabilities' + (this.groupId ? `?groupId=${this.groupId}` : ''));
       this.aiAvailable = !!cap.ai;
       hasGroupTemplate = !!cap.hasGroupTemplate;
-    } catch (_) { this.aiAvailable = false; }
+      this.members = cap.members || [];
+      this.selected = new Set(this.members.filter(m => m.hasProfile).map(m => m.id));
+      $id('message-goto-profile').style.display = cap.ownProfileEmpty ? '' : 'none';
+    } catch (_) { this.aiAvailable = false; this.members = []; this.selected = new Set(); }
+    this.renderMembers();
     $id('msg-mode-ai').style.display = this.aiAvailable ? '' : 'none';
 
     const startMode = hasGroupTemplate ? 'template' : 'guided';
@@ -2480,18 +2534,52 @@ const messageModal = {
 
   close() { $id('message-modal').style.display = 'none'; this.listing = null; },
 
+  // Chips to pick which group members the message speaks for (e.g. only two
+  // of four are actually moving in). Members without a profile are shown
+  // greyed out since there is nothing to include.
+  renderMembers() {
+    const wrap = $id('message-members');
+    if (!this.groupId || this.members.length < 2) { wrap.style.display = 'none'; wrap.innerHTML = ''; return; }
+    wrap.style.display = '';
+    wrap.innerHTML = '<span class="msg-members-label">Nachricht für:</span>' + this.members.map(m => {
+      const on = this.selected.has(m.id);
+      return `<label class="msg-member ${m.hasProfile ? (on ? 'on' : '') : 'off'}" title="${m.hasProfile ? '' : 'Kein Bewerber-Profil'}">
+        <input type="checkbox" data-member="${m.id}" ${on ? 'checked' : ''} ${m.hasProfile ? '' : 'disabled'}>
+        ${esc(m.username)}${m.hasProfile ? '' : ' (kein Profil)'}
+      </label>`;
+    }).join('');
+    wrap.querySelectorAll('input[data-member]').forEach(cb => cb.addEventListener('change', async () => {
+      const id = parseInt(cb.dataset.member);
+      const had = this.selected.has(id);
+      if (cb.checked) this.selected.add(id); else this.selected.delete(id);
+      if (!this.selected.size) { this.selected.add(id); cb.checked = true; toast('Mindestens eine Person muss ausgewählt sein'); return; }
+      const ok = await this.generate(this.currentMode());
+      if (ok === false) {  // user declined to discard edits → undo toggle
+        if (had) this.selected.add(id); else this.selected.delete(id);
+        cb.checked = had;
+      }
+      this.renderMembers();
+    }));
+  },
+
   currentMode() {
     return document.querySelector('.msg-mode-tab.active')?.dataset.msgmode || 'guided';
   },
 
-  async generate(mode) {
-    if (!this.listing) return;
-    clr('message-error', 'message-warn');
+  // Returns false if the user cancelled (to keep manual edits), else true.
+  async generate(mode, { force = false } = {}) {
+    if (!this.listing) return true;
     const ta = $id('message-text');
+    if (this.edited && !force && ta.value.trim() &&
+        !confirm('Du hast den Text bearbeitet. Neu generieren überschreibt deine Änderungen – fortfahren?')) {
+      return false;
+    }
+    clr('message-error', 'message-warn');
     ta.value = '⏳ Wird erstellt…';
-    const r = await api('/api/message/generate', { method: 'POST', body: {
-      listingId: this.listing.id, groupId: this.groupId, mode,
-    }});
+    this.edited = false;
+    const body = { listingId: this.listing.id, groupId: this.groupId, mode };
+    if (this.groupId && this.selected.size) body.memberIds = [...this.selected];
+    const r = await api('/api/message/generate', { method: 'POST', body });
     if (r.error) {
       ta.value = '';
       setErr('message-error', r.error);
@@ -2500,7 +2588,7 @@ const messageModal = {
         const fb = await api('/api/message/generate', { method: 'POST', body: { listingId: this.listing.id, groupId: this.groupId, mode: 'guided' } });
         if (fb.message) ta.value = fb.message;
       }
-      return;
+      return true;
     }
     ta.value = r.message || '';
 
@@ -2511,18 +2599,31 @@ const messageModal = {
     if (r.unknownPlaceholders?.length)
       warns.push(`Unbekannte Platzhalter in der Vorlage: ${r.unknownPlaceholders.join(' ')}`);
     if (r.info) warns.push(r.info);
+    if (profileDirty) warns.push('Dein Bewerber-Profil hat ungespeicherte Änderungen – die Nachricht nutzt den gespeicherten Stand.');
     setErr('message-warn', warns.join(' '));
+    return true;
   },
 };
 
 document.querySelectorAll('.msg-mode-tab').forEach(tab => {
-  tab.addEventListener('click', () => {
+  tab.addEventListener('click', async () => {
+    const prev = document.querySelector('.msg-mode-tab.active');
+    if (prev === tab) return;
+    // Ask first: switching tabs regenerates the text and would drop edits.
+    const ok = await messageModal.generate(tab.dataset.msgmode);
+    if (ok === false) return;
     document.querySelectorAll('.msg-mode-tab').forEach(t => t.classList.remove('active'));
     tab.classList.add('active');
-    messageModal.generate(tab.dataset.msgmode);
   });
 });
+$id('message-text').addEventListener('input', () => { messageModal.edited = true; });
 $id('message-regen').addEventListener('click', () => messageModal.generate(messageModal.currentMode()));
+$id('message-goto-profile').addEventListener('click', () => {
+  messageModal.close();
+  detailView.close?.();
+  showView('settings', true);
+  setTimeout(() => { const f = $id('prof-name'); f?.scrollIntoView({ behavior: 'smooth', block: 'center' }); f?.focus(); }, 150);
+});
 $id('message-close').addEventListener('click', () => messageModal.close());
 $id('message-modal').addEventListener('click', e => { if (e.target.id === 'message-modal') messageModal.close(); });
 $id('message-copy').addEventListener('click', async () => {

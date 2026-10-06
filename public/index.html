@@ -436,6 +436,7 @@
 
         <button class="btn-primary" id="save-profile-btn">Profil speichern</button>
         <p class="form-success" id="profile-ok"></p>
+        <p class="notify-sub" id="profile-dirty" style="display:none;color:var(--accent)">● Ungespeicherte Änderungen – Nachrichten nutzen den zuletzt gespeicherten Stand.</p>
 
         <div class="section-label" style="margin-top:16px;font-size:var(--fs-tiny)">Vorschau (Beispiel-Inserat)</div>
         <div class="msg-preview" id="prof-preview">—</div>
@@ -725,10 +726,12 @@
       <button class="msg-mode-tab" data-msgmode="template">Eigene Vorlage</button>
       <button class="msg-mode-tab" data-msgmode="ai" id="msg-mode-ai" style="display:none">✨ KI</button>
     </div>
+    <div class="msg-members" id="message-members" style="display:none"></div>
     <div class="field-group">
       <textarea id="message-text" rows="12" style="font-size:.9rem;line-height:1.5"></textarea>
     </div>
     <p class="notify-sub" id="message-warn" style="color:var(--accent);margin:0 0 6px"></p>
+    <button type="button" class="btn-ghost" id="message-goto-profile" style="display:none;margin-bottom:8px">👤 Bewerber-Profil ausfüllen →</button>
     <p class="form-error" id="message-error"></p>
     <div class="modal-actions" style="flex-wrap:wrap;gap:8px">
       <button class="btn-secondary" id="message-regen">🔄 Neu generieren</button>

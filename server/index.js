@@ -540,6 +540,10 @@ app.put('/api/user/notifications', requireAuth, (req, res) => {
 
 // Status a given document can be in, as shown in the applicant profile's
 // document list and rendered into the guided message.
+// Words that only exist in the plural ("Gehaltsnachweise ist beantragt" would
+// be wrong) — the status verb has to follow the document, not just the count.
+const PLURAL_DOC_RE = /(nachweise|unterlagen|papiere|kopien|bescheinigungen|auskünfte|verträge|belege|dokumente|zeugnisse|kontoauszüge|abrechnungen)$/i;
+const isPluralDoc = name => PLURAL_DOC_RE.test((name || '').trim());
 const DOC_STATUS_LABEL = {
   vorhanden:   { one: 'liegt vor',   many: 'liegen vor' },
   beantragt:   { one: 'ist beantragt', many: 'sind beantragt' },
@@ -559,6 +563,13 @@ function cleanDocuments(docs) {
     .filter(d => d.doc)
     .slice(0, 20);
 }
+
+const SAMPLE_LISTING = {
+  id: 0,
+  title: 'Helle 2-Zimmer-Wohnung mit Balkon',
+  price: '850 €', price_cold: '700 €',
+  size: '58 m²', rooms: '2', location: 'Bremen Neustadt',
+};
 
 function getProfile(userId) {
   const row = dbGet('SELECT * FROM applicant_profiles WHERE user_id=?', [userId]);
@@ -639,6 +650,17 @@ app.put('/api/groups/:id/template', requireAuth, (req, res) => {
   res.json({ success: true });
 });
 
+// Move-in wording from the structured type/date. `withZum` adds the "zum"
+// before a concrete date (guided sentence); the {einzug} placeholder wants
+// the bare value so templates can write "ab {einzug}".
+function movePhraseOf(p, withZum) {
+  const type = p.move_in_type || (p.move_in_date ? 'date' : '');
+  if (type === 'asap')     return 'schnellstmöglich';
+  if (type === 'flexible') return 'flexibel';
+  if (type === 'date' && p.move_in_date) return withZum ? `zum ${p.move_in_date}` : p.move_in_date;
+  return '';
+}
+
 function parseDocuments(profile) {
   try { return JSON.parse(profile?.documents_json || '[]'); } catch (_) { return []; }
 }
@@ -648,6 +670,44 @@ function germanList(items) {
   if (items.length <= 1) return items[0] || '';
   return items.slice(0, -1).join(', ') + ' und ' + items[items.length - 1];
 }
+
+// Collects the profiles to use for a group message. `onlyIds` (optional)
+// restricts it to a chosen subset of members; members without a filled
+// profile are skipped and reported in `missing` (usernames).
+function collectGroupProfiles(groupId, onlyIds = null) {
+  let members = dbAll(`SELECT u.id, u.username FROM group_members gm JOIN users u ON u.id=gm.user_id
+                       WHERE gm.group_id=? ORDER BY gm.joined_at`, [groupId]);
+  if (Array.isArray(onlyIds) && onlyIds.length) {
+    const set = new Set(onlyIds.map(Number));
+    members = members.filter(m => set.has(m.id));
+  }
+  const profiles = [], missing = [];
+  for (const m of members) {
+    const pr = getProfile(m.id);
+    if (isProfileFilled(pr)) profiles.push(pr); else missing.push(m.username);
+  }
+  return { profiles, missing };
+}
+
+// Live preview for the group template editor: renders the (unsaved) template
+// text against a sample listing using the real profiles of the group's
+// members, so the aggregated placeholders can be checked before saving.
+app.post('/api/groups/:id/template/preview', requireAuth, (req, res) => {
+  const gid = req.params.id;
+  if (!dbGet('SELECT 1 FROM group_members WHERE group_id=? AND user_id=?', [gid, req.session.userId]))
+    return res.status(403).json({ error: 'Kein Zugriff' });
+  const tpl = (typeof req.body?.template === 'string' ? req.body.template : '').substring(0, 4000);
+  const sample = SAMPLE_LISTING;
+  const requester = getProfile(req.session.userId);
+  let { profiles, missing } = collectGroupProfiles(gid);
+  if (!profiles.length) profiles = [requester];
+  if (!tpl.trim()) {
+    return res.json({ message: buildGuidedMessage(sample, profiles, requester.formal ? 1 : 0),
+                      missingProfiles: missing, unknownPlaceholders: [], guided: true });
+  }
+  const { text, unknown } = applyTemplate(tpl, buildPlaceholders(sample, requester, profiles));
+  res.json({ message: text, missingProfiles: missing, unknownPlaceholders: unknown });
+});
 
 // Build the {placeholder} substitution map from a listing + profile(s).
 // For a group, person-related placeholders aggregate every filled member
@@ -660,7 +720,7 @@ function buildPlaceholders(listing, profile, profiles = [profile]) {
     if (d.doc && !docs.has(d.doc.toLowerCase())) docs.set(d.doc.toLowerCase(), d);
   }
   const unterlagen = [...docs.values()]
-    .map(d => `${d.doc} (${DOC_STATUS_LABEL[d.status]?.one || d.status})`)
+    .map(d => `${d.doc} (${DOC_STATUS_LABEL[d.status]?.[isPluralDoc(d.doc) ? 'many' : 'one'] || d.status})`)
     .join(', ');
   const names = uniq(profiles.map(x => x.display_name));
   const namen = germanList(names);
@@ -678,7 +738,7 @@ function buildPlaceholders(listing, profile, profiles = [profile]) {
     namen,
     personen: String(Math.max(profiles.length, 1)),
     beruf:   uniq(profiles.map(x => x.occupation)).join(', '),
-    einzug:  uniq(profiles.map(x => x.move_in_date)).join(' bzw. '),
+    einzug:  uniq(profiles.map(x => movePhraseOf(x, false))).join(' bzw. '),
     haushalt: uniq(profiles.map(x => x.household_size)).join(', '),
     unterlagen,
   };
@@ -746,13 +806,7 @@ function buildGuidedMessage(listing, profiles, formal) {
   // "asap" → "schnellstmöglich möglich"; "flexible" → "flexibel möglich";
   // "date" → "zum <datum> möglich". Mixed types across a group collapse to
   // the most flexible wording.
-  const movePhrase = (p) => {
-    const type = p.move_in_type || (p.move_in_date ? 'date' : '');
-    if (type === 'asap')     return 'schnellstmöglich';
-    if (type === 'flexible') return 'flexibel';
-    if (type === 'date' && p.move_in_date) return `zum ${p.move_in_date}`;
-    return '';
-  };
+  const movePhrase = (p) => movePhraseOf(p, true);
   const movePhrases = [...new Set(profiles.map(movePhrase).filter(Boolean))];
   if (movePhrases.length === 1) {
     facts.push(`${isGroup ? 'einziehen könnten wir' : 'einziehen könnte ich'} ${movePhrases[0]}`);
@@ -798,7 +852,7 @@ function buildGuidedMessage(listing, profiles, formal) {
     for (const status of Object.keys(DOC_STATUS_LABEL)) {
       const names = byStatus[status];
       if (!names?.length) continue;
-      const label = DOC_STATUS_LABEL[status][names.length > 1 ? 'many' : 'one'];
+      const label = DOC_STATUS_LABEL[status][(names.length > 1 || names.some(isPluralDoc)) ? 'many' : 'one'];
       statusSentences.push(`${germanList(names)} ${label}`);
     }
     if (statusSentences.length) {
@@ -845,13 +899,9 @@ app.post('/api/message/generate', requireAuth, async (req, res) => {
   if (groupId) {
     const isMember = dbGet('SELECT 1 FROM group_members WHERE group_id=? AND user_id=?', [groupId, req.session.userId]);
     if (!isMember) return res.status(403).json({ error: 'Kein Zugriff auf diese Gruppe' });
-    const members = dbAll(`SELECT u.id, u.username FROM group_members gm JOIN users u ON u.id=gm.user_id
-                           WHERE gm.group_id=? ORDER BY gm.joined_at`, [groupId]);
-    profiles = [];
-    for (const m of members) {
-      const pr = getProfile(m.id);
-      if (isProfileFilled(pr)) profiles.push(pr); else missingProfiles.push(m.username);
-    }
+    const col = collectGroupProfiles(groupId, req.body.memberIds);
+    profiles = col.profiles;
+    missingProfiles = col.missing;
     if (!profiles.length) profiles = [requester];
   } else {
     profiles = [requester];
@@ -873,7 +923,7 @@ app.post('/api/message/generate', requireAuth, async (req, res) => {
         parts.push(p.smoker ? 'Raucher' : 'Nichtraucher');
         if (p.pets) parts.push(`Haustiere: ${p.pets}`);
         const docs = parseDocuments(p);
-        if (docs.length) parts.push(`Unterlagen: ${docs.map(d => `${d.doc} (${DOC_STATUS_LABEL[d.status]?.one || d.status})`).join(', ')}`);
+        if (docs.length) parts.push(`Unterlagen: ${docs.map(d => `${d.doc} (${DOC_STATUS_LABEL[d.status]?.[isPluralDoc(d.doc) ? 'many' : 'one'] || d.status})`).join(', ')}`);
         if (p.about_text) parts.push(`Über: ${p.about_text}`);
         return `Person ${i + 1}: ${parts.join(', ')}`;
       }).join('\n');
@@ -951,7 +1001,18 @@ app.get('/api/message/capabilities', requireAuth, (req, res) => {
   const hasGroupTemplate = !!gid
     && !!dbGet('SELECT 1 FROM group_members WHERE group_id=? AND user_id=?', [gid, req.session.userId])
     && !!getGroupTemplate(req.session.userId, gid).trim();
-  res.json({ ai: !!(process.env.LLM_API_URL && process.env.LLM_API_KEY), hasGroupTemplate });
+  let members = null;
+  if (gid && dbGet('SELECT 1 FROM group_members WHERE group_id=? AND user_id=?', [gid, req.session.userId])) {
+    members = dbAll(`SELECT u.id, u.username FROM group_members gm JOIN users u ON u.id=gm.user_id
+                     WHERE gm.group_id=? ORDER BY gm.joined_at`, [gid])
+      .map(m => ({ id: m.id, username: m.username, hasProfile: isProfileFilled(getProfile(m.id)) }));
+  }
+  res.json({
+    ai: !!(process.env.LLM_API_URL && process.env.LLM_API_KEY),
+    hasGroupTemplate,
+    members,
+    ownProfileEmpty: !isProfileFilled(getProfile(req.session.userId)),
+  });
 });
 
 // Live preview for the settings page: renders the guided OR custom-template
@@ -960,12 +1021,7 @@ app.get('/api/message/capabilities', requireAuth, (req, res) => {
 // without having to save first and open a real listing).
 app.post('/api/message/preview', requireAuth, (req, res) => {
   const b = req.body || {};
-  const sampleListing = {
-    id: 0,
-    title: 'Helle 2-Zimmer-Wohnung mit Balkon',
-    price: '850 €', price_cold: '700 €',
-    size: '58 m²', rooms: '2', location: 'Bremen Neustadt',
-  };
+  const sampleListing = SAMPLE_LISTING;
   const profile = {
     display_name: b.display_name || 'Max Mustermann',
     occupation: b.occupation || '',
