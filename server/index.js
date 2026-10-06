@@ -235,7 +235,6 @@ async function initDb() {
   migrate("ALTER TABLE listings    ADD COLUMN latitude        REAL");
   migrate("ALTER TABLE listings    ADD COLUMN longitude       REAL");
   migrate("ALTER TABLE applicant_profiles ADD COLUMN move_in_type TEXT DEFAULT 'date'");
-  migrate("ALTER TABLE applicant_profiles ADD COLUMN documents_json TEXT DEFAULT '[]'");
   migrate("ALTER TABLE search_jobs ADD COLUMN visibility_id INTEGER");
   migrate("ALTER TABLE users       ADD COLUMN notify_matrix   TEXT");
 
@@ -538,32 +537,10 @@ app.put('/api/user/notifications', requireAuth, (req, res) => {
 //  APPLICANT PROFILE & MESSAGE GENERATION
 // ══════════════════════════════════════════════════════════
 
-// Status a given document can be in, as shown in the applicant profile's
-// document list and rendered into the guided message.
-const DOC_STATUS_LABEL = {
-  vorhanden:   { one: 'liegt vor',   many: 'liegen vor' },
-  beantragt:   { one: 'ist beantragt', many: 'sind beantragt' },
-  auf_anfrage: { one: 'kann auf Wunsch gerne bereitgestellt werden', many: 'können auf Wunsch gerne bereitgestellt werden' },
-};
-
-// Validates/cleans the {doc, status} list posted from the profile form —
-// drops empty rows, caps name length, and falls back to 'vorhanden' for
-// any unrecognized status so a tampered/old client can't store garbage.
-function cleanDocuments(docs) {
-  if (!Array.isArray(docs)) return [];
-  return docs
-    .map(d => ({
-      doc:    (typeof d?.doc === 'string' ? d.doc : '').trim().substring(0, 80),
-      status: Object.keys(DOC_STATUS_LABEL).includes(d?.status) ? d.status : 'vorhanden',
-    }))
-    .filter(d => d.doc)
-    .slice(0, 20);
-}
-
 function getProfile(userId) {
   return dbGet('SELECT * FROM applicant_profiles WHERE user_id=?', [userId])
     || { user_id: userId, display_name:'', occupation:'', household_size:'', move_in_date:'',
-         move_in_type:'date', smoker:0, pets:'', documents_json:'[]', about_text:'', formal:1, custom_template:'' };
+         move_in_type:'date', smoker:0, pets:'', income_note:'', about_text:'', formal:1, custom_template:'' };
 }
 
 app.get('/api/profile', requireAuth, (req, res) => {
@@ -575,20 +552,19 @@ app.put('/api/profile', requireAuth, (req, res) => {
   const clean = (v, max = 500) => (typeof v === 'string' ? v : '').trim().substring(0, max);
   const existing = dbGet('SELECT user_id FROM applicant_profiles WHERE user_id=?', [req.session.userId]);
   const moveType = ['asap','flexible','date'].includes(b.move_in_type) ? b.move_in_type : 'date';
-  const documentsJson = JSON.stringify(cleanDocuments(b.documents));
   const vals = [
     clean(b.display_name, 120), clean(b.occupation, 120), clean(b.household_size, 60),
     clean(b.move_in_date, 60), moveType, b.smoker ? 1 : 0, clean(b.pets, 120),
-    documentsJson, clean(b.about_text, 1000), b.formal ? 1 : 0,
+    clean(b.income_note, 200), clean(b.about_text, 1000), b.formal ? 1 : 0,
     clean(b.custom_template, 4000),
   ];
   if (existing) {
     dbRun(`UPDATE applicant_profiles SET display_name=?,occupation=?,household_size=?,move_in_date=?,
-      move_in_type=?,smoker=?,pets=?,documents_json=?,about_text=?,formal=?,custom_template=?,updated_at=CURRENT_TIMESTAMP
+      move_in_type=?,smoker=?,pets=?,income_note=?,about_text=?,formal=?,custom_template=?,updated_at=CURRENT_TIMESTAMP
       WHERE user_id=?`, [...vals, req.session.userId]);
   } else {
     dbRun(`INSERT INTO applicant_profiles
-      (display_name,occupation,household_size,move_in_date,move_in_type,smoker,pets,documents_json,about_text,formal,custom_template,user_id)
+      (display_name,occupation,household_size,move_in_date,move_in_type,smoker,pets,income_note,about_text,formal,custom_template,user_id)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, [...vals, req.session.userId]);
   }
   saveDb();
@@ -628,21 +604,8 @@ app.put('/api/groups/:id/template', requireAuth, (req, res) => {
   res.json({ success: true });
 });
 
-function parseDocuments(profile) {
-  try { return JSON.parse(profile?.documents_json || '[]'); } catch (_) { return []; }
-}
-
-// Joins items German-list style: "A, B und C" (not an Oxford comma).
-function germanList(items) {
-  if (items.length <= 1) return items[0] || '';
-  return items.slice(0, -1).join(', ') + ' und ' + items[items.length - 1];
-}
-
 // Build the {placeholder} substitution map from a listing + profile.
 function buildPlaceholders(listing, profile) {
-  const unterlagen = parseDocuments(profile)
-    .map(d => `${d.doc} (${DOC_STATUS_LABEL[d.status]?.one || d.status})`)
-    .join(', ');
   return {
     titel:   listing.title || '',
     preis:   listing.price_cold || listing.price || '',
@@ -657,7 +620,6 @@ function buildPlaceholders(listing, profile) {
     beruf:   profile.occupation || '',
     einzug:  profile.move_in_date || '',
     haushalt: profile.household_size || '',
-    unterlagen,
   };
 }
 
@@ -738,41 +700,19 @@ function buildGuidedMessage(listing, profiles, formal) {
     else        facts.push(`als Haustier${pets.length > 1 ? 'e' : ''} ${isGroup ? 'bringen wir' : 'bringe ich'} ${pets.join(' und ')} mit`);
   }
 
+  const incomes = [...new Set(profiles.map(x => x.income_note).filter(Boolean))];
+  if (incomes.length) {
+    // Income/credit notes are free text; present them as their own sentence
+    // rather than mashing them into the fact chain, so a user writing
+    // "Ausbildung, Mieterselbstauskunft vorhanden" reads cleanly.
+    facts.push(`zu ${isGroup ? 'unserer' : 'meiner'} Situation: ${incomes.join('; ')}`);
+  }
+
   if (facts.length) {
     lines.push('');
     // Join into flowing sentences, each capitalized.
     const sentences = facts.map(f => f.charAt(0).toUpperCase() + f.slice(1));
     lines.push(sentences.join('. ') + '.');
-  }
-
-  // Supporting documents (SCHUFA-Auskunft, Mieterselbstauskunft, …) are
-  // grouped by status so they read as flowing sentences — "SCHUFA-Auskunft
-  // und Mieterselbstauskunft liegen vor. Gehaltsnachweise sind beantragt."
-  // — instead of a flat "Dokument: Status" label dump. Deduplicated by
-  // document name across a group (first occurrence wins) so a document
-  // every roommate listed is only mentioned once.
-  const docsByName = new Map();
-  for (const prof of profiles) {
-    for (const d of parseDocuments(prof)) {
-      const key = d.doc.toLowerCase();
-      if (d.doc && !docsByName.has(key)) docsByName.set(key, d);
-    }
-  }
-  const documents = [...docsByName.values()];
-  if (documents.length) {
-    const byStatus = {};
-    for (const d of documents) (byStatus[d.status] ||= []).push(d.doc);
-    const statusSentences = [];
-    for (const status of Object.keys(DOC_STATUS_LABEL)) {
-      const names = byStatus[status];
-      if (!names?.length) continue;
-      const label = DOC_STATUS_LABEL[status][names.length > 1 ? 'many' : 'one'];
-      statusSentences.push(`${germanList(names)} ${label}`);
-    }
-    if (statusSentences.length) {
-      lines.push('');
-      lines.push(statusSentences.map(s => s.charAt(0).toUpperCase() + s.slice(1) + '.').join(' '));
-    }
   }
 
   // Free-text about sections
@@ -831,8 +771,7 @@ app.post('/api/message/generate', requireAuth, async (req, res) => {
         if (p.move_in_date) parts.push(`Einzug ab: ${p.move_in_date}`);
         parts.push(p.smoker ? 'Raucher' : 'Nichtraucher');
         if (p.pets) parts.push(`Haustiere: ${p.pets}`);
-        const docs = parseDocuments(p);
-        if (docs.length) parts.push(`Unterlagen: ${docs.map(d => `${d.doc} (${DOC_STATUS_LABEL[d.status]?.one || d.status})`).join(', ')}`);
+        if (p.income_note) parts.push(`Einkommen: ${p.income_note}`);
         if (p.about_text) parts.push(`Über: ${p.about_text}`);
         return `Person ${i + 1}: ${parts.join(', ')}`;
       }).join('\n');
@@ -926,7 +865,7 @@ app.post('/api/message/preview', requireAuth, (req, res) => {
     move_in_type: ['asap','flexible','date'].includes(b.move_in_type) ? b.move_in_type : 'date',
     smoker: b.smoker ? 1 : 0,
     pets: b.pets || '',
-    documents_json: JSON.stringify(cleanDocuments(b.documents)),
+    income_note: b.income_note || '',
     about_text: b.about_text || '',
     formal: b.formal ? 1 : 0,
     custom_template: b.custom_template || '',
@@ -940,10 +879,7 @@ app.post('/api/message/preview', requireAuth, (req, res) => {
   res.json({ message });
 });
 
-// ── Web Push ───────────────────────────────────────────────
-app.get('/api/push/vapid-key', (req, res) => {
-  res.json({ publicKey: VAPID_PUBLIC || null });
-});
+
 
 app.post('/api/push/subscribe', requireAuth, (req, res) => {
   const { endpoint, keys } = req.body;

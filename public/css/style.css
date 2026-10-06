@@ -966,26 +966,3 @@ a { color:var(--accent); text-decoration:none; }
   padding:14px; font-size:.84rem; line-height:1.55; color:var(--text2);
   white-space:pre-wrap; max-height:260px; overflow-y:auto;
 }
-
-/* ── Applicant profile: document list (name + status per row) ──────── */
-.doc-list { display:flex; flex-direction:column; gap:8px; margin-bottom:10px; }
-.doc-row { display:grid; grid-template-columns:1fr 190px 32px; gap:8px; align-items:center; }
-.doc-row input, .doc-row select {
-  background:var(--bg3); border:1px solid var(--border); border-radius:11px;
-  padding:9px 12px; color:var(--text); font-size:.88rem; outline:none;
-  transition:border-color .2s, box-shadow .2s; width:100%;
-}
-.doc-row input:focus, .doc-row select:focus { border-color:var(--accent); box-shadow:0 0 0 3px rgba(232,201,122,.12); }
-.doc-row select option { background:var(--bg2); }
-.doc-remove {
-  background:transparent; border:1px solid var(--border); border-radius:9px;
-  width:32px; height:32px; color:var(--text2); cursor:pointer; font-size:.85rem;
-  transition:background .15s, border-color .15s, color .15s;
-}
-.doc-remove:hover { background:rgba(240,80,96,.08); border-color:rgba(240,80,96,.4); color:var(--dislike); }
-@media (max-width:420px) {
-  .doc-row { grid-template-columns:1fr 32px; grid-template-areas:"name remove" "status status"; }
-  .doc-row input { grid-area:name; }
-  .doc-row select { grid-area:status; }
-  .doc-remove { grid-area:remove; }
-}

@@ -432,6 +432,22 @@ function checkListingStatus($, platform) {
 
   // Platform-specific
   if (platform === 'kleinanzeigen') {
+    // Most authoritative signal first: Kleinanzeigen renders the ad's own
+    // status directly as a data attribute on the title element —
+    // <h1 id="viewad-title" data-soldlabel="Nicht mehr verfügbar">,
+    // alongside a "Gelöscht • " prefix span inside the same h1. This is
+    // server-rendered (confirmed against a real deleted ad's page source,
+    // not just the post-JS DOM), so it's present before any client-side
+    // script runs — unlike the generic text patterns above, which can miss
+    // this case because the page's visible text has no "anzeige...gelöscht"
+    // phrase together, just the bare "Gelöscht" label. A non-empty value
+    // here is a direct, intentional status signal from the site itself, so
+    // we trust it outright rather than pattern-matching around it.
+    const soldLabel = ($('h1#viewad-title').attr('data-soldlabel') || '').trim();
+    if (soldLabel) {
+      return /reserv|vergeben/i.test(soldLabel) ? 'reserved' : 'offline';
+    }
+
     if ($('.adexpired, [data-testid="adexpired"], .banner--warning').length) return 'offline';
     if ($('[data-testid="reserved-badge"], .reserved-badge').length) return 'reserved';
     // Only flag as offline if there's NO title AND the page is very small
@@ -545,7 +561,14 @@ async function scrapeListing(url) {
     // below, merged into the final tag list further down.
     var extraFactTags = [];
 
-    d.title = $('h1#viewad-title').text().trim() || $('h1').first().text().trim();
+    // Exclude the "Gelöscht • " / "Reserviert • " status-prefix span from the
+    // title text — it's the same signal already captured in d.status above
+    // (via data-soldlabel), so baking it into the title too would just
+    // duplicate it there as ugly, redundant text ("Gelöscht • 3 Zimmer...").
+    const $titleEl = $('h1#viewad-title').length ? $('h1#viewad-title') : $('h1').first();
+    const $titleClone = $titleEl.clone();
+    $titleClone.find('.text-onSurfaceNonessential').remove();
+    d.title = $titleClone.text().trim();
 
     // Location: take only the FIRST match. Kleinanzeigen frequently renders
     // a duplicate (mobile+desktop) copy of the same location text elsewhere
