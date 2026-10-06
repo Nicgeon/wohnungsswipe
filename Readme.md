@@ -52,6 +52,13 @@ volumes:
 - SESSION_SECRET 
     - would reccomend changing it to something long and funny
 
+## Credits
+Parts of this project were taken over from the fork
+[Cuzimgamer2/wohnungsswipe_cuzi](https://github.com/Cuzimgamer2/wohnungsswipe_cuzi)
+by **Noah Koning ([@Cuzimgamer2](https://github.com/Cuzimgamer2))** – thanks!
+- Improved **Immowelt scraper** (cleaner titles, address, full photo gallery from the embedded page data, search-result URL detection)
+- **Bulk removal of your own ratings** in the "Bewertet" view
+
 # WohnungsSwipe Admin CLI
 
 A command-line tool for managing WohnungsSwipe directly inside the Docker container — no server restart required.
