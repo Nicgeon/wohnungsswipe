@@ -69,9 +69,11 @@ function showScreen(id) {
   $id(id).classList.add('active');
 }
 
-const SUB_VIEWS = new Set(['add', 'jobs', 'archive', 'settings']);
+const SUB_VIEWS = new Set(['add', 'jobs', 'archive', 'settings', 'profile']);
 
 function showView(name, isSubNav = false) {
+  // The profile page autosaves; make sure nothing is lost when leaving it.
+  if (name !== 'profile') window.pfFlush?.();
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.querySelectorAll('.tab-nav').forEach(b => b.classList.remove('active'));
   $id(`view-${name}`).classList.add('active');
@@ -85,6 +87,7 @@ function showView(name, isSubNav = false) {
   if (name === 'groups')   loadGroups();
   if (name === 'jobs')     loadJobs();
   if (name === 'settings') loadSettings();
+  if (name === 'profile')  window.loadProfilePage?.();
   if (name === 'archive')  loadArchive();
   if (name === 'add')      loadMyAddedListings();
 }
@@ -1382,7 +1385,7 @@ function renderGroups() {
   });
 }
 
-async function openGroupDetail(group) {
+async function openGroupDetail(group, opts = {}) {
   $id('groups-main').style.display   = 'none';
   $id('group-detail').style.display  = '';
 
@@ -1496,99 +1499,35 @@ async function openGroupDetail(group) {
       </div>
     </div>
 
-    <details class="settings-cat" style="margin-bottom:16px">
-      <summary>✉️ Nachrichten-Vorlage für diese Gruppe</summary>
-      <div class="settings-section">
-        <p class="notify-sub" style="margin-bottom:8px">Eigene Vorlage für Anfragen aus dieser Gruppe. Überschreibt deine persönliche Vorlage, wenn du aus dieser Gruppe heraus eine Nachricht vorbereitest. Leer lassen = persönliche Vorlage nutzen. <code>{name}</code>/<code>{namen}</code>, <code>{beruf}</code>, <code>{einzug}</code> und <code>{unterlagen}</code> fassen alle Mitglieder mit ausgefülltem Profil zusammen, <code>{personen}</code> ist ihre Anzahl.</p>
-        <div class="placeholder-chips" id="group-tpl-chips"></div>
-        <div class="field-group">
-          <textarea id="group-tpl-text" rows="4" disabled placeholder="Wird geladen…"></textarea>
-        </div>
-        <div class="section-label" style="margin:10px 0 6px;font-size:var(--fs-tiny)">Vorschau (Beispiel-Inserat, echte Mitglieder-Profile)</div>
-        <div class="msg-preview group-tpl-preview" id="group-tpl-preview" style="margin:0 0 10px">—</div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn-primary" id="group-tpl-save" disabled style="flex:1">Gruppen-Vorlage speichern</button>
-          <button class="btn-secondary" id="group-tpl-reset" disabled>Zurücksetzen</button>
-        </div>
-        <p class="form-success" id="group-tpl-ok"></p>
-      </div>
-    </details>
+    <div class="gd-tabs" id="gd-tabs" role="tablist">
+      <button class="gd-tab active" role="tab" data-gd-tab="ratings" aria-selected="true">Bewertungen</button>
+      <button class="gd-tab" role="tab" data-gd-tab="profile" aria-selected="false">Gruppen-Profil</button>
+    </div>
 
+    <div id="gd-panel-ratings">
     <p class="section-label">Mitglieder</p>
     <div class="members-nudge-list" style="margin-bottom:18px">${membersHtml}</div>
     ${results.length
       ? `<p class="section-label">${memberCount} Mitglieder · ${results.length} gemeinsam bewertet</p>${tierSections}`
       : '<p style="color:var(--text2);font-size:.85rem">Noch keine Bewertungen in dieser Gruppe.</p>'}
+    </div>
+    <div id="gd-panel-profile" style="display:none"></div>
   `;
+
+  // Tabs: "Bewertungen" | "Gruppen-Profil" (the latter is rendered by profile.js on first open)
+  const showGroupTab = tab => {
+    $id('gd-tabs').querySelectorAll('.gd-tab').forEach(b => {
+      const on = b.dataset.gdTab === tab;
+      b.classList.toggle('active', on); b.setAttribute('aria-selected', on);
+    });
+    $id('gd-panel-ratings').style.display = tab === 'ratings' ? '' : 'none';
+    $id('gd-panel-profile').style.display = tab === 'profile' ? '' : 'none';
+    if (tab === 'profile') window.renderGroupProfile?.(group, $id('gd-panel-profile'));
+  };
+  $id('gd-tabs').querySelectorAll('.gd-tab').forEach(b => b.addEventListener('click', () => showGroupTab(b.dataset.gdTab)));
+  if (opts.tab === 'profile') showGroupTab('profile');
   window.__toast = toast;
   window.__lb    = lb;
-
-  // ── Group template editor ──
-  (async () => {
-    const chipsWrap = $id('group-tpl-chips');
-    const ta        = $id('group-tpl-text');
-    if (!chipsWrap || !ta) return;
-    // Placeholder chips (same set as the personal template)
-    chipsWrap.innerHTML = PLACEHOLDER_LIST.map(ph => `<button type="button" class="ph-chip" data-ph="${ph}">{${ph}}</button>`).join('');
-    chipsWrap.querySelectorAll('.ph-chip').forEach(chip => {
-      chip.addEventListener('click', () => {
-        const token = `{${chip.dataset.ph}}`;
-        const s = ta.selectionStart ?? ta.value.length;
-        const e = ta.selectionEnd ?? ta.value.length;
-        ta.value = ta.value.slice(0, s) + token + ta.value.slice(e);
-        ta.focus(); ta.selectionStart = ta.selectionEnd = s + token.length;
-      });
-    });
-    // Load existing group template. The editor stays disabled until the load
-    // finished, so a fast click on "save" can't overwrite the stored
-    // template with an empty textarea.
-    const saveBtn  = $id('group-tpl-save');
-    const resetBtn = $id('group-tpl-reset');
-    let loaded = false;
-    try {
-      const d = await api(`/api/groups/${group.id}/template`);
-      if (d.error) throw new Error(d.error);
-      ta.value = d.template || '';
-      loaded = true;
-    } catch (_) {
-      ta.placeholder = 'Vorlage konnte nicht geladen werden – bitte Gruppe neu öffnen.';
-    }
-    ta.disabled = !loaded; saveBtn.disabled = !loaded; resetBtn.disabled = !loaded;
-    if (loaded) ta.placeholder = 'z.B. Hallo, wir als WG interessieren uns für {titel} ({zimmer} Zi., {groesse})…';
-    // Live preview against the group's real member profiles (debounced).
-    let tplTimer = null;
-    const refreshTplPreview = () => {
-      clearTimeout(tplTimer);
-      tplTimer = setTimeout(async () => {
-        const box = $id('group-tpl-preview');
-        if (!box) return;
-        try {
-          const d = await api(`/api/groups/${group.id}/template/preview`, { method: 'POST', body: { template: ta.value } });
-          if (d.error) { box.textContent = d.error; return; }
-          const notes = [];
-          if (d.guided) notes.push('Keine Gruppen-Vorlage – es gilt deine persönliche Vorlage bzw. die geführte Nachricht (hier: geführt).');
-          if (d.missingProfiles?.length) notes.push(`Kein Profil von: ${d.missingProfiles.join(', ')}`);
-          if (d.unknownPlaceholders?.length) notes.push(`Unbekannte Platzhalter: ${d.unknownPlaceholders.join(' ')}`);
-          box.textContent = (d.message || '—') + (notes.length ? '\n\n⚠️ ' + notes.join('\n⚠️ ') : '');
-        } catch (_) { /* preview is best-effort */ }
-      }, 350);
-    };
-    ta.addEventListener('input', refreshTplPreview);
-    refreshTplPreview();
-    const putTemplate = async (text, okMsg) => {
-      clr('group-tpl-ok');
-      const r = await api(`/api/groups/${group.id}/template`, { method: 'PUT', body: { template: text } });
-      if (r.success) { setOk('group-tpl-ok', '✓ ' + okMsg); toast('✅ ' + okMsg); }
-      else toast('❌ ' + (r.error || 'Fehler'));
-    };
-    saveBtn.addEventListener('click', () => putTemplate(ta.value, 'Gruppen-Vorlage gespeichert'));
-    resetBtn.addEventListener('click', async () => {
-      if (!ta.value.trim() || !confirm('Gruppen-Vorlage löschen und wieder die persönliche Vorlage verwenden?')) return;
-      await putTemplate('', 'Gruppen-Vorlage zurückgesetzt');
-      ta.value = '';
-      refreshTplPreview();
-    });
-  })();
 
   // Wire nudge buttons
   $id('group-detail-content').querySelectorAll('[data-nudge]').forEach(btn => {
@@ -2072,9 +2011,6 @@ async function loadSettings() {
   clr('settings-username-error','settings-username-ok','settings-email-error','settings-email-ok','settings-pw-error','settings-pw-ok','notify-ok','ntfy-ok');
   $id('settings-pw-current').value = $id('settings-pw-new').value = $id('settings-pw-confirm').value = '';
 
-  // Applicant profile
-  loadApplicantProfile();
-
   // Notification toggles
   $id('notify-email').checked = !!me.notify_email;
 
@@ -2370,325 +2306,7 @@ async function openSharedListingFromUrl() {
   detailView.open(d.listing, { fromSwipe: true });
 }
 
-// ══════════════════════════════════════════════════════════
-//  APPLICANT PROFILE
-// ══════════════════════════════════════════════════════════
-const PLACEHOLDER_LIST = ['titel','preis','kalt','warm','zimmer','groesse','lage','name','namen','personen','beruf','einzug','haushalt','unterlagen'];
-
-const DOC_STATUS_OPTIONS = [
-  { value: 'vorhanden',   label: 'vorhanden' },
-  { value: 'beantragt',   label: 'beantragt' },
-  { value: 'auf_anfrage', label: 'auf Wunsch bereitstellbar' },
-];
-
-// Renders one editable row ({doc, status}) for the applicant's document list.
-function docRowHtml(d) {
-  d = d || { doc: '', status: 'vorhanden' };
-  return `
-    <div class="doc-row" data-doc-row>
-      <input type="text" class="doc-name" value="${esc(d.doc || '')}" placeholder="z.B. SCHUFA-Auskunft" list="doc-suggestions" />
-      <select class="doc-status">
-        ${DOC_STATUS_OPTIONS.map(o => `<option value="${o.value}"${o.value === (d.status || 'vorhanden') ? ' selected' : ''}>${o.label}</option>`).join('')}
-      </select>
-      <button type="button" class="doc-remove" title="Entfernen">✕</button>
-    </div>`;
-}
-
-function wireDocRowEvents() {
-  $id('prof-documents-list')?.querySelectorAll('[data-doc-row]').forEach(row => {
-    if (row.dataset.wired) return;
-    row.dataset.wired = '1';
-    row.querySelector('.doc-name').addEventListener('input', refreshProfilePreview);
-    row.querySelector('.doc-status').addEventListener('change', refreshProfilePreview);
-    row.querySelector('.doc-remove').addEventListener('click', () => { row.remove(); refreshProfilePreview(); });
-  });
-}
-
-function renderDocumentRows(docs) {
-  const wrap = $id('prof-documents-list');
-  if (!wrap) return;
-  wrap.innerHTML = (docs || []).map(docRowHtml).join('');
-  wireDocRowEvents();
-}
-
-function readDocumentsFromUI() {
-  return Array.from($id('prof-documents-list')?.querySelectorAll('[data-doc-row]') || [])
-    .map(row => ({
-      doc:    row.querySelector('.doc-name').value.trim(),
-      status: row.querySelector('.doc-status').value,
-    }))
-    .filter(d => d.doc);
-}
-
-$id('prof-doc-add')?.addEventListener('click', () => {
-  const wrap = $id('prof-documents-list');
-  if (!wrap) return;
-  wrap.insertAdjacentHTML('beforeend', docRowHtml());
-  wireDocRowEvents();
-  wrap.querySelector('[data-doc-row]:last-child .doc-name')?.focus();
-});
-
-// Unsaved-changes tracking for the profile form: messages are generated from
-// the SAVED profile, so a visible hint avoids "why isn't my edit in there?".
-let profileDirty = false;
-function setProfileDirty(v) {
-  profileDirty = v;
-  const el = $id('profile-dirty');
-  if (el) el.style.display = v ? '' : 'none';
-}
-
-async function loadApplicantProfile() {
-  const d = await api('/api/profile');
-  const p = d.profile || {};
-  $id('prof-name').value          = p.display_name || '';
-  $id('prof-occupation').value    = p.occupation || '';
-  $id('prof-household').value      = p.household_size || '';
-  $id('prof-movein-type').value   = p.move_in_type || 'date';
-  $id('prof-movein').value         = p.move_in_date || '';
-  $id('prof-pets').value           = p.pets || '';
-  $id('prof-about').value          = p.about_text || '';
-  $id('prof-nonsmoker').checked    = !p.smoker;      // UI shows "Nichtraucher"
-  $id('prof-formal').checked       = !!p.formal;
-  $id('prof-template').value       = p.custom_template || '';
-  let docs = [];
-  try { docs = JSON.parse(p.documents_json || '[]'); } catch (_) { docs = []; }
-  renderDocumentRows(docs);
-  renderPlaceholderChips();
-  updateMoveInDateVisibility();
-  refreshProfilePreview();
-  setProfileDirty(false);
-}
-
-// Show the date field only when "festes Datum" is selected.
-function updateMoveInDateVisibility() {
-  const wrap = $id('prof-movein-date-wrap');
-  if (wrap) wrap.style.display = $id('prof-movein-type').value === 'date' ? '' : 'none';
-}
-
-// Gathers the current (unsaved) profile form state into an object.
-function readProfileForm() {
-  return {
-    display_name:    $id('prof-name').value,
-    occupation:      $id('prof-occupation').value,
-    household_size:  $id('prof-household').value,
-    move_in_type:    $id('prof-movein-type').value,
-    move_in_date:    $id('prof-movein').value,
-    pets:            $id('prof-pets').value,
-    documents:       readDocumentsFromUI(),
-    about_text:      $id('prof-about').value,
-    smoker:          !$id('prof-nonsmoker').checked,
-    formal:          $id('prof-formal').checked,
-    custom_template: $id('prof-template').value,
-  };
-}
-
-// Live preview — debounced so typing doesn't spam the server.
-let _previewTimer = null;
-function refreshProfilePreview() {
-  clearTimeout(_previewTimer);
-  _previewTimer = setTimeout(async () => {
-    const body = readProfileForm();
-    body.mode = body.custom_template.trim() ? 'template' : 'guided';
-    try {
-      const d = await api('/api/message/preview', { method: 'POST', body });
-      $id('prof-preview').textContent = (d.message || '—') +
-        (d.unknownPlaceholders?.length ? `\n\n⚠️ Unbekannte Platzhalter: ${d.unknownPlaceholders.join(' ')}` : '');
-    } catch (e) { /* preview is best-effort */ }
-  }, 350);
-}
-
-function renderPlaceholderChips() {
-  const wrap = $id('placeholder-chips');
-  if (!wrap) return;
-  wrap.innerHTML = PLACEHOLDER_LIST.map(ph => `<button type="button" class="ph-chip" data-ph="${ph}">{${ph}}</button>`).join('');
-  wrap.querySelectorAll('.ph-chip').forEach(chip => {
-    chip.addEventListener('click', () => {
-      const ta = $id('prof-template');
-      const token = `{${chip.dataset.ph}}`;
-      const start = ta.selectionStart ?? ta.value.length;
-      const end   = ta.selectionEnd ?? ta.value.length;
-      ta.value = ta.value.slice(0, start) + token + ta.value.slice(end);
-      ta.focus();
-      ta.selectionStart = ta.selectionEnd = start + token.length;
-      refreshProfilePreview();
-    });
-  });
-}
-
-$id('save-profile-btn')?.addEventListener('click', async () => {
-  clr('profile-ok');
-  const d = await api('/api/profile', { method: 'PUT', body: readProfileForm() });
-  if (d.success) { setProfileDirty(false); setOk('profile-ok', '✓ Profil gespeichert'); toast('✅ Bewerber-Profil gespeichert'); }
-});
-
-// Any edit inside the profile section (incl. document rows and placeholder
-// chips) marks the form dirty; delegated so dynamically added rows count.
-(() => {
-  const root = $id('prof-name')?.closest('.settings-section');
-  if (!root) return;
-  const mark = () => setProfileDirty(true);
-  root.addEventListener('input', mark);
-  root.addEventListener('change', mark);
-  root.addEventListener('click', e => {
-    if (e.target.closest('.doc-remove, #prof-doc-add, .ph-chip')) mark();
-  });
-})();
-
-// Live preview + move-in-date visibility react to every profile edit.
-['prof-name','prof-occupation','prof-household','prof-movein','prof-pets',
- 'prof-about','prof-template'].forEach(id => {
-  $id(id)?.addEventListener('input', refreshProfilePreview);
-});
-['prof-nonsmoker','prof-formal'].forEach(id => {
-  $id(id)?.addEventListener('change', refreshProfilePreview);
-});
-$id('prof-movein-type')?.addEventListener('change', () => {
-  updateMoveInDateVisibility();
-  refreshProfilePreview();
-});
-
-// ══════════════════════════════════════════════════════════
-//  MESSAGE GENERATOR
-// ══════════════════════════════════════════════════════════
-const messageModal = {
-  listing: null,
-  groupId: null,
-  aiAvailable: false,
-  members: [],          // group members with {id, username, hasProfile}
-  selected: new Set(),  // member ids included in the generated message
-  edited: false,        // user typed in the textarea since the last generate
-
-  async open(listing, opts = {}) {
-    this.listing = listing;
-    this.groupId = opts.groupId || null;
-    $id('message-context').textContent = this.groupId
-      ? `Anfrage für die Gruppe – Profile aller Mitglieder mit ausgefülltem Profil werden zusammengeführt.`
-      : `Anfrage für: ${listing.title || 'Inserat'}`;
-    $id('message-open-link').href = listing.url || '#';
-    clr('message-error', 'message-warn');
-    this.edited = false;
-
-    // Show AI tab only if the server has it configured; start on the
-    // custom-template tab when the user has a template for this group, so it
-    // is actually used instead of hidden behind a click.
-    let hasGroupTemplate = false;
-    try {
-      const cap = await api('/api/message/capabilities' + (this.groupId ? `?groupId=${this.groupId}` : ''));
-      this.aiAvailable = !!cap.ai;
-      hasGroupTemplate = !!cap.hasGroupTemplate;
-      this.members = cap.members || [];
-      this.selected = new Set(this.members.filter(m => m.hasProfile).map(m => m.id));
-      $id('message-goto-profile').style.display = cap.ownProfileEmpty ? '' : 'none';
-    } catch (_) { this.aiAvailable = false; this.members = []; this.selected = new Set(); }
-    this.renderMembers();
-    $id('msg-mode-ai').style.display = this.aiAvailable ? '' : 'none';
-
-    const startMode = hasGroupTemplate ? 'template' : 'guided';
-    document.querySelectorAll('.msg-mode-tab').forEach(t => t.classList.toggle('active', t.dataset.msgmode === startMode));
-    $id('message-modal').style.display = 'flex';
-    await this.generate(startMode);
-  },
-
-  close() { $id('message-modal').style.display = 'none'; this.listing = null; },
-
-  // Chips to pick which group members the message speaks for (e.g. only two
-  // of four are actually moving in). Members without a profile are shown
-  // greyed out since there is nothing to include.
-  renderMembers() {
-    const wrap = $id('message-members');
-    if (!this.groupId || this.members.length < 2) { wrap.style.display = 'none'; wrap.innerHTML = ''; return; }
-    wrap.style.display = '';
-    wrap.innerHTML = '<span class="msg-members-label">Nachricht für:</span>' + this.members.map(m => {
-      const on = this.selected.has(m.id);
-      return `<label class="msg-member ${m.hasProfile ? (on ? 'on' : '') : 'off'}" title="${m.hasProfile ? '' : 'Kein Bewerber-Profil'}">
-        <input type="checkbox" data-member="${m.id}" ${on ? 'checked' : ''} ${m.hasProfile ? '' : 'disabled'}>
-        ${esc(m.username)}${m.hasProfile ? '' : ' (kein Profil)'}
-      </label>`;
-    }).join('');
-    wrap.querySelectorAll('input[data-member]').forEach(cb => cb.addEventListener('change', async () => {
-      const id = parseInt(cb.dataset.member);
-      const had = this.selected.has(id);
-      if (cb.checked) this.selected.add(id); else this.selected.delete(id);
-      if (!this.selected.size) { this.selected.add(id); cb.checked = true; toast('Mindestens eine Person muss ausgewählt sein'); return; }
-      const ok = await this.generate(this.currentMode());
-      if (ok === false) {  // user declined to discard edits → undo toggle
-        if (had) this.selected.add(id); else this.selected.delete(id);
-        cb.checked = had;
-      }
-      this.renderMembers();
-    }));
-  },
-
-  currentMode() {
-    return document.querySelector('.msg-mode-tab.active')?.dataset.msgmode || 'guided';
-  },
-
-  // Returns false if the user cancelled (to keep manual edits), else true.
-  async generate(mode, { force = false } = {}) {
-    if (!this.listing) return true;
-    const ta = $id('message-text');
-    if (this.edited && !force && ta.value.trim() &&
-        !confirm('Du hast den Text bearbeitet. Neu generieren überschreibt deine Änderungen – fortfahren?')) {
-      return false;
-    }
-    clr('message-error', 'message-warn');
-    ta.value = '⏳ Wird erstellt…';
-    this.edited = false;
-    const body = { listingId: this.listing.id, groupId: this.groupId, mode };
-    if (this.groupId && this.selected.size) body.memberIds = [...this.selected];
-    const r = await api('/api/message/generate', { method: 'POST', body });
-    if (r.error) {
-      ta.value = '';
-      setErr('message-error', r.error);
-      // On AI failure, fall back to the guided text so the box isn't empty
-      if (mode === 'ai') {
-        const fb = await api('/api/message/generate', { method: 'POST', body: { listingId: this.listing.id, groupId: this.groupId, mode: 'guided' } });
-        if (fb.message) ta.value = fb.message;
-      }
-      return true;
-    }
-    ta.value = r.message || '';
-
-    // Non-blocking hints: members left out, typo'd placeholders, fallback.
-    const warns = [];
-    if (r.missingProfiles?.length)
-      warns.push(`Kein Bewerber-Profil von: ${r.missingProfiles.join(', ')} – diese Mitglieder fehlen in der Nachricht.`);
-    if (r.unknownPlaceholders?.length)
-      warns.push(`Unbekannte Platzhalter in der Vorlage: ${r.unknownPlaceholders.join(' ')}`);
-    if (r.info) warns.push(r.info);
-    if (profileDirty) warns.push('Dein Bewerber-Profil hat ungespeicherte Änderungen – die Nachricht nutzt den gespeicherten Stand.');
-    setErr('message-warn', warns.join(' '));
-    return true;
-  },
-};
-
-document.querySelectorAll('.msg-mode-tab').forEach(tab => {
-  tab.addEventListener('click', async () => {
-    const prev = document.querySelector('.msg-mode-tab.active');
-    if (prev === tab) return;
-    // Ask first: switching tabs regenerates the text and would drop edits.
-    const ok = await messageModal.generate(tab.dataset.msgmode);
-    if (ok === false) return;
-    document.querySelectorAll('.msg-mode-tab').forEach(t => t.classList.remove('active'));
-    tab.classList.add('active');
-  });
-});
-$id('message-text').addEventListener('input', () => { messageModal.edited = true; });
-$id('message-regen').addEventListener('click', () => messageModal.generate(messageModal.currentMode()));
-$id('message-goto-profile').addEventListener('click', () => {
-  messageModal.close();
-  detailView.close?.();
-  showView('settings', true);
-  setTimeout(() => { const f = $id('prof-name'); f?.scrollIntoView({ behavior: 'smooth', block: 'center' }); f?.focus(); }, 150);
-});
-$id('message-close').addEventListener('click', () => messageModal.close());
-$id('message-modal').addEventListener('click', e => { if (e.target.id === 'message-modal') messageModal.close(); });
-$id('message-copy').addEventListener('click', async () => {
-  try {
-    await navigator.clipboard.writeText($id('message-text').value);
-    toast('📋 Nachricht kopiert!');
-  } catch (e) { toast('❌ Kopieren fehlgeschlagen'); }
-});
+// Applicant profile page, message generator and group profile tab live in profile.js
 
 // ══════════════════════════════════════════════════════════
 //  INIT

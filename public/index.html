@@ -8,6 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,700&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/css/style.css" />
+  <link rel="stylesheet" href="/css/profile.css" />
 </head>
 <body>
 
@@ -218,6 +219,14 @@
       <h2 class="view-title">Mehr</h2>
       <p class="view-subtitle">Weitere Bereiche der App.</p>
       <div class="more-menu">
+        <button class="more-menu-row" data-goto="profile">
+          <span class="more-menu-icon">📝</span>
+          <span class="more-menu-text">
+            <span class="more-menu-title">Bewerber-Profil</span>
+            <span class="more-menu-sub">Angaben für Nachrichten an Vermieter</span>
+          </span>
+          <span class="more-menu-arrow">›</span>
+        </button>
         <button class="more-menu-row" data-goto="add">
           <span class="more-menu-icon">➕</span>
           <span class="more-menu-text">
@@ -245,11 +254,52 @@
         <button class="more-menu-row" data-goto="settings">
           <span class="more-menu-icon">⚙️</span>
           <span class="more-menu-text">
-            <span class="more-menu-title">Profil</span>
+            <span class="more-menu-title">Konto &amp; Einstellungen</span>
             <span class="more-menu-sub">Account, Statistiken, Benachrichtigungen</span>
           </span>
           <span class="more-menu-arrow">›</span>
         </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── BEWERBER-PROFIL ───────────────────────────── -->
+  <div id="view-profile" class="view">
+    <div class="view-content pf-page">
+      <div class="pf-header">
+        <button class="pf-back" id="pf-back" type="button" aria-label="Zurück">‹</button>
+        <div class="pf-header-text">
+          <div class="pf-crumb">Mehr › Bewerber-Profil</div>
+          <h2 class="view-title" id="pf-title">Bewerber-Profil</h2>
+          <div class="pf-status" id="pf-status" data-state="saved" role="status" aria-live="polite">
+            <span class="pf-status-dot"></span><span id="pf-status-text">Alle Änderungen gespeichert</span>
+          </div>
+        </div>
+        <div class="pf-switch" id="pf-switch" style="display:none"></div>
+      </div>
+
+      <div class="pf-layout" id="pf-layout" data-mode="hub">
+        <div class="pf-col-nav">
+          <div class="pf-hero" id="pf-hero"></div>
+          <nav class="pf-nav" id="pf-nav" aria-label="Profil-Abschnitte"></nav>
+        </div>
+        <div class="pf-col-editor">
+          <div class="pf-editor" id="pf-editor"></div>
+        </div>
+        <div class="pf-col-aside">
+          <div class="pf-card">
+            <div class="pf-label-row">
+              <span class="pf-label">So liest sich deine Nachricht</span>
+              <span class="pf-live">Live</span>
+            </div>
+            <div class="pf-preview" id="pf-preview">—</div>
+            <button type="button" class="btn-primary pf-try" id="pf-try">Nachricht ausprobieren</button>
+          </div>
+          <div class="pf-card" id="pf-missing-card" style="display:none">
+            <span class="pf-label">Noch offen</span>
+            <div class="pf-missing" id="pf-missing"></div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -362,93 +412,6 @@
           </div>
         </div>
       </div>
-
-      <!-- ══ Kategorie: Nachrichten ══ -->
-      <details class="settings-cat" open>
-        <summary>✉️ Nachrichten &amp; Bewerber-Profil</summary>
-
-      <!-- Bewerber-Profil für Nachrichten-Generator -->
-      <div class="settings-section">
-        <div class="section-label">Bewerber-Profil</div>
-        <p class="notify-sub" style="margin-bottom:12px">Wird genutzt, um Anfrage-Nachrichten an Vermieter vorzubereiten. In Gruppen wird dein Profil mit dem der anderen Mitglieder zusammengeführt.</p>
-        <div class="field-group">
-          <label>Name</label>
-          <input type="text" id="prof-name" placeholder="Vor- und Nachname" />
-        </div>
-        <div class="inline-row">
-          <div class="field-group" style="flex:1">
-            <label>Beruf / Tätigkeit</label>
-            <input type="text" id="prof-occupation" placeholder="z.B. Ingenieurin" />
-          </div>
-          <div class="field-group" style="flex:1">
-            <label>Haushaltsgröße</label>
-            <input type="text" id="prof-household" placeholder="z.B. 2 Personen" />
-          </div>
-        </div>
-        <div class="inline-row">
-          <div class="field-group" style="flex:1">
-            <label>Einzug</label>
-            <select id="prof-movein-type">
-              <option value="asap">Schnellstmöglich</option>
-              <option value="flexible">Flexibel</option>
-              <option value="date">Zu festem Datum</option>
-            </select>
-          </div>
-          <div class="field-group" id="prof-movein-date-wrap" style="flex:1;display:none">
-            <label>Datum</label>
-            <input type="text" id="prof-movein" placeholder="z.B. 01.11.2026" />
-          </div>
-        </div>
-        <div class="field-group">
-          <label>Haustiere</label>
-          <input type="text" id="prof-pets" placeholder="z.B. keine / eine Katze" />
-        </div>
-        <div class="field-group">
-          <label>Unterlagen (optional)</label>
-          <p class="notify-sub" style="margin:-2px 0 8px">Dokument links, Status rechts – z.B. „SCHUFA-Auskunft" / „beantragt".</p>
-          <div id="prof-documents-list" class="doc-list"></div>
-          <button type="button" class="btn-secondary" id="prof-doc-add" style="width:auto">+ Dokument hinzufügen</button>
-          <datalist id="doc-suggestions">
-            <option value="SCHUFA-Auskunft"></option>
-            <option value="Gehaltsnachweise"></option>
-            <option value="Mieterselbstauskunft"></option>
-            <option value="Ausweiskopie"></option>
-            <option value="Bürgschaft"></option>
-            <option value="Mietschuldenfreiheitsbescheinigung"></option>
-            <option value="Arbeitsvertrag"></option>
-          </datalist>
-        </div>
-        <div class="field-group">
-          <label>Über mich (optional)</label>
-          <textarea id="prof-about" rows="2" placeholder="Kurzer Satz über dich als Mieter:in"></textarea>
-        </div>
-        <label class="toggle-row" style="margin-bottom:12px">
-          <span>🚭 Nichtraucher</span>
-          <input type="checkbox" id="prof-nonsmoker" class="toggle-cb" />
-          <span class="toggle-switch"></span>
-        </label>
-        <label class="toggle-row" style="margin-bottom:12px">
-          <span>📝 Förmliche Anrede (Sie)</span>
-          <input type="checkbox" id="prof-formal" class="toggle-cb" />
-          <span class="toggle-switch"></span>
-        </label>
-
-        <div class="section-label" style="margin-top:14px;font-size:var(--fs-tiny)">Eigene Vorlage (optional)</div>
-        <p class="notify-sub" style="margin-bottom:6px">Platzhalter anklicken zum Einfügen:</p>
-        <div class="placeholder-chips" id="placeholder-chips"></div>
-        <div class="field-group">
-          <textarea id="prof-template" rows="4" placeholder="Leer lassen, um die geführte Vorlage zu nutzen. Beispiel: Hallo, ich interessiere mich für {titel} für {preis}…"></textarea>
-        </div>
-
-        <button class="btn-primary" id="save-profile-btn">Profil speichern</button>
-        <p class="form-success" id="profile-ok"></p>
-        <p class="notify-sub" id="profile-dirty" style="display:none;color:var(--accent)">● Ungespeicherte Änderungen – Nachrichten nutzen den zuletzt gespeicherten Stand.</p>
-
-        <div class="section-label" style="margin-top:16px;font-size:var(--fs-tiny)">Vorschau (Beispiel-Inserat)</div>
-        <div class="msg-preview" id="prof-preview">—</div>
-      </div>
-
-      </details>
 
       <!-- ══ Kategorie: Konto ══ -->
       <details class="settings-cat">
@@ -724,28 +687,52 @@
 
 <!-- Modals -->
 <div id="message-modal" class="modal" style="display:none">
-  <div class="modal-card" style="max-width:560px">
-    <h3>💬 Nachricht vorbereiten</h3>
-    <p class="notify-sub" id="message-context" style="margin-top:-6px"></p>
-    <div class="msg-mode-tabs" id="msg-mode-tabs">
-      <button class="msg-mode-tab active" data-msgmode="guided">Geführt</button>
-      <button class="msg-mode-tab" data-msgmode="template">Eigene Vorlage</button>
-      <button class="msg-mode-tab" data-msgmode="ai" id="msg-mode-ai" style="display:none">✨ KI</button>
+  <div class="modal-card msg-card" role="dialog" aria-modal="true" aria-labelledby="message-title">
+    <div class="msg-head">
+      <div>
+        <h3 id="message-title">💬 Nachricht vorbereiten</h3>
+        <p class="notify-sub" id="message-context"></p>
+      </div>
+      <a class="msg-open-link" id="message-open-link" href="#" target="_blank" rel="noopener">Inserat öffnen ↗</a>
     </div>
-    <div class="msg-members" id="message-members" style="display:none"></div>
-    <div class="field-group">
-      <textarea id="message-text" rows="12" style="font-size:.9rem;line-height:1.5"></textarea>
+    <div class="msg-layout">
+      <div class="msg-controls">
+        <div class="msg-block">
+          <span class="msg-label">Tonfall</span>
+          <div class="msg-mode-tabs" id="msg-mode-tabs">
+            <button class="msg-mode-tab active" data-msgmode="formal">Förmlich (Sie)</button>
+            <button class="msg-mode-tab" data-msgmode="informal">Locker (Du)</button>
+            <button class="msg-mode-tab" data-msgmode="template">Eigene Vorlage</button>
+            <button class="msg-mode-tab" data-msgmode="ai" id="msg-mode-ai" style="display:none">✨ KI</button>
+          </div>
+        </div>
+        <div class="msg-block" id="message-members-block" style="display:none">
+          <span class="msg-label">Nachricht für</span>
+          <div class="msg-members" id="message-members"></div>
+        </div>
+        <details class="msg-block msg-details" id="message-blocks-block" style="display:none">
+          <summary class="msg-label">Bausteine <span class="msg-count" id="message-blocks-count"></span></summary>
+          <div class="msg-blocks" id="message-blocks"></div>
+          <p class="notify-sub msg-blocks-hint" id="message-blocks-hint"></p>
+        </details>
+      </div>
+      <div class="msg-main">
+        <div class="msg-listing" id="message-listing"></div>
+        <div class="msg-warnings" id="message-warn" style="display:none"></div>
+        <div class="msg-text-head">
+          <span class="msg-label">Vorschau – direkt bearbeitbar</span>
+          <span class="msg-words" id="message-words"></span>
+        </div>
+        <textarea id="message-text" class="msg-textarea" rows="12" aria-label="Nachrichtentext"></textarea>
+        <p class="form-error" id="message-error"></p>
+        <div class="msg-actions">
+          <button class="btn-secondary" id="message-regen">🔄 Neu erzeugen</button>
+          <button class="btn-primary" id="message-copy">📋 Kopieren</button>
+          <button class="btn-ghost" id="message-close">Schließen</button>
+        </div>
+        <p class="notify-sub msg-footnote">Prüfe den Text, passe ihn an und sende ihn selbst bei der jeweiligen Plattform.</p>
+      </div>
     </div>
-    <p class="notify-sub" id="message-warn" style="color:var(--accent);margin:0 0 6px"></p>
-    <button type="button" class="btn-ghost" id="message-goto-profile" style="display:none;margin-bottom:8px">👤 Bewerber-Profil ausfüllen →</button>
-    <p class="form-error" id="message-error"></p>
-    <div class="modal-actions" style="flex-wrap:wrap;gap:8px">
-      <button class="btn-secondary" id="message-regen">🔄 Neu generieren</button>
-      <button class="btn-primary" id="message-copy">📋 Kopieren</button>
-      <a class="btn-secondary" id="message-open-link" href="#" target="_blank" rel="noopener">🔗 Inserat öffnen</a>
-      <button class="btn-ghost" id="message-close">Schließen</button>
-    </div>
-    <p class="notify-sub" style="font-size:.72rem;margin-top:4px">Prüfe den Text, passe ihn an und sende ihn selbst bei der jeweiligen Plattform.</p>
   </div>
 </div>
 
@@ -774,5 +761,6 @@
 
 <div id="toast"></div>
 <script src="/js/app.js"></script>
+<script src="/js/profile.js"></script>
 </body>
 </html>
