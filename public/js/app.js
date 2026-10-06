@@ -2249,10 +2249,84 @@ $id('admin-users-btn')?.addEventListener('click', async () => {
   });
 });
 
+// Opens the detail view for a listing referenced by a shared link
+// (?listing=<id> in the URL), then cleans the URL so a refresh doesn't
+// re-trigger it. Works for any listing the current user can technically
+// see via GET /api/listings/:id (bypasses the normal swipe-queue
+// visibility scoping — see that endpoint's comment for why).
+async function openSharedListingFromUrl() {
+  const params = new URLSearchParams(location.search);
+  const sharedId = params.get('listing');
+  if (!sharedId) return;
+
+  // Strip the param immediately regardless of outcome, so the URL is
+  // clean and a page refresh won't keep re-opening the same listing.
+  params.delete('listing');
+  const cleanUrl = location.pathname + (params.toString() ? `?${params}` : '') + location.hash;
+  history.replaceState({}, '', cleanUrl);
+
+  const d = await api(`/api/listings/${sharedId}`);
+  if (d.error || !d.listing) { toast('❌ Geteiltes Inserat nicht gefunden'); return; }
+  detailView.open(d.listing, { fromSwipe: true });
+}
+
 // ══════════════════════════════════════════════════════════
 //  APPLICANT PROFILE
 // ══════════════════════════════════════════════════════════
-const PLACEHOLDER_LIST = ['titel','preis','kalt','warm','zimmer','groesse','lage','name','beruf','einzug','haushalt'];
+const PLACEHOLDER_LIST = ['titel','preis','kalt','warm','zimmer','groesse','lage','name','beruf','einzug','haushalt','unterlagen'];
+
+const DOC_STATUS_OPTIONS = [
+  { value: 'vorhanden',   label: 'vorhanden' },
+  { value: 'beantragt',   label: 'beantragt' },
+  { value: 'auf_anfrage', label: 'auf Wunsch bereitstellbar' },
+];
+
+// Renders one editable row ({doc, status}) for the applicant's document list.
+function docRowHtml(d) {
+  d = d || { doc: '', status: 'vorhanden' };
+  return `
+    <div class="doc-row" data-doc-row>
+      <input type="text" class="doc-name" value="${esc(d.doc || '')}" placeholder="z.B. SCHUFA-Auskunft" list="doc-suggestions" />
+      <select class="doc-status">
+        ${DOC_STATUS_OPTIONS.map(o => `<option value="${o.value}"${o.value === (d.status || 'vorhanden') ? ' selected' : ''}>${o.label}</option>`).join('')}
+      </select>
+      <button type="button" class="doc-remove" title="Entfernen">✕</button>
+    </div>`;
+}
+
+function wireDocRowEvents() {
+  $id('prof-documents-list')?.querySelectorAll('[data-doc-row]').forEach(row => {
+    if (row.dataset.wired) return;
+    row.dataset.wired = '1';
+    row.querySelector('.doc-name').addEventListener('input', refreshProfilePreview);
+    row.querySelector('.doc-status').addEventListener('change', refreshProfilePreview);
+    row.querySelector('.doc-remove').addEventListener('click', () => { row.remove(); refreshProfilePreview(); });
+  });
+}
+
+function renderDocumentRows(docs) {
+  const wrap = $id('prof-documents-list');
+  if (!wrap) return;
+  wrap.innerHTML = (docs || []).map(docRowHtml).join('');
+  wireDocRowEvents();
+}
+
+function readDocumentsFromUI() {
+  return Array.from($id('prof-documents-list')?.querySelectorAll('[data-doc-row]') || [])
+    .map(row => ({
+      doc:    row.querySelector('.doc-name').value.trim(),
+      status: row.querySelector('.doc-status').value,
+    }))
+    .filter(d => d.doc);
+}
+
+$id('prof-doc-add')?.addEventListener('click', () => {
+  const wrap = $id('prof-documents-list');
+  if (!wrap) return;
+  wrap.insertAdjacentHTML('beforeend', docRowHtml());
+  wireDocRowEvents();
+  wrap.querySelector('[data-doc-row]:last-child .doc-name')?.focus();
+});
 
 async function loadApplicantProfile() {
   const d = await api('/api/profile');
@@ -2263,11 +2337,13 @@ async function loadApplicantProfile() {
   $id('prof-movein-type').value   = p.move_in_type || 'date';
   $id('prof-movein').value         = p.move_in_date || '';
   $id('prof-pets').value           = p.pets || '';
-  $id('prof-income').value         = p.income_note || '';
   $id('prof-about').value          = p.about_text || '';
   $id('prof-nonsmoker').checked    = !p.smoker;      // UI shows "Nichtraucher"
   $id('prof-formal').checked       = !!p.formal;
   $id('prof-template').value       = p.custom_template || '';
+  let docs = [];
+  try { docs = JSON.parse(p.documents_json || '[]'); } catch (_) { docs = []; }
+  renderDocumentRows(docs);
   renderPlaceholderChips();
   updateMoveInDateVisibility();
   refreshProfilePreview();
@@ -2288,7 +2364,7 @@ function readProfileForm() {
     move_in_type:    $id('prof-movein-type').value,
     move_in_date:    $id('prof-movein').value,
     pets:            $id('prof-pets').value,
-    income_note:     $id('prof-income').value,
+    documents:       readDocumentsFromUI(),
     about_text:      $id('prof-about').value,
     smoker:          !$id('prof-nonsmoker').checked,
     formal:          $id('prof-formal').checked,
@@ -2336,7 +2412,7 @@ $id('save-profile-btn')?.addEventListener('click', async () => {
 
 // Live preview + move-in-date visibility react to every profile edit.
 ['prof-name','prof-occupation','prof-household','prof-movein','prof-pets',
- 'prof-income','prof-about','prof-template'].forEach(id => {
+ 'prof-about','prof-template'].forEach(id => {
   $id(id)?.addEventListener('input', refreshProfilePreview);
 });
 ['prof-nonsmoker','prof-formal'].forEach(id => {
@@ -2421,27 +2497,6 @@ $id('message-copy').addEventListener('click', async () => {
     toast('📋 Nachricht kopiert!');
   } catch (e) { toast('❌ Kopieren fehlgeschlagen'); }
 });
-
-// Opens the detail view for a listing referenced by a shared link
-// (?listing=<id> in the URL), then cleans the URL so a refresh doesn't
-// re-trigger it. Works for any listing the current user can technically
-// see via GET /api/listings/:id (bypasses the normal swipe-queue
-// visibility scoping — see that endpoint's comment for why).
-async function openSharedListingFromUrl() {
-  const params = new URLSearchParams(location.search);
-  const sharedId = params.get('listing');
-  if (!sharedId) return;
-
-  // Strip the param immediately regardless of outcome, so the URL is
-  // clean and a page refresh won't keep re-opening the same listing.
-  params.delete('listing');
-  const cleanUrl = location.pathname + (params.toString() ? `?${params}` : '') + location.hash;
-  history.replaceState({}, '', cleanUrl);
-
-  const d = await api(`/api/listings/${sharedId}`);
-  if (d.error || !d.listing) { toast('❌ Geteiltes Inserat nicht gefunden'); return; }
-  detailView.open(d.listing, { fromSwipe: true });
-}
 
 // ══════════════════════════════════════════════════════════
 //  INIT
