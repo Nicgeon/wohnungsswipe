@@ -117,7 +117,7 @@ function hasData(p, key) {
     case 'lease':        return !!(p.lease_duration && p.lease_duration !== 'any');
     case 'smoking':      return true;
     case 'pets':         return !!p.pets;
-    case 'employment':   return !!p.employment;
+    case 'employment':   return !!(p.employment || p.employment_text);
     case 'income':       return !!p.income_range;
     case 'documents':    return parseDocuments(p).length > 0;
     case 'about':        return !!p.about_text;
@@ -126,6 +126,9 @@ function hasData(p, key) {
     default:             return false;
   }
 }
+
+// Keeps digits and phone punctuation only; "(x)" left over after stripping letters is dropped.
+const cleanPhone = v => v.replace(/[^\d+()/.\-\s]/g, '').replace(/\(\s*\)/g, '').replace(/\s+/g, ' ').trim();
 
 // ── Eingabe prüfen (PUT /api/profile, Vorschau) ────────────
 // Merge semantics: a field that is absent from the request keeps its stored
@@ -168,7 +171,7 @@ function normalizeInput(b, base) {
     income_range:   oneOf('income_range', true, base.income_range || ''),
     documents_json: has('documents') ? JSON.stringify(cleanDocuments(b.documents)) : (base.documents_json || '[]'),
     about_text:     str('about_text', 1000, base.about_text || ''),
-    phone:          has('phone') ? str('phone', 40, '').replace(/[^\d+()/.\-\s]/g, '').replace(/\s+/g, ' ').trim() : (base.phone || ''),
+    phone:          has('phone') ? cleanPhone(str('phone', 40, '')) : (base.phone || ''),
     availability:   str('availability', 200, base.availability || ''),
     formal:         bool('formal', base.formal ? 1 : 0),
     custom_template: str('custom_template', 4000, base.custom_template || ''),
@@ -191,23 +194,24 @@ const CHECKS = [
 ];
 const SECTIONS = ['personal', 'housing', 'income', 'documents', 'about', 'contact'];
 
-function completeness(p) {
+function completenessFrom(checks, p, sectionIds) {
   const empty = !p || p._empty;
-  const results = CHECKS.map(c => ({ ...c, done: !empty && !!c.ok(p) }));
+  const results = checks.map(c => ({ ...c, done: !empty && !!c.ok(p) }));
   const done = results.filter(r => r.done).length;
   const sections = {};
-  for (const s of SECTIONS) {
-    const rs = results.filter(r => r.section === s);
+  for (const sec of sectionIds) {
+    const rs = results.filter(r => r.section === sec);
     const d = rs.filter(r => r.done).length;
-    sections[s] = { done: d, total: rs.length, status: d === rs.length ? 'complete' : d === 0 ? 'empty' : 'partial' };
+    sections[sec] = { done: d, total: rs.length, status: d === rs.length ? 'complete' : d === 0 ? 'empty' : 'partial' };
   }
   return {
-    percent: Math.round(done / CHECKS.length * 100),
-    done, total: CHECKS.length,
+    percent: Math.round(done / checks.length * 100),
+    done, total: checks.length,
     missing: results.filter(r => !r.done).map(r => ({ id: r.id, section: r.section, label: r.label })),
     sections,
   };
 }
+const completeness = p => completenessFrom(CHECKS, p, SECTIONS);
 
 // A member counts as "having a profile" only if they actually filled in
 // something. Members without one must not contribute defaults to a group
@@ -216,7 +220,7 @@ function completeness(p) {
 function isFilled(p) {
   if (!p || p._empty) return false;
   return !!(p.display_name || p.occupation || p.household_size || p.household_type || p.move_in_date ||
-            p.pets || p.about_text || p.employment || p.income_range || p.phone || p.availability ||
+            p.pets || p.about_text || p.employment || p.employment_text || p.income_range || p.phone || p.availability ||
             parseDocuments(p).length);
 }
 
@@ -235,21 +239,11 @@ function movePhraseOf(p, withZum) {
 const personsOf = p => Math.min(12, Math.max(1, parseInt(p.persons, 10) || 1));
 const childrenOf = p => Math.max(0, parseInt(p.children, 10) || 0);
 
-// ── Haushalt: Profil vs. Gruppe ────────────────────────────
-// Who is searching, and how many? Without a group that is the single profile's
-// own persons/children/type. A group states its own size (a family of 6 looking
-// together) — member profiles are individual and must not be summed (a couple
-// with two profiles would count twice). Unset group numbers (0) fall back to
-// "one person per member with a profile".
-function householdOf(profiles, group = null) {
-  if (group) {
-    const n = parseInt(group.persons, 10) || 0;
-    return {
-      persons:  n > 0 ? n : Math.max(profiles.length, 1),
-      children: Math.max(0, parseInt(group.children, 10) || 0),
-      type:     group.household_type || profiles.map(x => x.household_type).find(Boolean) || '',
-    };
-  }
+// ── Haushalt ───────────────────────────────────────────────
+// Who is searching, and how many? Always read from ONE profile: the personal
+// profile for a search without a group, the group profile (see groupAsProfile)
+// for a group search. Profiles are never summed — a couple has one group profile.
+function householdOf(profiles) {
   return {
     persons:  profiles.reduce((n, x) => n + personsOf(x), 0),
     children: profiles.reduce((n, x) => n + childrenOf(x), 0),
@@ -257,43 +251,90 @@ function householdOf(profiles, group = null) {
   };
 }
 
-// Validates the group-level household settings (PUT /api/groups/:id/settings).
-// `base` keeps fields that are absent from the request.
-function normalizeGroupSettings(b, base = {}) {
+// ── Gruppenprofil ──────────────────────────────────────────
+// A group searches as "we": its own profile holds everything that is shared
+// (household, move-in, pets, documents, contact …). Names and occupations are
+// not stored there — they come from the members' personal profiles.
+const GROUP_SHARE_KEY_NAMES = SHARE_KEY_NAMES.filter(k => k !== 'intro');
+
+function normalizeGroupProfile(b, base = {}) {
   b = b || {};
+  const has = k => b[k] !== undefined;
+  const str = (k, max, fallback) => has(k) ? (typeof b[k] === 'string' ? b[k] : '').trim().substring(0, max) : fallback;
+  const oneOf = (k, fallback) => {
+    if (!has(k)) return fallback;
+    return b[k] === '' || optionValues(k).includes(b[k]) ? b[k] : fallback;
+  };
   const int = (k, max, fallback) => {
-    if (b[k] === undefined) return fallback;
+    if (!has(k)) return fallback;
     const n = parseInt(b[k], 10);
     return Number.isFinite(n) ? Math.min(max, Math.max(0, n)) : fallback;
   };
   const persons = int('persons', 30, parseInt(base.persons) || 0);
   let children = int('children', 30, parseInt(base.children) || 0);
-  if (persons > 0) children = Math.min(children, persons - 1);   // at least one adult
-  let type = base.household_type || '';
-  if (b.household_type !== undefined) type = b.household_type === '' || optionValues('household_type').includes(b.household_type) ? b.household_type : type;
-  return { persons, children, household_type: type };
+  if (persons > 0) children = Math.min(children, persons - 1);     // at least one adult
+  const share = parseShare(base);
+  if (b.share && typeof b.share === 'object') {
+    for (const key of GROUP_SHARE_KEY_NAMES) if (typeof b.share[key] === 'boolean') share[key] = b.share[key];
+  }
+  return {
+    household_type: oneOf('household_type', base.household_type || ''),
+    persons, children,
+    move_in_type:   oneOf('move_in_type', base.move_in_type || ''),
+    move_in_date:   str('move_in_date', 60, base.move_in_date || ''),
+    lease_duration: oneOf('lease_duration', base.lease_duration || ''),
+    smoker:         has('smoker') ? (b.smoker ? 1 : 0) : (base.smoker ? 1 : 0),
+    pets:           str('pets', 120, base.pets || ''),
+    employment_text: str('employment_text', 300, base.employment_text || ''),
+    income_range:   oneOf('income_range', base.income_range || ''),
+    documents_json: has('documents') ? JSON.stringify(cleanDocuments(b.documents)) : (base.documents_json || '[]'),
+    about_text:     str('about_text', 1000, base.about_text || ''),
+    phone:          has('phone') ? cleanPhone(str('phone', 40, '')) : (base.phone || ''),
+    availability:   str('availability', 200, base.availability || ''),
+    share_json:     JSON.stringify(share),
+  };
+}
+
+// Group profile row → the profile shape the message builders understand.
+// persons = 0 means "automatic": one person per group member.
+function groupAsProfile(gp, memberCount = 0) {
+  const n = parseInt(gp.persons, 10) || 0;
+  return {
+    ...gp, _empty: false,
+    display_name: '', occupation: '', household_size: '', formal: 1, employment: '', employment_permanent: 0,
+    persons: n > 0 ? n : Math.max(memberCount, 1),
+  };
+}
+
+const GROUP_CHECKS = [
+  { id: 'household_type', section: 'housing',   label: 'Wohnform',            ok: p => !!p.household_type },
+  { id: 'move_in',        section: 'housing',   label: 'Einzug',              ok: p => !!movePhraseOf(p, true) },
+  { id: 'pets',           section: 'housing',   label: 'Haustiere',           ok: p => !!p.pets },
+  { id: 'employment',     section: 'income',    label: 'Berufliche Situation', ok: p => !!p.employment_text },
+  { id: 'documents',      section: 'documents', label: 'Unterlagen',          ok: p => parseDocuments(p).length > 0 },
+  { id: 'about_text',     section: 'about',     label: 'Über uns',            ok: p => !!p.about_text },
+  { id: 'phone',          section: 'contact',   label: 'Telefonnummer',       ok: p => !!p.phone },
+  { id: 'availability',   section: 'contact',   label: 'Besichtigungszeiten', ok: p => !!p.availability },
+];
+function completenessGroup(gp) {
+  return completenessFrom(GROUP_CHECKS, gp, ['housing', 'income', 'documents', 'about', 'contact']);
 }
 
 // ── Sichtbares Profil ──────────────────────────────────────
 // Returns a copy of the profile with everything blanked that must not end up
 // in a message: switched off in the person's own privacy settings or in the
-// generator's Bausteine for this message. `override` is a group-wide move-in
-// agreement ("Angleichen") that replaces each member's own move-in.
-function visibleProfile(p, { blocks = {}, override = null } = {}) {
+// generator's Bausteine for this message.
+function visibleProfile(p, { blocks = {} } = {}) {
   const share = parseShare(p);
   const allowed = key => share[key] !== false && blocks[key] !== false;
   const v = { ...p };
   if (!allowed('intro'))        { v.occupation = ''; v._hideIntro = true; }
   if (!allowed('household'))    { v.household_type = ''; v.household_size = ''; v.children = 0; }
   if (!allowed('movein'))       { v.move_in_type = ''; v.move_in_date = ''; }
-  else if (override && override.move_in_type) {
-    v.move_in_type = override.move_in_type;
-    v.move_in_date = override.move_in_type === 'date' ? (override.move_in_date || '') : '';
-  }
   if (!allowed('lease'))        v.lease_duration = '';
   if (!allowed('smoking'))      v._hideSmoker = true;
   if (!allowed('pets'))         v.pets = '';
-  if (!allowed('employment'))   { v.employment = ''; v.employment_permanent = 0; }
+  if (!allowed('employment'))   { v.employment = ''; v.employment_permanent = 0; v.employment_text = ''; }
   if (!allowed('income'))       v.income_range = '';
   if (!allowed('documents'))    v.documents_json = '[]';
   if (!allowed('about'))        v.about_text = '';
@@ -305,9 +346,10 @@ function visibleProfile(p, { blocks = {}, override = null } = {}) {
 // Which Bausteine make sense for these (raw) profiles: does anyone have data
 // for it, and does anyone with data allow sharing it? Drives the toggles in
 // the generator ("Im Profil auf 'nur auf Nachfrage' gesetzt").
-function blockStatus(profiles) {
+function blockStatus(profiles, introProfiles = null) {
   return SHARE_KEYS.map(({ key, label }) => {
-    const withData = profiles.filter(p => hasData(p, key));
+    // group search: the "Vorstellung" block is fed by the members' personal profiles
+    const withData = (key === 'intro' && introProfiles ? introProfiles : profiles).filter(p => hasData(p, key));
     return {
       key, label,
       hasData: withData.length > 0,
@@ -323,12 +365,15 @@ const employmentText = p => {
   return base && p.employment === 'employed' && p.employment_permanent ? `unbefristet ${base}` : base;
 };
 
+// Free sentence for the group profile's "Berufliche Situation" when adopting a personal profile.
+const employmentSentence = p => { const t = employmentText(p); return t ? `Wir sind ${t}.` : ''; };
+
 // Build the {placeholder} substitution map from a listing + profile(s).
 // For a group, person-related placeholders aggregate every filled member
 // profile ({name} -> "Anna, Ben und Chris"); for a solo request `profiles`
 // is just [profile], so behaviour is unchanged. Expects visibleProfile()
 // copies so hidden fields come out empty.
-function buildPlaceholders(listing, profile, profiles = [profile], group = null) {
+function buildPlaceholders(listing, profile, profiles = [profile], members = null) {
   const uniq = arr => [...new Set(arr.filter(Boolean))];
   const docs = new Map();
   for (const pr of profiles) for (const d of parseDocuments(pr)) {
@@ -337,9 +382,10 @@ function buildPlaceholders(listing, profile, profiles = [profile], group = null)
   const unterlagen = [...docs.values()]
     .map(d => `${d.doc} (${DOC_STATUS_LABEL[d.status]?.[isPluralDoc(d.doc) ? 'many' : 'one'] || d.status})`)
     .join(', ');
-  const names = uniq(profiles.map(x => x.display_name));
+  const people = members || profiles;               // group search: names/jobs come from the members
+  const names = uniq(people.map(x => x.display_name));
   const namen = germanList(names);
-  const { persons, children: kinder, type } = householdOf(profiles, group);
+  const { persons, children: kinder } = householdOf(profiles);
   return {
     titel:   listing.title || '',
     preis:   listing.price_cold || listing.price || '',
@@ -354,12 +400,12 @@ function buildPlaceholders(listing, profile, profiles = [profile], group = null)
     namen,
     personen: String(Math.max(persons, 1)),
     kinder:  kinder ? String(kinder) : '',
-    beruf:   uniq(profiles.map(x => x.occupation)).join(', '),
+    beruf:   uniq(people.map(x => x.occupation)).join(', '),
     einzug:  uniq(profiles.map(x => movePhraseOf(x, false))).join(' bzw. '),
-    haushalt: (group ? '' : uniq(profiles.map(x => x.household_size)).join(', ')) || (persons > 1 ? `${persons} Personen` : ''),
-    wohnform: group ? optionLabel('household_type', type) : uniq(profiles.map(x => optionLabel('household_type', x.household_type))).join(', '),
+    haushalt: uniq(profiles.map(x => x.household_size)).join(', ') || (persons > 1 ? `${persons} Personen` : ''),
+    wohnform: uniq(profiles.map(x => optionLabel('household_type', x.household_type))).join(', '),
     mietdauer: uniq(profiles.map(x => x.lease_duration === 'any' ? '' : optionLabel('lease_duration', x.lease_duration))).join(', '),
-    beschaeftigung: uniq(profiles.map(employmentText)).join(', '),
+    beschaeftigung: uniq(profiles.map(x => x.employment_text || employmentText(x))).join(', '),
     einkommen: uniq(profiles.map(x => optionLabel('income_range', x.income_range))).join(', '),
     telefon: uniq(profiles.map(x => x.phone)).join(' oder '),
     erreichbarkeit: uniq(profiles.map(x => x.availability)).join(' bzw. '),
@@ -414,9 +460,11 @@ function petItems(profiles) {
 // Variant A1 — guided template built from structured profile fields. Written as flowing
 // German: related facts share a sentence, subjects vary, grammar follows tone and head count
 // ("beide"/"alle", "zu zweit", "Ihre"/"deine"). Expects visibleProfile() copies (hidden
-// fields already blanked). `group` is the group's own household (see householdOf).
-function buildGuidedMessage(listing, profiles, formal, group = null) {
-  const { persons, children: kids, type } = householdOf(profiles, group);
+// fields already blanked). For a group search `profiles` is [group profile] and `members`
+// the visible member profiles that supply names and occupations.
+function buildGuidedMessage(listing, profiles, formal, members = null) {
+  const { persons, children: kids, type } = householdOf(profiles);
+  const people = members || profiles;            // who is named in the intro and the signature
   const plural = persons > 1;                 // "wir" instead of "ich"
   const Wir = plural ? 'Wir' : 'Ich';
   const wir = plural ? 'wir' : 'ich';
@@ -441,7 +489,7 @@ function buildGuidedMessage(listing, profiles, formal, group = null) {
   paragraphs.push(`mit großem Interesse ${plural ? 'haben wir' : 'habe ich'} ${titleRef}${detailStr} gesehen und ${plural ? 'würden uns' : 'würde mich'} sehr über eine Besichtigung freuen.`);
 
   // ── Who we are ──
-  const introProfiles = profiles.filter(x => !x._hideIntro);
+  const introProfiles = people.filter(x => !x._hideIntro);
   const who = introProfiles.map(x => {
     if (!x.display_name && !x.occupation) return '';
     return x.occupation ? `${x.display_name || 'eine Person'} (${x.occupation})` : x.display_name;
@@ -459,8 +507,8 @@ function buildGuidedMessage(listing, profiles, formal, group = null) {
     else if (who.length === 1) intro += `. Ansprechperson ist ${who[0]}.`;
     else                       intro += '.';
     paragraphs.push(intro);
-  } else if (who.length || profiles[0]?.display_name) {
-    const p = profiles[0];
+  } else if (who.length || people[0]?.display_name) {
+    const p = people[0];
     const name = !p._hideIntro && p.display_name;
     const job = p.occupation;
     if (name && job)      paragraphs.push(`Mein Name ist ${name} und ich bin ${job}.`);
@@ -516,6 +564,12 @@ function buildGuidedMessage(listing, profiles, formal, group = null) {
     else facts.push(cap(germanList(emp.map(e => `${e.name} ist ${e.text}`))) + '.');
   }
 
+  // Group profile: one free sentence about how the members are employed.
+  for (const x of profiles) {
+    const t = (x.employment_text || '').trim();
+    if (t) facts.push(/[.!?]$/.test(t) ? cap(t) : cap(t) + '.');
+  }
+
   // Income — only present if the person(s) chose to share it.
   const inc = profiles.map((x, i) => ({ name: nameOf(x, i), label: optionLabel('income_range', x.income_range) })).filter(e => e.label);
   if (inc.length) {
@@ -566,34 +620,36 @@ function buildGuidedMessage(listing, profiles, formal, group = null) {
   paragraphs.push(formal
     ? `Über eine Rückmeldung ${plural ? 'würden wir uns' : 'würde ich mich'} sehr freuen.`
     : `Über eine kurze Rückmeldung ${plural ? 'würden wir uns' : 'würde ich mich'} sehr freuen.`);
-  const sigNames = profiles.map(x => x.display_name).filter(Boolean);
+  const sigNames = people.map(x => x.display_name).filter(Boolean);
   paragraphs.push([formal ? 'Mit freundlichen Grüßen' : 'Viele Grüße', sigNames.join(', ')].filter(Boolean).join('\n'));
 
   return paragraphs.join('\n\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
-// One line per person for the LLM prompt (visibleProfile() copies).
-function summarizeForAi(profiles, group = null) {
-  const head = group ? (() => {
-    const h = householdOf(profiles, group);
-    return `Suche als Gruppe: ${h.persons} Personen${h.children ? `, davon ${h.children} Kinder` : ''}${h.type ? `, Wohnform: ${optionLabel('household_type', h.type)}` : ''}\n`;
-  })() : '';
-  return head + profiles.map((p, i) => {
+// Facts for the LLM prompt (visibleProfile() copies). Group search: `profiles` is [group profile],
+// `members` supplies the people.
+function summarizeForAi(profiles, members = null) {
+  const lines = [];
+  const people = members || profiles;
+  if (members) {
+    lines.push(...members.map((p, i) => `Person ${i + 1}: ${[p.display_name && `Name: ${p.display_name}`, p.occupation && `Beruf: ${p.occupation}`].filter(Boolean).join(', ') || '–'}`));
+  }
+  profiles.forEach((p, i) => {
     const parts = [];
-    if (p.display_name) parts.push(`Name: ${p.display_name}`);
-    if (p.occupation)   parts.push(`Beruf: ${p.occupation}`);
-    if (!group) {
-      if (personsOf(p) > 1) parts.push(`Personen im Haushalt: ${personsOf(p)}`);
-      if (p.household_type) parts.push(`Wohnform: ${optionLabel('household_type', p.household_type)}`);
-      if (childrenOf(p))    parts.push(`Kinder: ${childrenOf(p)}`);
-      else if (p.household_size) parts.push(`Haushalt: ${p.household_size}`);
+    if (!members) {
+      if (p.display_name) parts.push(`Name: ${p.display_name}`);
+      if (p.occupation)   parts.push(`Beruf: ${p.occupation}`);
     }
+    if (personsOf(p) > 1) parts.push(`Personen im Haushalt: ${personsOf(p)}`);
+    if (p.household_type) parts.push(`Wohnform: ${optionLabel('household_type', p.household_type)}`);
+    if (childrenOf(p))    parts.push(`Kinder: ${childrenOf(p)}`);
+    else if (p.household_size) parts.push(`Haushalt: ${p.household_size}`);
     const move = movePhraseOf(p, false);
     if (move) parts.push(`Einzug: ${move}`);
     if (p.lease_duration && p.lease_duration !== 'any') parts.push(`Mietdauer: ${optionLabel('lease_duration', p.lease_duration)}`);
     if (!p._hideSmoker) parts.push(p.smoker ? 'Raucher' : 'Nichtraucher');
     if (p.pets) parts.push(`Haustiere: ${p.pets}`);
-    const emp = employmentText(p);
+    const emp = p.employment_text || employmentText(p);
     if (emp) parts.push(`Beschäftigung: ${emp}`);
     if (p.income_range) parts.push(`Netto-Einkommen: ${optionLabel('income_range', p.income_range)}`);
     const docs = parseDocuments(p);
@@ -601,75 +657,27 @@ function summarizeForAi(profiles, group = null) {
     if (p.about_text) parts.push(`Über: ${p.about_text}`);
     if (p.phone) parts.push(`Telefon: ${p.phone}`);
     if (p.availability) parts.push(`Besichtigung möglich: ${p.availability}`);
-    return `Person ${i + 1}: ${parts.join(', ')}`;
-  }).join('\n');
+    lines.push(`${members ? 'Gemeinsame Angaben der Gruppe' : `Person ${i + 1}`}: ${parts.join(', ')}`);
+  });
+  return (members ? 'Suche als Gruppe (Wir-Form).\n' : '') + lines.join('\n');
 }
 
-// ── Gruppen-Übersicht ──────────────────────────────────────
-// entries: [{ user: {id, username}, profile }] for ALL members.
-// Only data the members chose to share (visibleProfile) goes into `combined`;
-// other members' completeness is exposed as a percentage only.
-function groupOverview(entries, override = null, group = null) {
-  const members = entries.map(({ user, profile }) => {
+// ── Gruppen-Mitglieder ─────────────────────────────────────
+// entries: [{ user: {id, username}, profile }] for ALL members. Other members'
+// completeness is exposed as a percentage only.
+function groupMembersStatus(entries) {
+  return entries.map(({ user, profile }) => {
     const filled = isFilled(profile);
-    const c = completeness(profile);
     return { id: user.id, username: user.username, hasProfile: filled,
-             percent: filled ? c.percent : 0,
+             percent: filled ? completeness(profile).percent : 0,
              display_name: filled ? profile.display_name || '' : '' };
   });
-
-  const filledEntries = entries.filter(e => isFilled(e.profile));
-  const vis = filledEntries.map(e => ({ user: e.user, p: visibleProfile(e.profile, { override }) }));
-  const raw = filledEntries.map(e => ({ user: e.user, p: visibleProfile(e.profile) })); // without override
-
-  // Distinct move-in wishes (before any override) → conflict hint.
-  const moveByMember = raw
-    .map(({ user, p }) => ({ id: user.id, username: user.username, label: movePhraseOf(p, false) }))
-    .filter(m => m.label);
-  const distinct = [...new Set(moveByMember.map(m => m.label))];
-
-  const docs = new Map();
-  for (const { p } of vis) for (const d of parseDocuments(p)) {
-    if (d.doc && !docs.has(d.doc.toLowerCase())) docs.set(d.doc.toLowerCase(), d);
-  }
-  const smokerVis = vis.filter(({ p }) => !p._hideSmoker);
-  const pets = [...new Set(vis.map(({ p }) => p.pets).filter(Boolean))];
-
-  return {
-    members,
-    settings: {
-      persons: parseInt(group?.persons) || 0,
-      children: parseInt(group?.children) || 0,
-      household_type: group?.household_type || '',
-      autoPersons: Math.max(vis.length, 1),      // what "automatic" resolves to
-    },
-    combined: {
-      memberCount: vis.length,
-      persons: householdOf(vis.map(v => v.p), group || {}).persons,
-      children: householdOf(vis.map(v => v.p), group || {}).children,
-      household_type: householdOf(vis.map(v => v.p), group || {}).type,
-      names: vis.map(({ p }) => p.display_name).filter(Boolean),
-      occupations: vis.map(({ user, p }) => ({ id: user.id, name: p.display_name || user.username, occupation: p.occupation })).filter(x => x.occupation),
-      nonSmoker: smokerVis.length > 0 && smokerVis.every(({ p }) => !p.smoker),
-      noPets: pets.length > 0 && pets.every(x => /^(keine?|nein|-)$/i.test(x.trim())),
-      pets,
-      documents: [...docs.values()],
-      moveIn: {
-        perMember: moveByMember,
-        conflict: distinct.length > 1 && !(override && override.move_in_type),
-        override: override && override.move_in_type
-          ? { move_in_type: override.move_in_type, move_in_date: override.move_in_date || '',
-              label: movePhraseOf({ move_in_type: override.move_in_type, move_in_date: override.move_in_date }, false) }
-          : null,
-      },
-    },
-  };
 }
 
 module.exports = {
   OPTIONS, SHARE_KEYS, SHARE_KEY_NAMES, SECTIONS, DOC_STATUS_LABEL,
-  householdOf, normalizeGroupSettings, cleanDocuments, parseDocuments, parseShare, hasData, normalizeInput,
+  householdOf, normalizeGroupProfile, groupAsProfile, completenessGroup, employmentSentence, GROUP_SHARE_KEY_NAMES, cleanDocuments, parseDocuments, parseShare, hasData, normalizeInput,
   completeness, isFilled, movePhraseOf, personsOf, childrenOf, visibleProfile, blockStatus,
-  buildPlaceholders, applyTemplate, buildGuidedMessage, summarizeForAi, groupOverview,
+  buildPlaceholders, applyTemplate, buildGuidedMessage, summarizeForAi, groupMembersStatus,
   germanList, isPluralDoc, optionLabel,
 };

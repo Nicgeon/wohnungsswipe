@@ -15,6 +15,7 @@ const PF_ICON = {
   about:     '<path d="M20 15a2 2 0 0 1-2 2H8l-4 4V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2z"/>',
   contact:   '<path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2z"/>',
   template:  '<path d="M4 6h16M4 12h16M4 18h10"/>',
+  members:   '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6"/><circle cx="17" cy="9" r="2.5"/><path d="M17 14c2.8 0 4.5 1.9 4.5 4.5"/>',
   eye:       '<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>',
   eyeOff:    '<path d="M3 3l18 18"/><path d="M10.6 5.1A10 10 0 0 1 12 5c6 0 10 7 10 7a17 17 0 0 1-3.2 4"/><path d="M6.2 6.2C3.5 8 2 12 2 12s4 7 10 7a9.7 9.7 0 0 0 4-.9"/>',
   warn:      '<path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18h.01"/>',
@@ -36,6 +37,18 @@ const PF_SECTIONS = [
   { id: 'template',  title: 'Eigene Vorlage',        desc: 'Optional: Schreib deinen eigenen Text mit Platzhaltern statt der geführten Nachricht.' },
 ];
 
+// A group searches as "we": same page, own sections. "Mitglieder" replaces "Persönliches" — names and
+// occupations are taken from the members' personal profiles, everything else is shared and edited here.
+const PF_GROUP_SECTIONS = PF_SECTIONS.map(s => {
+  if (s.id === 'personal') return { id: 'members', title: 'Mitglieder', desc: 'Wer sucht mit? Namen und Berufe holt die App aus den persönlichen Profilen der Mitglieder.' };
+  if (s.id === 'housing')  return { ...s, desc: 'Wie wohnt ihr, wann wollt ihr einziehen? Gilt für alle Nachrichten aus dieser Gruppe.' };
+  if (s.id === 'income')   return { ...s, title: 'Beruf & Einkommen', desc: 'Wie sind die Mitglieder beruflich aufgestellt? Das Einkommen erscheint nur, wenn ihr es freigebt.' };
+  if (s.id === 'about')    return { ...s, title: 'Über uns', desc: 'Ein paar Sätze, die euch als Gruppe beschreiben.' };
+  if (s.id === 'template') return { ...s, desc: 'Optional: Dein eigener Text für Nachrichten aus dieser Gruppe (nur für dich).' };
+  return s;
+});
+const pfSections = () => pf.target === 'me' ? PF_SECTIONS : PF_GROUP_SECTIONS;
+
 const DOC_STATUS_OPTIONS = [
   { value: 'vorhanden',   label: 'vorhanden' },
   { value: 'beantragt',   label: 'beantragt' },
@@ -47,6 +60,9 @@ const PET_TOKENS = [
 ];
 
 const pf = {
+  target: 'me',            // 'me' = personal profile, otherwise a group id (the shared group profile)
+  nextTarget: null,        // set before showView('profile') to open a specific profile
+  members: [], autoPersons: 1, tplDirty: false,
   loaded: false,
   p: null,                 // editable profile (UI shape)
   options: {}, shareKeys: [], completeness: null,
@@ -82,6 +98,7 @@ function pfFromServer(profile) {
     move_in_type: profile.move_in_type || '', move_in_date: profile.move_in_date || '',
     lease_duration: profile.lease_duration || '', smoker: profile.smoker ? 1 : 0, pets: profile.pets || '',
     employment: profile.employment || '', employment_permanent: !!profile.employment_permanent,
+    employment_text: profile.employment_text || '',
     income_range: profile.income_range || '', documents: docs,
     about_text: profile.about_text || '', phone: profile.phone || '', availability: profile.availability || '',
     formal: !!profile.formal, custom_template: profile.custom_template || '',
@@ -91,6 +108,15 @@ function pfFromServer(profile) {
 
 function pfPayload() {
   const p = pf.p;
+  if (pf.target !== 'me') {                 // group profile: no personal name/occupation/employment/tone/template
+    return {
+      household_type: p.household_type, persons: p.persons, children: p.children,
+      move_in_type: p.move_in_type, move_in_date: p.move_in_date, lease_duration: p.lease_duration,
+      smoker: !!p.smoker, pets: p.pets, employment_text: p.employment_text, income_range: p.income_range,
+      documents: p.documents.filter(d => d.doc.trim()), about_text: p.about_text, phone: p.phone,
+      availability: p.availability, share: p.share,
+    };
+  }
   return {
     display_name: p.display_name, occupation: p.occupation, household_type: p.household_type,
     persons: p.persons, children: p.children, move_in_type: p.move_in_type, move_in_date: p.move_in_date,
@@ -127,8 +153,14 @@ async function pfSave() {
   pfSetStatus('saving');
   pf.saving = (async () => {
     try {
-      const r = await api('/api/profile', { method: 'PUT', body: pfPayload() });
+      const url = pf.target === 'me' ? '/api/profile' : `/api/groups/${pf.target}/profile`;
+      const r = await api(url, { method: 'PUT', body: pfPayload() });
       if (!r.success) throw new Error(r.error || 'Fehler');
+      if (pf.target !== 'me' && pf.tplDirty) {          // the per-user group template is stored separately
+        const t = await api(`/api/groups/${pf.target}/template`, { method: 'PUT', body: { template: pf.p.custom_template } });
+        if (!t.success) throw new Error(t.error || 'Fehler');
+        if (pf.version === sentVersion) pf.tplDirty = false;
+      }
       if (pf.version === sentVersion) { pf.dirty = false; pfSetStatus('saved'); }
       else { pfSetStatus('pending'); pf.saveTimer = setTimeout(pfSave, 300); }
       pf.completeness = r.completeness; pfRenderHero(); pfRenderNav(); pfRenderMissing();
@@ -150,28 +182,44 @@ async function pfFlush() {
 window.pfFlush = pfFlush;
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden' && pf.loaded && pf.dirty) {
-    fetch('/api/profile', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(pfPayload()), keepalive: true }).catch(() => {});
+    fetch(pf.target === 'me' ? '/api/profile' : `/api/groups/${pf.target}/profile`, { method: 'PUT',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(pfPayload()), keepalive: true }).catch(() => {});
   }
 });
 
 async function loadProfilePage() {
   if (pf.dirty) await pfFlush();
-  const d = await api('/api/profile');
+  let target = pf.nextTarget ?? 'me';
+  pf.nextTarget = null;
+  let d, tpl = null;
+  if (target === 'me') d = await api('/api/profile');
+  else {
+    [d, tpl] = await Promise.all([api(`/api/groups/${target}/profile`), api(`/api/groups/${target}/template`)]);
+    if (d.error) { target = 'me'; d = await api('/api/profile'); tpl = null; }   // group gone / no access
+  }
   if (!d.profile) return;
+  pf.target = target;
   pf.options = d.options || {}; pf.shareKeys = d.shareKeys || [];
   pf.p = pfFromServer(d.profile);
+  if (target !== 'me') pf.p.custom_template = tpl?.template || '';
+  pf.members = d.members || []; pf.autoPersons = d.autoPersons || 1; pf.tplDirty = false;
   pf.pets = petsParse(pf.p.pets);
   pf.completeness = d.completeness;
   pf.loaded = true; pf.dirty = false;
   // Desktop opens on the first unfinished section, mobile starts on the overview.
-  const first = PF_SECTIONS.find(s => d.completeness.sections[s.id] && d.completeness.sections[s.id].status !== 'complete');
-  pf.section = first ? first.id : 'personal';
+  const first = pfSections().find(s => d.completeness.sections[s.id] && d.completeness.sections[s.id].status !== 'complete');
+  pf.section = first ? first.id : pfSections()[0].id;
   pf.mode = 'hub';
+  $id('pf-title').textContent = target === 'me' ? 'Bewerber-Profil' : 'Gruppen-Profil';
+  $id('pf-layout').dataset.target = target === 'me' ? 'me' : 'group';
   pfSetStatus('saved');
-  pfBuildEditor(); pfRenderHero(); pfRenderNav(); pfRenderMissing(); pfRenderSwitch(); pfApplyMode();
+  pfBuildEditor(); pfRenderHero(); pfRenderNav(); pfRenderMissing(); pfRenderSwitch(); pfRenderGroupCard(); pfApplyMode();
   pfPreviewNow();
 }
+// Open the profile page on a specific profile: 'me' or a group id.
+function openProfilePage(target = 'me') { pf.nextTarget = target; showView('profile', true); }
+window.openProfilePage = openProfilePage;
+async function pfSwitchTarget(target) { await pfFlush(); pf.nextTarget = target; await loadProfilePage(); }
 window.loadProfilePage = loadProfilePage;
 
 // ── rendering: editor ──────────────────────────────────────
@@ -201,6 +249,9 @@ const pfToggleHtml = (field, label, hint = '') => `
 function pfSectionBody(id) {
   const o = pf.options;
   switch (id) {
+    case 'members': return `
+      <div id="pf-members" class="gp-members pf-card"></div>
+      <p class="pf-hint">Wer hier fehlt, hat noch kein persönliches Profil: Die Nachricht nennt dann nur die Mitglieder mit Profil. Die Personenzahl legst du unter „Wohnsituation“ fest.</p>`;
     case 'personal': return `
       ${pfFieldHtml('Name', pfInputHtml('display_name', 'Vor- und Nachname', 'text', 'autocomplete="name"'))}
       ${pfFieldHtml('Beruf / Tätigkeit', pfInputHtml('occupation', 'z.B. Ingenieurin'), 'intro')}
@@ -208,7 +259,7 @@ function pfSectionBody(id) {
     case 'housing': return `
       ${pfFieldHtml('Wir sind', pfChipsHtml('household_type', o.household_type || [], 'pf-chips-grid4'), 'household')}
       <div class="pf-steppers">${pfStepperHtml('persons', 'Personen')}${pfStepperHtml('children', 'Davon Kinder')}</div>
-      <p class="pf-hint" style="margin-top:-10px">Gilt für Suchen ohne Gruppe. In einer Gruppe legt ihr die Personenzahl in der Gruppe selbst fest.</p>
+      <p class="pf-hint" style="margin-top:-10px" data-pf-persons-hint></p>
       ${pfFieldHtml('Einzug', `${pfChipsHtml('move_in_type', o.move_in_type || [], 'pf-seg')}
         <div data-show-if="move_in_type=date">${pfInputHtml('move_in_date', 'z.B. 01.12.2026')}</div>`, 'movein')}
       ${pfFieldHtml('Gewünschte Mietdauer', pfChipsHtml('lease_duration', o.lease_duration || []), 'lease')}
@@ -216,8 +267,10 @@ function pfSectionBody(id) {
         <div data-show-if="pets!=keine">${pfInputHtml('pets_extra', 'Anderes Tier (optional)')}</div>`, 'pets')}
       ${pfFieldHtml('Rauchen', pfToggleHtml('nonsmoker', 'Nichtraucher'), 'smoking')}`;
     case 'income': return `
-      ${pfFieldHtml('Beschäftigung', pfChipsHtml('employment', o.employment || []), 'employment')}
-      <div data-show-if="employment=employed">${pfToggleHtml('employment_permanent', 'Unbefristetes Arbeitsverhältnis')}</div>
+      ${pf.target !== 'me'
+        ? pfFieldHtml('Berufliche Situation', `<textarea class="pf-input" rows="3" data-input="employment_text" placeholder="z.B. Wir sind beide unbefristet angestellt."></textarea>`, 'employment')
+        : `${pfFieldHtml('Beschäftigung', pfChipsHtml('employment', o.employment || []), 'employment')}
+      <div data-show-if="employment=employed">${pfToggleHtml('employment_permanent', 'Unbefristetes Arbeitsverhältnis')}</div>`}
       ${pfFieldHtml('Netto-Haushaltseinkommen', pfChipsHtml('income_range', o.income_range || [], 'pf-chips-grid2'), 'income')}
       <p class="pf-hint">Das Einkommen steht nur in der Nachricht, wenn du „In Nachricht“ aktivierst. Sonst bleibt es privat in deinem Profil.</p>`;
     case 'documents': return `
@@ -226,7 +279,7 @@ function pfSectionBody(id) {
         <button type="button" class="btn-secondary" id="pf-doc-add" style="width:auto">+ Dokument hinzufügen</button>
         <datalist id="doc-suggestions">${['SCHUFA-Auskunft','Gehaltsnachweise','Mieterselbstauskunft','Ausweiskopie','Bürgschaft','Mietschuldenfreiheitsbescheinigung','Arbeitsvertrag'].map(x => `<option value="${x}"></option>`).join('')}</datalist>`, 'documents')}`;
     case 'about': return `
-      ${pfFieldHtml('Über mich / uns', `<textarea class="pf-input" rows="5" data-input="about_text" placeholder="Kurzer Text über dich als Mieter:in"></textarea>`, 'about')}`;
+      ${pfFieldHtml(pf.target === 'me' ? 'Über mich / uns' : 'Über uns', `<textarea class="pf-input" rows="5" data-input="about_text" placeholder="${pf.target === 'me' ? 'Kurzer Text über dich als Mieter:in' : 'Ein paar Sätze, die euch als Gruppe beschreiben'}"></textarea>`, 'about')}`;
     case 'contact': return `
       ${pfFieldHtml('Telefonnummer', pfInputHtml('phone', '+49 …', 'tel', 'autocomplete="tel"'), 'phone')}
       ${pfFieldHtml('Besichtigungszeiten', pfInputHtml('availability', 'z.B. Mo–Fr ab 17 Uhr, am Wochenende ganztägig'), 'availability')}`;
@@ -239,7 +292,8 @@ function pfSectionBody(id) {
 }
 
 function pfBuildEditor() {
-  $id('pf-editor').innerHTML = PF_SECTIONS.map((s, i) => `
+  const secs = pfSections();
+  $id('pf-editor').innerHTML = secs.map((s, i) => `
     <section class="pf-section" data-pf-section="${s.id}" aria-labelledby="pf-h-${s.id}">
       <div class="pf-section-head">
         <h3 id="pf-h-${s.id}">${s.title}</h3>
@@ -247,13 +301,35 @@ function pfBuildEditor() {
       </div>
       <div class="pf-section-body">${pfSectionBody(s.id)}</div>
       <div class="pf-section-foot">
-        ${i > 0 ? `<button type="button" class="btn-ghost" data-goto-section="${PF_SECTIONS[i - 1].id}">← ${PF_SECTIONS[i - 1].title}</button>` : '<span></span>'}
-        ${i < PF_SECTIONS.length - 1 ? `<button type="button" class="btn-primary" data-goto-section="${PF_SECTIONS[i + 1].id}">Weiter: ${PF_SECTIONS[i + 1].title} →</button>` : '<span></span>'}
+        ${i > 0 ? `<button type="button" class="btn-ghost" data-goto-section="${secs[i - 1].id}">← ${secs[i - 1].title}</button>` : '<span></span>'}
+        ${i < secs.length - 1 ? `<button type="button" class="btn-primary" data-goto-section="${secs[i + 1].id}">Weiter: ${secs[i + 1].title} →</button>` : '<span></span>'}
       </div>
     </section>`).join('');
   pfRenderDocs();
+  pfRenderMembers();
   pfSyncEditor();
   pfShowSection();
+}
+
+// "Mitglieder" (group profile): who is in, how complete their personal profile is, remind the missing ones.
+function pfRenderMembers() {
+  const el = $id('pf-members'); if (!el) return;
+  const me = state.user?.userId;
+  el.innerHTML = pf.members.map(m => {
+    const isMe = m.id === me, name = m.display_name || m.username;
+    const action = isMe ? `<button type="button" class="gp-btn" data-pf-edit-me>Mein Profil</button>`
+      : (!m.hasProfile ? `<button type="button" class="gp-btn warn" data-pf-remind="${m.id}">Erinnern</button>` : '');
+    return `<div class="gp-member">
+      <span class="gp-av${m.hasProfile ? '' : ' none'}">${esc(pfInitials(name))}</span>
+      <div class="gp-member-main">
+        <div class="gp-member-name">${esc(m.username)}${isMe ? ' <span class="you-badge">· du</span>' : ''}</div>
+        ${m.hasProfile ? `<div class="gp-bar"><div style="width:${m.percent}%;background:${m.percent === 100 ? 'var(--like)' : 'var(--accent)'}"></div></div>`
+                       : '<div class="gp-member-sub">Noch kein Profil angelegt</div>'}
+      </div>
+      ${m.hasProfile ? `<span class="gp-pct${m.percent === 100 ? ' full' : ''}">${m.percent} %</span>` : ''}
+      ${action}
+    </div>`;
+  }).join('');
 }
 
 function pfRenderDocs() {
@@ -290,8 +366,18 @@ function pfSyncEditor() {
     const f = el.dataset.check;
     el.checked = f === 'nonsmoker' ? !p.smoker : !!p[f];
   });
+  const group = pf.target !== 'me';
   ed.querySelectorAll('[data-val]').forEach(el => {
-    el.textContent = el.dataset.val === 'persons' ? Math.max(1, p.persons || 1) : (p.children || 0);
+    if (el.dataset.val === 'persons') {
+      const auto = group && !p.persons;                     // group: 0 = "automatisch" (one per member)
+      el.textContent = auto ? 'auto' : Math.max(1, p.persons || 1);
+      el.classList.toggle('auto', auto);
+    } else el.textContent = p.children || 0;
+  });
+  ed.querySelectorAll('[data-pf-persons-hint]').forEach(el => {
+    el.textContent = !group ? 'Gilt für Suchen ohne Gruppe. Für Gruppen gibt es ein eigenes Gruppenprofil (Schalter oben).'
+      : p.persons ? 'Diese Zahl gilt für alle Nachrichten aus dieser Gruppe.'
+      : `Automatisch: ${pf.autoPersons} (eine Person pro Mitglied). Mit + / − legst du die Zahl selbst fest.`;
   });
   ed.querySelectorAll('[data-show-if]').forEach(el => {
     const [cond, neg] = el.dataset.showIf.includes('!=') ? [el.dataset.showIf.split('!='), true] : [el.dataset.showIf.split('='), false];
@@ -319,8 +405,13 @@ function pfInitials(name) {
 function pfRenderHero() {
   const el = $id('pf-hero'); if (!el || !pf.p) return;
   const c = pf.completeness || { percent: 0, missing: [] };
-  const name = pf.p.display_name || state.user?.username || '';
-  const sub = [pf.p.occupation, optLabel('household_type', pf.p.household_type)].filter(Boolean).join(' · ') || 'Noch keine Angaben';
+  const group = pf.target !== 'me';
+  const g = group ? (state.groups || []).find(x => String(x.id) === String(pf.target)) : null;
+  const name = group ? (g?.name || 'Gruppe') : (pf.p.display_name || state.user?.username || '');
+  const persons = pf.p.persons || pf.autoPersons;
+  const sub = group
+    ? [optLabel('household_type', pf.p.household_type), `${persons} Person${persons === 1 ? '' : 'en'}`].filter(Boolean).join(' · ')
+    : [pf.p.occupation, optLabel('household_type', pf.p.household_type)].filter(Boolean).join(' · ') || 'Noch keine Angaben';
   const dash = 232.5, off = dash * (1 - c.percent / 100);
   el.innerHTML = `
     <div class="pf-ring">
@@ -341,12 +432,15 @@ function pfSummary(id) {
   const p = pf.p;
   const yes = p.share;
   switch (id) {
+    case 'members': { const n = pf.members.length, w = pf.members.filter(m => m.hasProfile).length;
+        return `${n} Mitglied${n === 1 ? '' : 'er'} · ${w} mit Profil`; }
     case 'personal': return [p.display_name || 'Name fehlt', p.occupation, p.formal ? 'förmliche Anrede' : 'lockere Anrede'].filter(Boolean).join(' · ');
-    case 'housing': return [optLabel('household_type', p.household_type), (() => {
+    case 'housing': return [optLabel('household_type', p.household_type), pf.target !== 'me' ? `${p.persons || pf.autoPersons} Person${(p.persons || pf.autoPersons) === 1 ? '' : 'en'}` : '', (() => {
         const t = p.move_in_type === 'date' ? (p.move_in_date && `Einzug ${p.move_in_date}`) : p.move_in_type ? `Einzug ${optLabel('move_in_type', p.move_in_type).toLowerCase()}` : '';
         return t; })(), p.smoker ? '' : 'Nichtraucher', pf.pets.none ? 'keine Haustiere' : p.pets].filter(Boolean).join(' · ') || 'Wohnform, Einzug, Haustiere …';
-    case 'income': return [optLabel('employment', p.employment) && (optLabel('employment', p.employment) + (p.employment === 'employed' && p.employment_permanent ? ', unbefristet' : '')),
-        p.income_range ? (yes.income === true ? optLabel('income_range', p.income_range) : 'Einkommen nur auf Nachfrage') : ''].filter(Boolean).join(' · ') || 'Beschäftigung und Einkommen';
+    case 'income': return [pf.target !== 'me' ? p.employment_text.replace(/\s+/g, ' ').slice(0, 60)
+          : optLabel('employment', p.employment) && (optLabel('employment', p.employment) + (p.employment === 'employed' && p.employment_permanent ? ', unbefristet' : '')),
+        p.income_range ? (yes.income === true ? optLabel('income_range', p.income_range) : 'Einkommen nur auf Nachfrage') : ''].filter(Boolean).join(' · ') || (pf.target !== 'me' ? 'Berufliche Situation und Einkommen' : 'Beschäftigung und Einkommen');
     case 'documents': { const n = p.documents.filter(d => d.doc.trim()), ok = n.filter(d => d.status === 'vorhanden').length;
         return n.length ? `${ok} von ${n.length} sofort verfügbar` : 'Noch keine Unterlagen'; }
     case 'about': return p.about_text ? p.about_text.replace(/\s+/g, ' ').slice(0, 70) + (p.about_text.length > 70 ? ' …' : '') : 'Kurzer Text über dich';
@@ -359,7 +453,7 @@ function pfSummary(id) {
 function pfRenderNav() {
   const nav = $id('pf-nav'); if (!nav || !pf.p) return;
   const secs = pf.completeness?.sections || {};
-  nav.innerHTML = PF_SECTIONS.map(s => {
+  nav.innerHTML = pfSections().map(s => {
     const st = secs[s.id];
     const status = st ? st.status : 'none';
     const missing = st ? st.total - st.done : 0;
@@ -379,7 +473,7 @@ function pfRenderMissing() {
   const card = $id('pf-missing-card'), box = $id('pf-missing');
   const miss = pf.completeness?.missing || [];
   card.style.display = miss.length ? '' : 'none';
-  box.innerHTML = miss.map(m => `<button type="button" class="pf-missing-item" data-section="${m.section}"><span>${esc(m.label)}</span><small>${PF_SECTIONS.find(s => s.id === m.section)?.title} →</small></button>`).join('');
+  box.innerHTML = miss.map(m => `<button type="button" class="pf-missing-item" data-section="${m.section}"><span>${esc(m.label)}</span><small>${pfSections().find(s => s.id === m.section)?.title} →</small></button>`).join('');
 }
 
 function pfRenderSwitch() {
@@ -387,9 +481,17 @@ function pfRenderSwitch() {
   const groups = state.groups || [];
   if (!groups.length) { sw.style.display = 'none'; return; }
   sw.style.display = '';
-  sw.innerHTML = `<button type="button" class="on">Mein Profil</button>` + (groups.length === 1
-    ? `<button type="button" data-group="${groups[0].id}">Als Gruppe „${esc(groups[0].name)}“</button>`
-    : `<select aria-label="Als Gruppe ansehen"><option value="">Als Gruppe …</option>${groups.map(g => `<option value="${g.id}">${esc(g.name)}</option>`).join('')}</select>`);
+  const meOn = pf.target === 'me';
+  const grpBtns = groups.length <= 2
+    ? groups.map(g => `<button type="button" class="${String(pf.target) === String(g.id) ? 'on' : ''}" data-target="${g.id}">Als Gruppe „${esc(g.name)}“</button>`).join('')
+    : `<select aria-label="Als Gruppe bearbeiten" class="${meOn ? '' : 'on'}"><option value="">Als Gruppe …</option>${groups.map(g => `<option value="${g.id}"${String(pf.target) === String(g.id) ? ' selected' : ''}>${esc(g.name)}</option>`).join('')}</select>`;
+  sw.innerHTML = `<button type="button" class="${meOn ? 'on' : ''}" data-target="me">Mein Profil</button>${grpBtns}`;
+}
+
+// Group mode: a card with the "take over my answers" action (fills only empty fields by default).
+function pfRenderGroupCard() {
+  const card = $id('pf-group-card'); if (!card) return;
+  card.style.display = pf.target === 'me' ? 'none' : '';
 }
 
 function pfApplyMode() {
@@ -412,7 +514,9 @@ function pfPreviewSoon() { clearTimeout(pf.previewTimer); pf.previewTimer = setT
 async function pfPreviewNow() {
   if (!pf.loaded) return;
   const useTpl = pf.section === 'template' && pf.p.custom_template.trim();
-  const d = await api('/api/message/preview', { method: 'POST', body: { ...pfPayload(), mode: useTpl ? 'template' : 'guided' } });
+  const body = { ...pfPayload(), mode: useTpl ? 'template' : 'guided' };
+  if (pf.target !== 'me') body.template = pf.p.custom_template;
+  const d = await api(pf.target === 'me' ? '/api/message/preview' : `/api/groups/${pf.target}/profile/preview`, { method: 'POST', body });
   if (d.error) return;
   const warn = d.unknownPlaceholders?.length ? `\n\n⚠️ Unbekannte Platzhalter: ${d.unknownPlaceholders.join(' ')}` : '';
   $id('pf-preview').textContent = (d.message || '—') + warn;
@@ -454,8 +558,13 @@ function pfBindEditor() {
     const step = e.target.closest('[data-step]');
     if (step) {
       const f = step.dataset.step, d = parseInt(step.dataset.delta);
-      if (f === 'persons') { pf.p.persons = Math.min(12, Math.max(1, (pf.p.persons || 1) + d)); pf.p.children = Math.min(pf.p.children, pf.p.persons - 1); }
-      else pf.p.children = Math.min(Math.max(0, (pf.p.persons || 1) - 1), Math.max(0, pf.p.children + d));
+      const group = pf.target !== 'me';
+      const eff = () => pf.p.persons || (group ? pf.autoPersons : 1);   // group: 0 = automatic
+      if (f === 'persons') {
+        const n = eff() + d;
+        pf.p.persons = group ? (n < 1 ? 0 : Math.min(30, n)) : Math.min(12, Math.max(1, n));
+        pf.p.children = Math.min(pf.p.children, Math.max(0, eff() - 1));
+      } else pf.p.children = Math.min(Math.max(0, eff() - 1), Math.max(0, pf.p.children + d));
       return pfChanged();
     }
     const share = e.target.closest('[data-share]');
@@ -466,13 +575,22 @@ function pfBindEditor() {
     }
     const go = e.target.closest('[data-goto-section]');
     if (go) return pfGoto(go.dataset.gotoSection);
+    if (e.target.closest('[data-pf-edit-me]')) return pfSwitchTarget('me');
+    const rem = e.target.closest('[data-pf-remind]');
+    if (rem) {
+      rem.disabled = true;
+      return api(`/api/groups/${pf.target}/remind-profile/${rem.dataset.pfRemind}`, { method: 'POST' }).then(r => {
+        toast(r.success ? '👋 Erinnerung gesendet' : '❌ ' + (r.error || 'Fehler'));
+        if (r.success) rem.textContent = 'Erinnert ✓'; else rem.disabled = false;
+      });
+    }
     const ph = e.target.closest('.ph-chip');
     if (ph) {
       const ta = ed.querySelector('[data-input="custom_template"]'), token = `{${ph.dataset.ph}}`;
       const s = ta.selectionStart ?? ta.value.length, en = ta.selectionEnd ?? ta.value.length;
       ta.value = ta.value.slice(0, s) + token + ta.value.slice(en);
       ta.focus(); ta.selectionStart = ta.selectionEnd = s + token.length;
-      pf.p.custom_template = ta.value; return pfChanged({ nav: false });
+      pf.p.custom_template = ta.value; pf.tplDirty = true; return pfChanged({ nav: false });
     }
     if (e.target.closest('#pf-doc-add')) {
       pf.p.documents.push({ doc: '', status: 'vorhanden' }); pfRenderDocs();
@@ -486,6 +604,7 @@ function pfBindEditor() {
     if (el.dataset.input) {
       if (el.dataset.input === 'pets_extra') pf.pets.extra = el.value.trim();
       else pf.p[el.dataset.input] = el.value;
+      if (el.dataset.input === 'custom_template') pf.tplDirty = true;
       return pfChanged({ nav: false });
     }
     const row = el.closest('[data-doc-row]');
@@ -507,16 +626,21 @@ function pfBindEditor() {
   $id('pf-back').addEventListener('click', () => {
     if (!pfDesktop() && pf.mode === 'edit') { pf.mode = 'hub'; pfApplyMode(); } else showView('more', true);
   });
-  $id('pf-switch').addEventListener('click', e => { const b = e.target.closest('[data-group]'); if (b) pfOpenGroup(b.dataset.group); });
-  $id('pf-switch').addEventListener('change', e => { if (e.target.tagName === 'SELECT' && e.target.value) pfOpenGroup(e.target.value); });
+  $id('pf-switch').addEventListener('click', e => { const b = e.target.closest('[data-target]'); if (b && String(b.dataset.target) !== String(pf.target)) pfSwitchTarget(b.dataset.target === 'me' ? 'me' : b.dataset.target); });
+  $id('pf-switch').addEventListener('change', e => { if (e.target.tagName === 'SELECT' && e.target.value) pfSwitchTarget(e.target.value); });
+  $id('pf-adopt').addEventListener('click', () => pfAdopt(false));
+  $id('pf-adopt-all').addEventListener('click', () => pfAdopt(true));
   $id('pf-try').addEventListener('click', pfTryMessage);
 }
 
-async function pfOpenGroup(id) {
-  const g = (state.groups || []).find(x => String(x.id) === String(id)); if (!g) return;
+// "Aus meinem Profil übernehmen": copies the caller's personal answers into the group profile.
+async function pfAdopt(overwrite) {
+  if (overwrite && !confirm('Alle Angaben des Gruppenprofils mit deinen persönlichen Angaben überschreiben?')) return;
   await pfFlush();
-  showView('groups');
-  openGroupDetail(g, { tab: 'profile' });
+  const r = await api(`/api/groups/${pf.target}/profile/adopt`, { method: 'POST', body: { overwrite } });
+  if (!r.success) return toast('❌ ' + (r.error || 'Fehler'));
+  toast(r.adopted ? `✅ ${r.adopted} Angabe${r.adopted === 1 ? '' : 'n'} übernommen` : 'Nichts zu übernehmen – alle Felder sind schon ausgefüllt');
+  pf.nextTarget = pf.target; await loadProfilePage();
 }
 
 // "Nachricht ausprobieren": use one of the user's own rated listings so the text is real.
@@ -526,7 +650,7 @@ async function pfTryMessage() {
   const list = d.listings || [];
   const l = list.find(x => x.my_swipe === 'like' || x.my_swipe === 'superlike') || list[0];
   if (!l) return toast('Bewerte zuerst ein Inserat – dann kannst du hier eine echte Nachricht ausprobieren');
-  messageModal.open(l, {});
+  messageModal.open(l, { groupId: pf.target === 'me' ? null : pf.target });
 }
 
 pfBindEditor();
@@ -562,7 +686,7 @@ const messageModal = {
     this.edited = false; this.off = new Set();
     await window.pfFlush?.();                       // generate from the latest saved profile
     $id('message-context').textContent = this.groupId
-      ? 'Anfrage für die Gruppe – Profile aller Mitglieder mit ausgefülltem Profil werden zusammengeführt.'
+      ? 'Anfrage für die Gruppe – das Gruppenprofil bestimmt die Angaben, Namen und Berufe kommen aus den Profilen der Mitglieder.'
       : `Anfrage für: ${listing.title || 'Inserat'}`;
     $id('message-open-link').href = listing.url || '#';
     clr('message-error');
@@ -580,6 +704,7 @@ const messageModal = {
     this.selected = new Set(this.members.filter(m => m.hasProfile).map(m => m.id));
     this.blocks = cap.blocks || [];
     this.ownProfileEmpty = !!cap.ownProfileEmpty;
+    this.groupProfileEmpty = !!cap.groupProfileEmpty;
     $id('msg-mode-ai').style.display = this.aiAvailable ? '' : 'none';
     // Start on the user's own template when this group has one; else their saved tone.
     this.tone = cap.hasGroupTemplate ? 'template' : (profile.profile && !profile.profile.formal ? 'informal' : 'formal');
@@ -689,7 +814,8 @@ const messageModal = {
   // Non-blocking hints with actions: missing profiles (+ remind), own empty profile, bad placeholders, fallback.
   renderWarnings(r) {
     const items = [];
-    if (this.ownProfileEmpty) items.push(`<span>Dein Bewerber-Profil ist noch leer.</span> <button type="button" class="msg-link" data-goto-profile>Profil ausfüllen →</button>`);
+    if (this.groupId && this.groupProfileEmpty) items.push(`<span>Das Gruppenprofil ist noch leer.</span> <button type="button" class="msg-link" data-goto-profile="group">Gruppenprofil ausfüllen →</button>`);
+    if (this.ownProfileEmpty) items.push(`<span>${this.groupId ? 'Dein persönliches Profil ist noch leer – dein Name fehlt in der Nachricht.' : 'Dein Bewerber-Profil ist noch leer.'}</span> <button type="button" class="msg-link" data-goto-profile="me">Profil ausfüllen →</button>`);
     (r.missingProfiles || []).forEach(name => {
       const m = this.members.find(x => x.username === name);
       items.push(`<span>${esc(name)} hat noch kein Bewerber-Profil und fehlt deshalb in der Nachricht.</span>` +
@@ -728,8 +854,12 @@ $id('message-regen').addEventListener('click', () => messageModal.generate(messa
 $id('message-close').addEventListener('click', () => messageModal.close());
 $id('message-modal').addEventListener('click', async e => {
   if (e.target.id === 'message-modal') return messageModal.close();
-  if (e.target.closest('[data-goto-profile]')) {
-    e.preventDefault(); messageModal.close(); detailView.close?.(); showView('profile', true);
+  const gotoProfile = e.target.closest('[data-goto-profile]');
+  if (gotoProfile) {
+    e.preventDefault();
+    const which = gotoProfile.dataset.gotoProfile || (messageModal.groupId ? 'group' : 'me');   // blocks hint → the profile that feeds them
+    const target = which === 'group' ? messageModal.groupId : 'me';
+    messageModal.close(); detailView.close?.(); openProfilePage(target);
     return;
   }
   const rem = e.target.closest('[data-remind]');
@@ -748,24 +878,19 @@ $id('message-copy').addEventListener('click', async () => {
 // ══════════════════════════════════════════════════════════
 //  GRUPPEN-PROFIL (Tab im Gruppen-Detail)
 // ══════════════════════════════════════════════════════════
-const gpKids = n => `${n} Kind${n === 1 ? '' : 'er'}`;
-
-// Left column: member status, group household (how many people search together) and the
-// combined "Wir" profile. Re-rendered on its own, so an unsaved template in the right
-// column is never reset by changing the household or the move-in agreement.
-async function gpRenderLeft(group, left) {
-  const ov = await api(`/api/groups/${group.id}/profile-overview`);
-  if (ov.error) { left.innerHTML = `<p class="form-error">${esc(ov.error)}</p>`; return; }
-  if (!pf.options.household_type) { const d = await api('/api/profile'); pf.options = d.options || {}; }   // labels for the chips
-  const me = ov.me, c = ov.combined, mv = c.moveIn, st = ov.settings;
-  const typeLabel = (pf.options.household_type || []).find(o => o.value === c.household_type)?.label || '';
-  const effPersons = st.persons > 0 ? st.persons : st.autoPersons;
-
-  const memberRows = ov.members.map(m => {
-    const isMe = m.id === me;
-    const name = m.display_name || m.username;
-    const action = isMe
-      ? `<button type="button" class="gp-btn" data-gp-edit>Bearbeiten</button>`
+// Tab "Gruppen-Profil" in the group detail: a compact overview. Editing happens on the profile page
+// (same UI as the personal profile, switched to this group).
+async function renderGroupProfile(group, el) {
+  el.innerHTML = '<p class="notify-sub">Wird geladen …</p>';
+  const [d, pv] = await Promise.all([
+    api(`/api/groups/${group.id}/profile`),
+    api(`/api/groups/${group.id}/profile/preview`, { method: 'POST', body: { mode: 'guided' } }),
+  ]);
+  if (d.error) { el.innerHTML = `<p class="form-error">${esc(d.error)}</p>`; return; }
+  const pct = d.completeness.percent, me = d.me;
+  const rows = d.members.map(m => {
+    const isMe = m.id === me, name = m.display_name || m.username;
+    const action = isMe ? `<button type="button" class="gp-btn" data-gp-edit-me>Mein Profil</button>`
       : (!m.hasProfile ? `<button type="button" class="gp-btn warn" data-gp-remind="${m.id}">Erinnern</button>` : '');
     return `<div class="gp-member">
       <span class="gp-av${m.hasProfile ? '' : ' none'}">${esc(pfInitials(name))}</span>
@@ -778,160 +903,38 @@ async function gpRenderLeft(group, left) {
       ${action}
     </div>`;
   }).join('');
+  const notes = [];
+  if (pv.missingProfiles?.length) notes.push(`Kein persönliches Profil von: ${pv.missingProfiles.join(', ')} – sie fehlen in der Nachricht.`);
 
-  const docTags = c.documents.map(d => `<span class="gp-tag ${d.status === 'vorhanden' ? 'ok' : 'wait'}">${esc(d.doc)}${d.status === 'vorhanden' ? '' : d.status === 'beantragt' ? ' · beantragt' : ' · auf Wunsch'}</span>`).join('');
-  const tags = [
-    typeLabel && `<span class="gp-tag ok">${esc(typeLabel)}</span>`,
-    c.nonSmoker && '<span class="gp-tag ok">Nichtraucher</span>',
-    c.noPets ? '<span class="gp-tag ok">keine Haustiere</span>' : c.pets.map(p => `<span class="gp-tag ok">${esc(p)}</span>`).join(''),
-    docTags,
-  ].filter(Boolean).join('');
-
-  const conflictBox = mv.override
-    ? `<div class="gp-notice"><div>Gemeinsamer Einzug: <strong>${esc(mv.override.label)}</strong> – gilt für alle in Nachrichten.</div>
-         <button type="button" class="gp-btn" data-gp-override-clear>Aufheben</button></div>`
-    : mv.conflict
-      ? `<div class="gp-notice"><div>Einzug unterschiedlich: ${mv.perMember.map(x => `${esc(x.username)} „${esc(x.label)}“`).join(', ')}. Die Nachricht nennt alles – oder ihr legt einen gemeinsamen Termin fest.</div>
-           <div class="gp-override">
-             <select id="gp-ov-type" aria-label="Gemeinsamer Einzug">${(pf.options.move_in_type || [{value:'asap',label:'Schnellstmöglich'},{value:'flexible',label:'Flexibel'},{value:'date',label:'Zu festem Datum'}]).map(o => `<option value="${o.value}"${o.value === 'date' ? ' selected' : ''}>${o.label}</option>`).join('')}</select>
-             <input type="text" id="gp-ov-date" placeholder="01.12.2026" aria-label="Datum">
-             <button type="button" class="gp-btn primary" data-gp-override>Angleichen</button>
-           </div></div>` : '';
-
-  // Who is searching? Set per group, independent of the individual profiles: Maik can search alone
-  // with his own profile and, in a second group, with his family of six.
-  const household = `
-    <div class="gp-household">
-      <span class="pf-label">Wer sucht gemeinsam?</span>
-      <div class="pf-chips pf-chips-grid4">${(pf.options.household_type || []).map(o =>
-        `<button type="button" class="pf-chip${st.household_type === o.value ? ' on' : ''}" data-gp-type="${o.value}" aria-pressed="${st.household_type === o.value}">${esc(o.label)}</button>`).join('')}</div>
-      <div class="pf-steppers">
-        <div class="pf-stepper"><div class="pf-stepper-label">Personen</div><div class="pf-stepper-row">
-          <button type="button" class="pf-step" data-gp-step="persons" data-delta="-1" aria-label="Eine Person weniger">−</button>
-          <span class="pf-step-val${st.persons > 0 ? '' : ' auto'}">${st.persons > 0 ? st.persons : 'auto'}</span>
-          <button type="button" class="pf-step" data-gp-step="persons" data-delta="1" aria-label="Eine Person mehr">+</button></div></div>
-        <div class="pf-stepper"><div class="pf-stepper-label">Davon Kinder</div><div class="pf-stepper-row">
-          <button type="button" class="pf-step" data-gp-step="children" data-delta="-1" aria-label="Ein Kind weniger">−</button>
-          <span class="pf-step-val">${st.children}</span>
-          <button type="button" class="pf-step" data-gp-step="children" data-delta="1" aria-label="Ein Kind mehr">+</button></div></div>
+  el.innerHTML = `
+    <div class="gp-layout">
+      <div class="gp-left">
+        <span class="pf-label">Gruppenprofil</span>
+        <div class="pf-card">
+          <div class="gp-sum-row"><strong>${pct} % vollständig</strong>
+            <span class="gp-pct${pct === 100 ? ' full' : ''}">${d.completeness.missing.length ? `${d.completeness.missing.length} offen` : 'alles da'}</span></div>
+          <div class="gp-bar" style="margin:8px 0 14px"><div style="width:${pct}%;background:${pct === 100 ? 'var(--like)' : 'var(--accent)'}"></div></div>
+          <button type="button" class="btn-primary" data-gp-edit-group>Gruppenprofil bearbeiten</button>
+          <p class="pf-hint">Wohnform, Einzug, Haustiere, Unterlagen und Kontakt gelten für die ganze Gruppe – einmal ausfüllen, jeder profitiert.</p>
+        </div>
+        <span class="pf-label">Mitglieder</span>
+        <div class="pf-card gp-members">${rows}</div>
       </div>
-      <p class="pf-hint">${st.persons > 0 ? 'Diese Zahl gilt für alle Nachrichten aus dieser Gruppe.' : `Automatisch: ${st.autoPersons} (eine Person pro Mitglied mit Profil).`} Die Personenzahl in deinem eigenen Profil gilt nur für Suchen ohne Gruppe.</p>
+      <div class="pf-card gp-right">
+        <div class="gp-right-head"><h3>So liest sich eure Nachricht</h3><span class="gp-active">Beispiel-Inserat</span></div>
+        <div class="gp-preview" id="gp-preview"></div>
+        ${notes.length ? `<p class="pf-hint">⚠️ ${esc(notes.join(' '))}</p>` : ''}
+      </div>
     </div>`;
+  $id('gp-preview').textContent = pv.message || '—';
 
-  const combined = c.memberCount
-    ? `<div class="gp-combined-title">Wir – ${c.persons} Person${c.persons === 1 ? '' : 'en'}${c.children ? ` (davon ${gpKids(c.children)})` : ''}</div>
-       <div class="gp-combined-sub">${c.occupations.map(o => `${esc(o.name)} (${esc(o.occupation)})`).join(' · ') || esc(c.names.join(' · '))}</div>
-       ${tags ? `<div class="gp-tags">${tags}</div>` : ''}${conflictBox}`
-    : '<p class="pf-hint">Noch hat niemand ein Bewerber-Profil angelegt.</p>';
-
-  left.innerHTML = `
-    <span class="pf-label">Wer hat ein Profil?</span>
-    <div class="pf-card gp-members">${memberRows}</div>
-    <span class="pf-label">So stellt ihr euch vor</span>
-    <div class="pf-card gp-combined">${household}<div class="gp-combined-body">${combined}</div></div>`;
-
-  // ── handlers ──
-  left.querySelector('[data-gp-edit]')?.addEventListener('click', () => showView('profile', true));
-  left.querySelectorAll('[data-gp-remind]').forEach(b => b.addEventListener('click', async () => {
+  el.querySelector('[data-gp-edit-group]')?.addEventListener('click', () => openProfilePage(group.id));
+  el.querySelector('[data-gp-edit-me]')?.addEventListener('click', () => openProfilePage('me'));
+  el.querySelectorAll('[data-gp-remind]').forEach(b => b.addEventListener('click', async () => {
     b.disabled = true;
     const r = await api(`/api/groups/${group.id}/remind-profile/${b.dataset.gpRemind}`, { method: 'POST' });
     toast(r.success ? '👋 Erinnerung gesendet' : '❌ ' + (r.error || 'Fehler'));
     if (r.success) b.textContent = 'Erinnert ✓'; else b.disabled = false;
   }));
-  const refresh = () => gpRenderLeft(group, left);
-  const setOverride = async body => {
-    const r = await api(`/api/groups/${group.id}/move-in-override`, { method: 'PUT', body });
-    if (!r.success) return toast('❌ ' + (r.error || 'Fehler'));
-    toast(body.move_in_type ? '✅ Gemeinsamer Einzug festgelegt' : 'Gemeinsamer Einzug aufgehoben');
-    refresh(); window.gpPreviewRefresh?.();
-  };
-  left.querySelector('[data-gp-override]')?.addEventListener('click', () =>
-    setOverride({ move_in_type: $id('gp-ov-type').value, move_in_date: $id('gp-ov-date').value }));
-  left.querySelector('[data-gp-override-clear]')?.addEventListener('click', () => setOverride({ move_in_type: '' }));
-
-  const saveHousehold = async body => {
-    const r = await api(`/api/groups/${group.id}/settings`, { method: 'PUT', body });
-    if (!r.success) return toast('❌ ' + (r.error || 'Fehler'));
-    refresh(); window.gpPreviewRefresh?.();
-  };
-  left.querySelectorAll('[data-gp-type]').forEach(b => b.addEventListener('click', () =>
-    saveHousehold({ household_type: st.household_type === b.dataset.gpType ? '' : b.dataset.gpType })));
-  left.querySelectorAll('[data-gp-step]').forEach(b => b.addEventListener('click', () => {
-    const d = parseInt(b.dataset.delta);
-    if (b.dataset.gpStep === 'persons') {
-      const n = Math.max(0, Math.min(30, st.persons + d));
-      saveHousehold({ persons: n, children: n > 0 ? Math.min(st.children, n - 1) : st.children });
-    } else {
-      saveHousehold({ children: Math.max(0, Math.min(Math.max(0, effPersons - 1), st.children + d)) });
-    }
-  }));
-}
-
-// Right column + frame: group template editor with live preview.
-async function renderGroupProfile(group, el) {
-  el.innerHTML = '<p class="notify-sub">Wird geladen …</p>';
-  const tpl = await api(`/api/groups/${group.id}/template`);
-
-  el.innerHTML = `
-    <div class="gp-layout">
-      <div class="gp-left" id="gp-left"><p class="notify-sub">Wird geladen …</p></div>
-      <div class="pf-card gp-right">
-        <div class="gp-right-head"><h3>Gruppen-Vorlage</h3><span class="gp-active">Aktiv beim Nachricht-Vorbereiten</span></div>
-        <p class="pf-hint">Eigene Vorlage für Anfragen aus dieser Gruppe. Platzhalter fassen alle Mitglieder mit Profil zusammen. Leer lassen = deine persönliche Vorlage bzw. die geführte Nachricht.</p>
-        <div class="placeholder-chips" id="gp-chips">${PLACEHOLDER_LIST.map(ph => `<button type="button" class="ph-chip" data-ph="${ph}">{${ph}}</button>`).join('')}</div>
-        <div class="gp-editor">
-          <div class="gp-editor-col"><span class="pf-label">Vorlage</span>
-            <textarea id="gp-tpl" class="pf-input" aria-label="Gruppen-Vorlage" disabled placeholder="Wird geladen …"></textarea></div>
-          <div class="gp-editor-col"><span class="pf-label">Vorschau mit euren Profilen</span>
-            <div class="gp-preview" id="gp-preview">—</div></div>
-        </div>
-        <div class="gp-actions">
-          <button type="button" class="btn-ghost" id="gp-reset" disabled>Zurücksetzen</button>
-          <button type="button" class="btn-primary" id="gp-save" disabled>Vorlage speichern</button>
-        </div>
-      </div>
-    </div>`;
-
-  // ── template editor: disabled until loaded so a fast save can't wipe the stored template ──
-  const ta = $id('gp-tpl'), saveBtn = $id('gp-save'), resetBtn = $id('gp-reset');
-  const loaded = !tpl.error;
-  if (loaded) ta.value = tpl.template || ''; else ta.placeholder = 'Vorlage konnte nicht geladen werden – bitte neu öffnen.';
-  ta.disabled = saveBtn.disabled = resetBtn.disabled = !loaded;
-  if (loaded) ta.placeholder = 'z.B. Hallo, wir als WG interessieren uns für {titel} ({zimmer} Zi., {groesse})…';
-
-  let timer = null;
-  const refreshPreview = () => {
-    clearTimeout(timer);
-    timer = setTimeout(async () => {
-      const box = $id('gp-preview'); if (!box) return;
-      const d = await api(`/api/groups/${group.id}/template/preview`, { method: 'POST', body: { template: ta.value } });
-      if (d.error) { box.textContent = d.error; return; }
-      const notes = [];
-      if (d.guided) notes.push('Keine Gruppen-Vorlage – es gilt deine persönliche Vorlage bzw. die geführte Nachricht (hier: geführt).');
-      if (d.missingProfiles?.length) notes.push(`Kein Profil von: ${d.missingProfiles.join(', ')}`);
-      if (d.unknownPlaceholders?.length) notes.push(`Unbekannte Platzhalter: ${d.unknownPlaceholders.join(' ')}`);
-      box.textContent = (d.message || '—') + (notes.length ? '\n\n⚠️ ' + notes.join('\n⚠️ ') : '');
-    }, 350);
-  };
-  window.gpPreviewRefresh = refreshPreview;
-  ta.addEventListener('input', refreshPreview);
-  $id('gp-chips').addEventListener('click', e => {
-    const chip = e.target.closest('.ph-chip'); if (!chip || ta.disabled) return;
-    const token = `{${chip.dataset.ph}}`, s = ta.selectionStart ?? ta.value.length, en = ta.selectionEnd ?? ta.value.length;
-    ta.value = ta.value.slice(0, s) + token + ta.value.slice(en);
-    ta.focus(); ta.selectionStart = ta.selectionEnd = s + token.length; refreshPreview();
-  });
-  const put = async (text, ok) => {
-    const r = await api(`/api/groups/${group.id}/template`, { method: 'PUT', body: { template: text } });
-    toast(r.success ? '✅ ' + ok : '❌ ' + (r.error || 'Fehler'));
-  };
-  saveBtn.addEventListener('click', () => put(ta.value, 'Gruppen-Vorlage gespeichert'));
-  resetBtn.addEventListener('click', async () => {
-    if (!ta.value.trim() || !confirm('Gruppen-Vorlage löschen und wieder die persönliche Vorlage verwenden?')) return;
-    await put('', 'Gruppen-Vorlage zurückgesetzt'); ta.value = ''; refreshPreview();
-  });
-
-  await gpRenderLeft(group, $id('gp-left'));
-  refreshPreview();
 }
 window.renderGroupProfile = renderGroupProfile;

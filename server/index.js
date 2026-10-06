@@ -204,6 +204,26 @@ async function initDb() {
       updated_by   INTEGER,
       updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS group_profiles (
+      group_id       INTEGER PRIMARY KEY,
+      household_type TEXT DEFAULT '',
+      persons        INTEGER DEFAULT 0,
+      children       INTEGER DEFAULT 0,
+      move_in_type   TEXT DEFAULT '',
+      move_in_date   TEXT DEFAULT '',
+      lease_duration TEXT DEFAULT '',
+      smoker         INTEGER DEFAULT 0,
+      pets           TEXT DEFAULT '',
+      employment_text TEXT DEFAULT '',
+      income_range   TEXT DEFAULT '',
+      documents_json TEXT DEFAULT '[]',
+      about_text     TEXT DEFAULT '',
+      phone          TEXT DEFAULT '',
+      availability   TEXT DEFAULT '',
+      share_json     TEXT DEFAULT '{}',
+      updated_by     INTEGER,
+      updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
     CREATE TABLE IF NOT EXISTS group_templates (
       user_id    INTEGER NOT NULL,
       group_id   INTEGER NOT NULL,
@@ -257,6 +277,10 @@ async function initDb() {
   migrate("ALTER TABLE group_settings ADD COLUMN persons INTEGER DEFAULT 0");
   migrate("ALTER TABLE group_settings ADD COLUMN children INTEGER DEFAULT 0");
   migrate("ALTER TABLE group_settings ADD COLUMN household_type TEXT DEFAULT ''");
+  // The group's household/move-in used to live in group_settings; carry it over
+  // into the full group profile once (INSERT OR IGNORE keeps later edits).
+  migrate(`INSERT OR IGNORE INTO group_profiles (group_id, household_type, persons, children, move_in_type, move_in_date, updated_by)
+           SELECT group_id, household_type, persons, children, move_in_type, move_in_date, updated_by FROM group_settings`);
   migrate("ALTER TABLE search_jobs ADD COLUMN visibility_id INTEGER");
   migrate("ALTER TABLE users       ADD COLUMN notify_matrix   TEXT");
 
@@ -644,65 +668,92 @@ app.put('/api/groups/:id/template', requireAuth, (req, res) => {
   res.json({ success: true });
 });
 
-// Group-wide move-in agreement ("Angleichen"): when members' own move-in
-// wishes differ, any member can fix one date/mode for the whole group. It then
-// replaces each member's own move-in in the group's messages and overview.
-function getGroupOverride(groupId) {
-  const row = dbGet('SELECT move_in_type, move_in_date FROM group_settings WHERE group_id=?', [groupId]);
-  return row && row.move_in_type ? row : null;
+// ── Group profile ──────────────────────────────────────────
+// A group searches as "we": one shared profile holds household, move-in, pets,
+// documents, contact … Names and occupations are NOT stored here — the
+// generator takes them from the members' personal profiles.
+const GROUP_PROFILE_DEFAULTS = {
+  household_type:'', persons:0, children:0, move_in_type:'', move_in_date:'', lease_duration:'', smoker:0,
+  pets:'', employment_text:'', income_range:'', documents_json:'[]', about_text:'', phone:'', availability:'', share_json:'{}',
+};
+
+function getGroupProfile(groupId) {
+  const row = dbGet('SELECT * FROM group_profiles WHERE group_id=?', [groupId]);
+  return row ? row : { group_id: Number(groupId), ...GROUP_PROFILE_DEFAULTS };
 }
 
-// Group-level household: how many people search together (a family of 6), how
-// many of them are children, and what kind of household it is. Independent of
-// the members' own profiles (which stay individual). persons=0 means "automatic".
-function getGroupHousehold(groupId) {
-  const row = dbGet('SELECT persons, children, household_type FROM group_settings WHERE group_id=?', [groupId]);
-  return { persons: row?.persons || 0, children: row?.children || 0, household_type: row?.household_type || '' };
+function groupMembers(groupId) {
+  return dbAll(`SELECT u.id, u.username FROM group_members gm JOIN users u ON u.id=gm.user_id
+                WHERE gm.group_id=? ORDER BY gm.joined_at`, [groupId]);
 }
 
-app.get('/api/groups/:id/settings', requireAuth, (req, res) => {
-  if (!isGroupMember(req.params.id, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff' });
-  const filled = collectGroupProfiles(req.params.id).profiles.length;
-  res.json({ settings: getGroupHousehold(req.params.id), autoPersons: Math.max(filled, 1), override: getGroupOverride(req.params.id) });
-});
+// The group profile has no personal "Vorstellung" block (names come from the members).
+const groupShare = gp => { const sh = P.parseShare(gp); delete sh.intro; return sh; };
 
-app.put('/api/groups/:id/settings', requireAuth, (req, res) => {
-  const gid = req.params.id;
-  if (!isGroupMember(gid, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff' });
-  const vals = P.normalizeGroupSettings(req.body, getGroupHousehold(gid));
-  if (dbGet('SELECT 1 FROM group_settings WHERE group_id=?', [gid])) {
-    dbRun('UPDATE group_settings SET persons=?, children=?, household_type=?, updated_by=?, updated_at=CURRENT_TIMESTAMP WHERE group_id=?',
-      [vals.persons, vals.children, vals.household_type, req.session.userId, gid]);
+function groupProfileResponse(groupId, userId) {
+  const gp = getGroupProfile(groupId);
+  const members = groupMembers(groupId);
+  const status = P.groupMembersStatus(members.map(m => ({ user: m, profile: getProfile(m.id) })));
+  const autoPersons = Math.max(members.length, 1);          // "automatic" = one person per group member
+  return {
+    profile: { ...gp, share: groupShare(gp) },
+    completeness: P.completenessGroup(gp),
+    options: P.OPTIONS,
+    shareKeys: P.SHARE_KEYS.filter(k => k.key !== 'intro').map(({ key, label }) => ({ key, label })),
+    members: status, autoPersons, me: userId,
+  };
+}
+
+function saveGroupProfile(groupId, userId, vals) {
+  const cols = Object.keys(vals);
+  if (dbGet('SELECT 1 FROM group_profiles WHERE group_id=?', [groupId])) {
+    dbRun(`UPDATE group_profiles SET ${cols.map(c => `${c}=?`).join(',')},updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE group_id=?`,
+      [...cols.map(c => vals[c]), userId, groupId]);
   } else {
-    dbRun('INSERT INTO group_settings (group_id, persons, children, household_type, updated_by) VALUES (?,?,?,?,?)',
-      [gid, vals.persons, vals.children, vals.household_type, req.session.userId]);
+    dbRun(`INSERT INTO group_profiles (${cols.join(',')},group_id,updated_by) VALUES (${cols.map(() => '?').join(',')},?,?)`,
+      [...cols.map(c => vals[c]), groupId, userId]);
   }
   saveDb();
-  res.json({ success: true, settings: getGroupHousehold(gid) });
-});
+}
 
-app.get('/api/groups/:id/move-in-override', requireAuth, (req, res) => {
+app.get('/api/groups/:id/profile', requireAuth, (req, res) => {
   if (!isGroupMember(req.params.id, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff' });
-  res.json({ override: getGroupOverride(req.params.id) });
+  res.json(groupProfileResponse(req.params.id, req.session.userId));
 });
 
-app.put('/api/groups/:id/move-in-override', requireAuth, (req, res) => {
+// Any member may edit the shared group profile (the group is a trusted circle).
+app.put('/api/groups/:id/profile', requireAuth, (req, res) => {
   const gid = req.params.id;
   if (!isGroupMember(gid, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff' });
-  const type = req.body?.move_in_type;
-  if (type !== '' && !P.OPTIONS.move_in_type.some(o => o.value === type))
-    return res.status(400).json({ error: 'Ungültiger Einzugs-Typ' });
-  const date = type === 'date' ? (typeof req.body?.move_in_date === 'string' ? req.body.move_in_date : '').trim().substring(0, 60) : '';
-  if (type === 'date' && !date) return res.status(400).json({ error: 'Datum erforderlich' });
-  if (dbGet('SELECT 1 FROM group_settings WHERE group_id=?', [gid])) {
-    dbRun('UPDATE group_settings SET move_in_type=?, move_in_date=?, updated_by=?, updated_at=CURRENT_TIMESTAMP WHERE group_id=?',
-      [type, date, req.session.userId, gid]);
-  } else {
-    dbRun('INSERT INTO group_settings (group_id, move_in_type, move_in_date, updated_by) VALUES (?,?,?,?)',
-      [gid, type, date, req.session.userId]);
+  saveGroupProfile(gid, req.session.userId, P.normalizeGroupProfile(req.body, getGroupProfile(gid)));
+  res.json({ success: true, ...groupProfileResponse(gid, req.session.userId) });
+});
+
+// "Aus meinem Profil übernehmen": copies the caller's personal answers into the group profile.
+// By default only EMPTY group fields are filled; overwrite=true replaces everything it can.
+app.post('/api/groups/:id/profile/adopt', requireAuth, (req, res) => {
+  const gid = req.params.id;
+  if (!isGroupMember(gid, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff' });
+  const me = getProfile(req.session.userId);
+  if (!P.isFilled(me)) return res.status(400).json({ error: 'Dein persönliches Profil ist noch leer' });
+  const gp = getGroupProfile(gid);
+  const overwrite = !!req.body?.overwrite;
+  const take = {
+    household_type: me.household_type, persons: me.persons, children: me.children,
+    move_in_type: me.move_in_type, move_in_date: me.move_in_date, lease_duration: me.lease_duration,
+    pets: me.pets, employment_text: P.employmentSentence(me), income_range: me.income_range,
+    documents_json: me.documents_json, about_text: me.about_text, phone: me.phone, availability: me.availability,
+  };
+  const isEmpty = (k, v) => v === '' || v === 0 || v === null || v === undefined || (k === 'documents_json' && v === '[]');
+  const patch = {};
+  for (const [k, v] of Object.entries(take)) {
+    if (isEmpty(k, v)) continue;                        // nothing to take
+    if (overwrite || isEmpty(k, gp[k])) patch[k] = k === 'documents_json' ? JSON.parse(v) : v;
   }
-  saveDb();
-  res.json({ success: true, override: getGroupOverride(gid) });
+  if (patch.documents_json) { patch.documents = patch.documents_json; delete patch.documents_json; }
+  if (overwrite || !gp.household_type) patch.smoker = me.smoker ? 1 : 0;
+  saveGroupProfile(gid, req.session.userId, P.normalizeGroupProfile(patch, gp));
+  res.json({ success: true, adopted: Object.keys(patch).length, ...groupProfileResponse(gid, req.session.userId) });
 });
 
 // Collects the profiles to use for a group message. `onlyIds` (optional)
@@ -732,17 +783,6 @@ function cleanBlocks(raw) {
   }
   return out;
 }
-
-// Group overview for the "Gruppen-Profil" tab: who has a profile (and how
-// complete), how the group presents itself, and whether move-in wishes clash.
-app.get('/api/groups/:id/profile-overview', requireAuth, (req, res) => {
-  const gid = req.params.id;
-  if (!isGroupMember(gid, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff' });
-  const members = dbAll(`SELECT u.id, u.username FROM group_members gm JOIN users u ON u.id=gm.user_id
-                         WHERE gm.group_id=? ORDER BY gm.joined_at`, [gid]);
-  const overview = P.groupOverview(members.map(m => ({ user: m, profile: getProfile(m.id) })), getGroupOverride(gid), getGroupHousehold(gid));
-  res.json({ ...overview, me: req.session.userId });
-});
 
 // "Erinnern": nudge a group member who hasn't filled in a profile yet.
 // Rate-limited per (sender, target, group) so it can't be used to spam.
@@ -780,24 +820,39 @@ app.post('/api/groups/:id/remind-profile/:userId', requireAuth, async (req, res)
   res.json({ success: true });
 });
 
-// Live preview for the group template editor: renders the (unsaved) template
-// text against a sample listing using the real profiles of the group's
-// members, so the aggregated placeholders can be checked before saving.
-app.post('/api/groups/:id/template/preview', requireAuth, (req, res) => {
+// Everything the generator needs for a group search: the group profile (as "we"),
+// the members that supply names/occupations, and who is missing.
+function groupSearchContext(groupId, onlyIds, blocks = {}) {
+  const col = collectGroupProfiles(groupId, onlyIds);
+  // head count = ALL members (also those not named below), so the message keeps its "we" voice
+  const gp = P.groupAsProfile(getGroupProfile(groupId), groupMembers(groupId).length);
+  return {
+    profiles: [P.visibleProfile(gp, { blocks })],
+    members:  col.profiles.map(pr => P.visibleProfile(pr, { blocks })),
+    missing:  col.missing,
+  };
+}
+
+// Live preview for the group profile page: renders the group profile exactly as posted
+// (unsaved edits) — guided, or with the given template — against a sample listing.
+app.post('/api/groups/:id/profile/preview', requireAuth, (req, res) => {
   const gid = req.params.id;
   if (!isGroupMember(gid, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff' });
-  const tpl = (typeof req.body?.template === 'string' ? req.body.template : '').substring(0, 4000);
+  const b = req.body || {};
   const requester = getProfile(req.session.userId);
-  let { profiles, missing } = collectGroupProfiles(gid);
-  if (!profiles.length) profiles = [requester];
-  const vis = profiles.map(pr => P.visibleProfile(pr, { override: getGroupOverride(gid) }));
-  const household = getGroupHousehold(gid);
-  if (!tpl.trim()) {
-    return res.json({ message: P.buildGuidedMessage(SAMPLE_LISTING, vis, requester.formal ? 1 : 0, household),
-                      missingProfiles: missing, unknownPlaceholders: [], guided: true });
+  const col = collectGroupProfiles(gid);
+  const gp = P.groupAsProfile({ ...GROUP_PROFILE_DEFAULTS, ...P.normalizeGroupProfile(b, GROUP_PROFILE_DEFAULTS) }, groupMembers(gid).length);
+  const blocks = cleanBlocks(b.blocks);
+  const vis = [P.visibleProfile(gp, { blocks })];
+  const members = col.profiles.map(pr => P.visibleProfile(pr, { blocks }));
+  const tpl = (typeof b.template === 'string' ? b.template : '').substring(0, 4000);
+  if (b.mode === 'template' && tpl.trim()) {
+    const { text, unknown } = P.applyTemplate(tpl, P.buildPlaceholders(SAMPLE_LISTING, vis[0], vis, members));
+    return res.json({ message: text, missingProfiles: col.missing, unknownPlaceholders: unknown,
+                      completeness: P.completenessGroup({ ...gp, documents_json: gp.documents_json }) });
   }
-  const { text, unknown } = P.applyTemplate(tpl, P.buildPlaceholders(SAMPLE_LISTING, vis[0], vis, household));
-  res.json({ message: text, missingProfiles: missing, unknownPlaceholders: unknown });
+  res.json({ message: P.buildGuidedMessage(SAMPLE_LISTING, vis, requester.formal ? 1 : 0, members),
+             missingProfiles: col.missing, unknownPlaceholders: [], completeness: P.completenessGroup(gp) });
 });
 
 app.post('/api/message/generate', requireAuth, async (req, res) => {
@@ -805,37 +860,20 @@ app.post('/api/message/generate', requireAuth, async (req, res) => {
   const listing = dbGet('SELECT * FROM listings WHERE id=?', [listingId]);
   if (!listing) return res.status(404).json({ error: 'Inserat nicht gefunden' });
 
-  // Gather the relevant profiles: for a group, all members who have a
-  // profile; otherwise just the requesting user's own profile. Each person's
-  // individual profile is used — a user's solo profile may legitimately
-  // differ from how they'd describe themselves as part of a group, so we
-  // never merge/override, we just collect each member's own saved profile.
-  // Members who haven't filled in a profile are left out of the message and
-  // reported back in `missingProfiles` so the UI can warn about them.
+  // Solo search: the requester's own profile. Group search: the shared group profile
+  // ("we") plus the members' personal profiles, which only supply names and occupations;
+  // members without a profile are left out and reported in `missingProfiles`.
+  // Privacy: "In Nachricht" settings plus this message's Bausteine decide which fields
+  // reach the text (guided, template and AI).
   const requester = getProfile(req.session.userId);
-  let rawProfiles;
-  let missingProfiles = [];
-  let override = null;
+  const blocks = cleanBlocks(req.body.blocks);
+  let profiles, members = null, missingProfiles = [];
   if (groupId) {
     if (!isGroupMember(groupId, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff auf diese Gruppe' });
-    const col = collectGroupProfiles(groupId, req.body.memberIds);
-    rawProfiles = col.profiles;
-    missingProfiles = col.missing;
-    override = getGroupOverride(groupId);
-    if (!rawProfiles.length) rawProfiles = [requester];
+    const ctx = groupSearchContext(groupId, req.body.memberIds, blocks);
+    profiles = ctx.profiles; members = ctx.members; missingProfiles = ctx.missing;
   } else {
-    rawProfiles = [requester];
-  }
-  // Privacy: each person's "In Nachricht" settings plus this message's
-  // Bausteine decide which fields reach the text (guided, template and AI).
-  const blocks   = cleanBlocks(req.body.blocks);
-  const profiles = rawProfiles.map(pr => P.visibleProfile(pr, { blocks, override }));
-  // A group's own household (size, children, type) replaces the per-profile numbers;
-  // switching the "Wohnform & Personen" block off still hides type and children.
-  let household = null;
-  if (groupId) {
-    household = getGroupHousehold(groupId);
-    if (blocks.household === false) household = { ...household, children: 0, household_type: '' };
+    profiles = [P.visibleProfile(requester, { blocks })];
   }
   const formal   = tone === 'formal' ? 1 : tone === 'informal' ? 0 : (requester.formal ? 1 : 0);
 
@@ -845,7 +883,7 @@ app.post('/api/message/generate', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'KI-Modus ist auf diesem Server nicht konfiguriert' });
     }
     try {
-      const profileSummary = P.summarizeForAi(profiles, household);
+      const profileSummary = P.summarizeForAi(profiles, members);
 
       const prompt = `Schreibe eine höfliche, authentische deutsche Nachricht an einen Vermieter als Antwort auf eine Wohnungsanzeige. ${formal ? 'Nutze die förmliche Sie-Anrede.' : 'Nutze eine freundliche, lockere Du/Hallo-Anrede.'} Halte sie knapp (max. 150 Wörter), ehrlich und ohne übertriebene Floskeln. Verwende ausschließlich die unten genannten Angaben und erfinde nichts dazu.
 
@@ -901,16 +939,16 @@ Gib NUR den Nachrichtentext zurück, ohne Betreff, ohne Erklärungen.`;
     const groupTpl = groupId ? getGroupTemplate(req.session.userId, groupId) : '';
     const tpl = (groupTpl && groupTpl.trim()) ? groupTpl : requester.custom_template;
     if (tpl && tpl.trim()) {
-      const { text, unknown } = P.applyTemplate(tpl, P.buildPlaceholders(listing, profiles[0], profiles, household));
+      const { text, unknown } = P.applyTemplate(tpl, P.buildPlaceholders(listing, profiles[0], profiles, members));
       return res.json({ message: text, mode: 'template', missingProfiles, unknownPlaceholders: unknown,
                         templateSource: (groupTpl && groupTpl.trim()) ? 'group' : 'personal' });
     }
-    return res.json({ message: P.buildGuidedMessage(listing, profiles, formal, household), mode: 'guided', missingProfiles,
+    return res.json({ message: P.buildGuidedMessage(listing, profiles, formal, members), mode: 'guided', missingProfiles,
                       info: 'Noch keine eigene Vorlage hinterlegt – es wird die geführte Nachricht angezeigt.' });
   }
 
   // ── Variant A1: guided template (default) ──
-  return res.json({ message: P.buildGuidedMessage(listing, profiles, formal, household), mode: 'guided', missingProfiles });
+  return res.json({ message: P.buildGuidedMessage(listing, profiles, formal, members), mode: 'guided', missingProfiles });
 });
 
 // Lets the frontend know whether the AI option should be shown at all,
@@ -921,21 +959,24 @@ app.get('/api/message/capabilities', requireAuth, (req, res) => {
   const gid = parseInt(req.query.groupId);
   const isMember = !!gid && isGroupMember(gid, req.session.userId);
   const hasGroupTemplate = isMember && !!getGroupTemplate(req.session.userId, gid).trim();
-  let members = null;
-  let scope = [getProfile(req.session.userId)];
+  let members = null, groupProfileEmpty = false;
+  let blocks;
   if (isMember) {
-    members = dbAll(`SELECT u.id, u.username FROM group_members gm JOIN users u ON u.id=gm.user_id
-                     WHERE gm.group_id=? ORDER BY gm.joined_at`, [gid])
-      .map(m => ({ id: m.id, username: m.username, hasProfile: P.isFilled(getProfile(m.id)) }));
+    members = groupMembers(gid).map(m => ({ id: m.id, username: m.username, hasProfile: P.isFilled(getProfile(m.id)) }));
     const filled = collectGroupProfiles(gid).profiles;
-    if (filled.length) scope = filled;
+    const gp = P.groupAsProfile(getGroupProfile(gid), members.length);
+    groupProfileEmpty = !P.isFilled(gp);
+    blocks = P.blockStatus([gp], filled);                 // "Vorstellung" is fed by the members' profiles
+  } else {
+    blocks = P.blockStatus([getProfile(req.session.userId)]);
   }
   res.json({
     ai: !!(process.env.LLM_API_URL && process.env.LLM_API_KEY),
     hasGroupTemplate,
     members,
-    blocks: P.blockStatus(scope),
+    blocks,
     ownProfileEmpty: !P.isFilled(getProfile(req.session.userId)),
+    groupProfileEmpty,
   });
 });
 
