@@ -208,6 +208,7 @@ function pfSectionBody(id) {
     case 'housing': return `
       ${pfFieldHtml('Wir sind', pfChipsHtml('household_type', o.household_type || [], 'pf-chips-grid4'), 'household')}
       <div class="pf-steppers">${pfStepperHtml('persons', 'Personen')}${pfStepperHtml('children', 'Davon Kinder')}</div>
+      <p class="pf-hint" style="margin-top:-10px">Gilt für Suchen ohne Gruppe. In einer Gruppe legt ihr die Personenzahl in der Gruppe selbst fest.</p>
       ${pfFieldHtml('Einzug', `${pfChipsHtml('move_in_type', o.move_in_type || [], 'pf-seg')}
         <div data-show-if="move_in_type=date">${pfInputHtml('move_in_date', 'z.B. 01.12.2026')}</div>`, 'movein')}
       ${pfFieldHtml('Gewünschte Mietdauer', pfChipsHtml('lease_duration', o.lease_duration || []), 'lease')}
@@ -747,18 +748,18 @@ $id('message-copy').addEventListener('click', async () => {
 // ══════════════════════════════════════════════════════════
 //  GRUPPEN-PROFIL (Tab im Gruppen-Detail)
 // ══════════════════════════════════════════════════════════
-const gpRelease = {};   // group id → cleanup of the previous render (timers)
+const gpKids = n => `${n} Kind${n === 1 ? '' : 'er'}`;
 
-async function renderGroupProfile(group, el) {
-  el.innerHTML = '<p class="notify-sub">Wird geladen …</p>';
-  const [ov, tpl] = await Promise.all([
-    api(`/api/groups/${group.id}/profile-overview`),
-    api(`/api/groups/${group.id}/template`),
-  ]);
-  if (ov.error) { el.innerHTML = `<p class="form-error">${esc(ov.error)}</p>`; return; }
-  const me = ov.me, c = ov.combined, mv = c.moveIn;
+// Left column: member status, group household (how many people search together) and the
+// combined "Wir" profile. Re-rendered on its own, so an unsaved template in the right
+// column is never reset by changing the household or the move-in agreement.
+async function gpRenderLeft(group, left) {
+  const ov = await api(`/api/groups/${group.id}/profile-overview`);
+  if (ov.error) { left.innerHTML = `<p class="form-error">${esc(ov.error)}</p>`; return; }
   if (!pf.options.household_type) { const d = await api('/api/profile'); pf.options = d.options || {}; }   // labels for the chips
+  const me = ov.me, c = ov.combined, mv = c.moveIn, st = ov.settings;
   const typeLabel = (pf.options.household_type || []).find(o => o.value === c.household_type)?.label || '';
+  const effPersons = st.persons > 0 ? st.persons : st.autoPersons;
 
   const memberRows = ov.members.map(m => {
     const isMe = m.id === me;
@@ -797,20 +798,83 @@ async function renderGroupProfile(group, el) {
              <button type="button" class="gp-btn primary" data-gp-override>Angleichen</button>
            </div></div>` : '';
 
+  // Who is searching? Set per group, independent of the individual profiles: Maik can search alone
+  // with his own profile and, in a second group, with his family of six.
+  const household = `
+    <div class="gp-household">
+      <span class="pf-label">Wer sucht gemeinsam?</span>
+      <div class="pf-chips pf-chips-grid4">${(pf.options.household_type || []).map(o =>
+        `<button type="button" class="pf-chip${st.household_type === o.value ? ' on' : ''}" data-gp-type="${o.value}" aria-pressed="${st.household_type === o.value}">${esc(o.label)}</button>`).join('')}</div>
+      <div class="pf-steppers">
+        <div class="pf-stepper"><div class="pf-stepper-label">Personen</div><div class="pf-stepper-row">
+          <button type="button" class="pf-step" data-gp-step="persons" data-delta="-1" aria-label="Eine Person weniger">−</button>
+          <span class="pf-step-val${st.persons > 0 ? '' : ' auto'}">${st.persons > 0 ? st.persons : 'auto'}</span>
+          <button type="button" class="pf-step" data-gp-step="persons" data-delta="1" aria-label="Eine Person mehr">+</button></div></div>
+        <div class="pf-stepper"><div class="pf-stepper-label">Davon Kinder</div><div class="pf-stepper-row">
+          <button type="button" class="pf-step" data-gp-step="children" data-delta="-1" aria-label="Ein Kind weniger">−</button>
+          <span class="pf-step-val">${st.children}</span>
+          <button type="button" class="pf-step" data-gp-step="children" data-delta="1" aria-label="Ein Kind mehr">+</button></div></div>
+      </div>
+      <p class="pf-hint">${st.persons > 0 ? 'Diese Zahl gilt für alle Nachrichten aus dieser Gruppe.' : `Automatisch: ${st.autoPersons} (eine Person pro Mitglied mit Profil).`} Die Personenzahl in deinem eigenen Profil gilt nur für Suchen ohne Gruppe.</p>
+    </div>`;
+
   const combined = c.memberCount
-    ? `<div class="gp-combined-title">Wir – ${c.persons} Person${c.persons === 1 ? '' : 'en'}${c.children ? ` (davon ${c.children} Kind${c.children === 1 ? '' : 'er'})` : ''}</div>
+    ? `<div class="gp-combined-title">Wir – ${c.persons} Person${c.persons === 1 ? '' : 'en'}${c.children ? ` (davon ${gpKids(c.children)})` : ''}</div>
        <div class="gp-combined-sub">${c.occupations.map(o => `${esc(o.name)} (${esc(o.occupation)})`).join(' · ') || esc(c.names.join(' · '))}</div>
        ${tags ? `<div class="gp-tags">${tags}</div>` : ''}${conflictBox}`
     : '<p class="pf-hint">Noch hat niemand ein Bewerber-Profil angelegt.</p>';
 
+  left.innerHTML = `
+    <span class="pf-label">Wer hat ein Profil?</span>
+    <div class="pf-card gp-members">${memberRows}</div>
+    <span class="pf-label">So stellt ihr euch vor</span>
+    <div class="pf-card gp-combined">${household}<div class="gp-combined-body">${combined}</div></div>`;
+
+  // ── handlers ──
+  left.querySelector('[data-gp-edit]')?.addEventListener('click', () => showView('profile', true));
+  left.querySelectorAll('[data-gp-remind]').forEach(b => b.addEventListener('click', async () => {
+    b.disabled = true;
+    const r = await api(`/api/groups/${group.id}/remind-profile/${b.dataset.gpRemind}`, { method: 'POST' });
+    toast(r.success ? '👋 Erinnerung gesendet' : '❌ ' + (r.error || 'Fehler'));
+    if (r.success) b.textContent = 'Erinnert ✓'; else b.disabled = false;
+  }));
+  const refresh = () => gpRenderLeft(group, left);
+  const setOverride = async body => {
+    const r = await api(`/api/groups/${group.id}/move-in-override`, { method: 'PUT', body });
+    if (!r.success) return toast('❌ ' + (r.error || 'Fehler'));
+    toast(body.move_in_type ? '✅ Gemeinsamer Einzug festgelegt' : 'Gemeinsamer Einzug aufgehoben');
+    refresh(); window.gpPreviewRefresh?.();
+  };
+  left.querySelector('[data-gp-override]')?.addEventListener('click', () =>
+    setOverride({ move_in_type: $id('gp-ov-type').value, move_in_date: $id('gp-ov-date').value }));
+  left.querySelector('[data-gp-override-clear]')?.addEventListener('click', () => setOverride({ move_in_type: '' }));
+
+  const saveHousehold = async body => {
+    const r = await api(`/api/groups/${group.id}/settings`, { method: 'PUT', body });
+    if (!r.success) return toast('❌ ' + (r.error || 'Fehler'));
+    refresh(); window.gpPreviewRefresh?.();
+  };
+  left.querySelectorAll('[data-gp-type]').forEach(b => b.addEventListener('click', () =>
+    saveHousehold({ household_type: st.household_type === b.dataset.gpType ? '' : b.dataset.gpType })));
+  left.querySelectorAll('[data-gp-step]').forEach(b => b.addEventListener('click', () => {
+    const d = parseInt(b.dataset.delta);
+    if (b.dataset.gpStep === 'persons') {
+      const n = Math.max(0, Math.min(30, st.persons + d));
+      saveHousehold({ persons: n, children: n > 0 ? Math.min(st.children, n - 1) : st.children });
+    } else {
+      saveHousehold({ children: Math.max(0, Math.min(Math.max(0, effPersons - 1), st.children + d)) });
+    }
+  }));
+}
+
+// Right column + frame: group template editor with live preview.
+async function renderGroupProfile(group, el) {
+  el.innerHTML = '<p class="notify-sub">Wird geladen …</p>';
+  const tpl = await api(`/api/groups/${group.id}/template`);
+
   el.innerHTML = `
     <div class="gp-layout">
-      <div class="gp-left">
-        <span class="pf-label">Wer hat ein Profil?</span>
-        <div class="pf-card gp-members">${memberRows}</div>
-        <span class="pf-label">So stellt ihr euch vor</span>
-        <div class="pf-card gp-combined">${combined}</div>
-      </div>
+      <div class="gp-left" id="gp-left"><p class="notify-sub">Wird geladen …</p></div>
       <div class="pf-card gp-right">
         <div class="gp-right-head"><h3>Gruppen-Vorlage</h3><span class="gp-active">Aktiv beim Nachricht-Vorbereiten</span></div>
         <p class="pf-hint">Eigene Vorlage für Anfragen aus dieser Gruppe. Platzhalter fassen alle Mitglieder mit Profil zusammen. Leer lassen = deine persönliche Vorlage bzw. die geführte Nachricht.</p>
@@ -828,27 +892,9 @@ async function renderGroupProfile(group, el) {
       </div>
     </div>`;
 
-  // ── members / override handlers ──
-  el.querySelector('[data-gp-edit]')?.addEventListener('click', () => showView('profile', true));
-  el.querySelectorAll('[data-gp-remind]').forEach(b => b.addEventListener('click', async () => {
-    b.disabled = true;
-    const r = await api(`/api/groups/${group.id}/remind-profile/${b.dataset.gpRemind}`, { method: 'POST' });
-    toast(r.success ? '👋 Erinnerung gesendet' : '❌ ' + (r.error || 'Fehler'));
-    if (r.success) b.textContent = 'Erinnert ✓'; else b.disabled = false;
-  }));
-  const setOverride = async body => {
-    const r = await api(`/api/groups/${group.id}/move-in-override`, { method: 'PUT', body });
-    if (!r.success) return toast('❌ ' + (r.error || 'Fehler'));
-    toast(body.move_in_type ? '✅ Gemeinsamer Einzug festgelegt' : 'Gemeinsamer Einzug aufgehoben');
-    renderGroupProfile(group, el);
-  };
-  el.querySelector('[data-gp-override]')?.addEventListener('click', () =>
-    setOverride({ move_in_type: $id('gp-ov-type').value, move_in_date: $id('gp-ov-date').value }));
-  el.querySelector('[data-gp-override-clear]')?.addEventListener('click', () => setOverride({ move_in_type: '' }));
-
   // ── template editor: disabled until loaded so a fast save can't wipe the stored template ──
   const ta = $id('gp-tpl'), saveBtn = $id('gp-save'), resetBtn = $id('gp-reset');
-  let loaded = !tpl.error;
+  const loaded = !tpl.error;
   if (loaded) ta.value = tpl.template || ''; else ta.placeholder = 'Vorlage konnte nicht geladen werden – bitte neu öffnen.';
   ta.disabled = saveBtn.disabled = resetBtn.disabled = !loaded;
   if (loaded) ta.placeholder = 'z.B. Hallo, wir als WG interessieren uns für {titel} ({zimmer} Zi., {groesse})…';
@@ -867,8 +913,8 @@ async function renderGroupProfile(group, el) {
       box.textContent = (d.message || '—') + (notes.length ? '\n\n⚠️ ' + notes.join('\n⚠️ ') : '');
     }, 350);
   };
+  window.gpPreviewRefresh = refreshPreview;
   ta.addEventListener('input', refreshPreview);
-  refreshPreview();
   $id('gp-chips').addEventListener('click', e => {
     const chip = e.target.closest('.ph-chip'); if (!chip || ta.disabled) return;
     const token = `{${chip.dataset.ph}}`, s = ta.selectionStart ?? ta.value.length, en = ta.selectionEnd ?? ta.value.length;
@@ -884,5 +930,8 @@ async function renderGroupProfile(group, el) {
     if (!ta.value.trim() || !confirm('Gruppen-Vorlage löschen und wieder die persönliche Vorlage verwenden?')) return;
     await put('', 'Gruppen-Vorlage zurückgesetzt'); ta.value = ''; refreshPreview();
   });
+
+  await gpRenderLeft(group, $id('gp-left'));
+  refreshPreview();
 }
 window.renderGroupProfile = renderGroupProfile;

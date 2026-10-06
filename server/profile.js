@@ -235,6 +235,45 @@ function movePhraseOf(p, withZum) {
 const personsOf = p => Math.min(12, Math.max(1, parseInt(p.persons, 10) || 1));
 const childrenOf = p => Math.max(0, parseInt(p.children, 10) || 0);
 
+// ── Haushalt: Profil vs. Gruppe ────────────────────────────
+// Who is searching, and how many? Without a group that is the single profile's
+// own persons/children/type. A group states its own size (a family of 6 looking
+// together) — member profiles are individual and must not be summed (a couple
+// with two profiles would count twice). Unset group numbers (0) fall back to
+// "one person per member with a profile".
+function householdOf(profiles, group = null) {
+  if (group) {
+    const n = parseInt(group.persons, 10) || 0;
+    return {
+      persons:  n > 0 ? n : Math.max(profiles.length, 1),
+      children: Math.max(0, parseInt(group.children, 10) || 0),
+      type:     group.household_type || profiles.map(x => x.household_type).find(Boolean) || '',
+    };
+  }
+  return {
+    persons:  profiles.reduce((n, x) => n + personsOf(x), 0),
+    children: profiles.reduce((n, x) => n + childrenOf(x), 0),
+    type:     profiles.map(x => x.household_type).find(Boolean) || '',
+  };
+}
+
+// Validates the group-level household settings (PUT /api/groups/:id/settings).
+// `base` keeps fields that are absent from the request.
+function normalizeGroupSettings(b, base = {}) {
+  b = b || {};
+  const int = (k, max, fallback) => {
+    if (b[k] === undefined) return fallback;
+    const n = parseInt(b[k], 10);
+    return Number.isFinite(n) ? Math.min(max, Math.max(0, n)) : fallback;
+  };
+  const persons = int('persons', 30, parseInt(base.persons) || 0);
+  let children = int('children', 30, parseInt(base.children) || 0);
+  if (persons > 0) children = Math.min(children, persons - 1);   // at least one adult
+  let type = base.household_type || '';
+  if (b.household_type !== undefined) type = b.household_type === '' || optionValues('household_type').includes(b.household_type) ? b.household_type : type;
+  return { persons, children, household_type: type };
+}
+
 // ── Sichtbares Profil ──────────────────────────────────────
 // Returns a copy of the profile with everything blanked that must not end up
 // in a message: switched off in the person's own privacy settings or in the
@@ -289,7 +328,7 @@ const employmentText = p => {
 // profile ({name} -> "Anna, Ben und Chris"); for a solo request `profiles`
 // is just [profile], so behaviour is unchanged. Expects visibleProfile()
 // copies so hidden fields come out empty.
-function buildPlaceholders(listing, profile, profiles = [profile]) {
+function buildPlaceholders(listing, profile, profiles = [profile], group = null) {
   const uniq = arr => [...new Set(arr.filter(Boolean))];
   const docs = new Map();
   for (const pr of profiles) for (const d of parseDocuments(pr)) {
@@ -300,8 +339,7 @@ function buildPlaceholders(listing, profile, profiles = [profile]) {
     .join(', ');
   const names = uniq(profiles.map(x => x.display_name));
   const namen = germanList(names);
-  const persons = profiles.reduce((n, x) => n + personsOf(x), 0);
-  const kinder = profiles.reduce((n, x) => n + childrenOf(x), 0);
+  const { persons, children: kinder, type } = householdOf(profiles, group);
   return {
     titel:   listing.title || '',
     preis:   listing.price_cold || listing.price || '',
@@ -318,8 +356,8 @@ function buildPlaceholders(listing, profile, profiles = [profile]) {
     kinder:  kinder ? String(kinder) : '',
     beruf:   uniq(profiles.map(x => x.occupation)).join(', '),
     einzug:  uniq(profiles.map(x => movePhraseOf(x, false))).join(' bzw. '),
-    haushalt: uniq(profiles.map(x => x.household_size)).join(', ') || (persons > 1 ? `${persons} Personen` : ''),
-    wohnform: uniq(profiles.map(x => optionLabel('household_type', x.household_type))).join(', '),
+    haushalt: (group ? '' : uniq(profiles.map(x => x.household_size)).join(', ')) || (persons > 1 ? `${persons} Personen` : ''),
+    wohnform: group ? optionLabel('household_type', type) : uniq(profiles.map(x => optionLabel('household_type', x.household_type))).join(', '),
     mietdauer: uniq(profiles.map(x => x.lease_duration === 'any' ? '' : optionLabel('lease_duration', x.lease_duration))).join(', '),
     beschaeftigung: uniq(profiles.map(employmentText)).join(', '),
     einkommen: uniq(profiles.map(x => optionLabel('income_range', x.income_range))).join(', '),
@@ -348,10 +386,10 @@ function applyTemplate(tpl, placeholders) {
 // ── Geführte Nachricht ─────────────────────────────────────
 // Variant A1 — guided template built from structured profile fields.
 // Expects visibleProfile() copies (hidden fields already blanked).
-function buildGuidedMessage(listing, profiles, formal) {
+function buildGuidedMessage(listing, profiles, formal, group = null) {
   const greet  = formal ? 'Sehr geehrte Damen und Herren,' : 'Hallo,';
   const p = profiles[0] || {};
-  const totalPersons = profiles.reduce((n, x) => n + personsOf(x), 0);
+  const { persons: totalPersons, children: kids, type } = householdOf(profiles, group);
   const plural = totalPersons > 1;           // "wir" instead of "ich"
   const nameOf = (x, i) => x.display_name || `Person ${i + 1}`;
 
@@ -372,8 +410,6 @@ function buildGuidedMessage(listing, profiles, formal) {
       if (x.occupation) bits.push(x.occupation);
       return bits.join(', ');
     }).filter(Boolean);
-    const type = profiles.map(x => x.household_type).find(Boolean);
-    const kids = profiles.reduce((n, x) => n + childrenOf(x), 0);
     const typeText = { couple: 'als Paar', family: 'als Familie', wg: 'als WG' }[type];
     const kidsText = kids ? ` (davon ${kids} ${kids === 1 ? 'Kind' : 'Kinder'})` : '';
     lines.push(`mit großem Interesse haben wir ${titleRef}${detailStr} gesehen und würden uns sehr über eine Besichtigung freuen.`);
@@ -510,15 +546,21 @@ function buildGuidedMessage(listing, profiles, formal) {
 }
 
 // One line per person for the LLM prompt (visibleProfile() copies).
-function summarizeForAi(profiles) {
-  return profiles.map((p, i) => {
+function summarizeForAi(profiles, group = null) {
+  const head = group ? (() => {
+    const h = householdOf(profiles, group);
+    return `Suche als Gruppe: ${h.persons} Personen${h.children ? `, davon ${h.children} Kinder` : ''}${h.type ? `, Wohnform: ${optionLabel('household_type', h.type)}` : ''}\n`;
+  })() : '';
+  return head + profiles.map((p, i) => {
     const parts = [];
     if (p.display_name) parts.push(`Name: ${p.display_name}`);
     if (p.occupation)   parts.push(`Beruf: ${p.occupation}`);
-    if (personsOf(p) > 1) parts.push(`Personen im Haushalt: ${personsOf(p)}`);
-    if (p.household_type) parts.push(`Wohnform: ${optionLabel('household_type', p.household_type)}`);
-    if (childrenOf(p))    parts.push(`Kinder: ${childrenOf(p)}`);
-    else if (p.household_size) parts.push(`Haushalt: ${p.household_size}`);
+    if (!group) {
+      if (personsOf(p) > 1) parts.push(`Personen im Haushalt: ${personsOf(p)}`);
+      if (p.household_type) parts.push(`Wohnform: ${optionLabel('household_type', p.household_type)}`);
+      if (childrenOf(p))    parts.push(`Kinder: ${childrenOf(p)}`);
+      else if (p.household_size) parts.push(`Haushalt: ${p.household_size}`);
+    }
     const move = movePhraseOf(p, false);
     if (move) parts.push(`Einzug: ${move}`);
     if (p.lease_duration && p.lease_duration !== 'any') parts.push(`Mietdauer: ${optionLabel('lease_duration', p.lease_duration)}`);
@@ -540,7 +582,7 @@ function summarizeForAi(profiles) {
 // entries: [{ user: {id, username}, profile }] for ALL members.
 // Only data the members chose to share (visibleProfile) goes into `combined`;
 // other members' completeness is exposed as a percentage only.
-function groupOverview(entries, override = null) {
+function groupOverview(entries, override = null, group = null) {
   const members = entries.map(({ user, profile }) => {
     const filled = isFilled(profile);
     const c = completeness(profile);
@@ -568,11 +610,17 @@ function groupOverview(entries, override = null) {
 
   return {
     members,
+    settings: {
+      persons: parseInt(group?.persons) || 0,
+      children: parseInt(group?.children) || 0,
+      household_type: group?.household_type || '',
+      autoPersons: Math.max(vis.length, 1),      // what "automatic" resolves to
+    },
     combined: {
       memberCount: vis.length,
-      persons: vis.reduce((n, { p }) => n + personsOf(p), 0),
-      children: vis.reduce((n, { p }) => n + childrenOf(p), 0),
-      household_type: vis.map(({ p }) => p.household_type).find(Boolean) || '',
+      persons: householdOf(vis.map(v => v.p), group || {}).persons,
+      children: householdOf(vis.map(v => v.p), group || {}).children,
+      household_type: householdOf(vis.map(v => v.p), group || {}).type,
       names: vis.map(({ p }) => p.display_name).filter(Boolean),
       occupations: vis.map(({ user, p }) => ({ id: user.id, name: p.display_name || user.username, occupation: p.occupation })).filter(x => x.occupation),
       nonSmoker: smokerVis.length > 0 && smokerVis.every(({ p }) => !p.smoker),
@@ -593,7 +641,7 @@ function groupOverview(entries, override = null) {
 
 module.exports = {
   OPTIONS, SHARE_KEYS, SHARE_KEY_NAMES, SECTIONS, DOC_STATUS_LABEL,
-  cleanDocuments, parseDocuments, parseShare, hasData, normalizeInput,
+  householdOf, normalizeGroupSettings, cleanDocuments, parseDocuments, parseShare, hasData, normalizeInput,
   completeness, isFilled, movePhraseOf, personsOf, childrenOf, visibleProfile, blockStatus,
   buildPlaceholders, applyTemplate, buildGuidedMessage, summarizeForAi, groupOverview,
   germanList, isPluralDoc, optionLabel,

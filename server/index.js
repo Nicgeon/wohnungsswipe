@@ -254,6 +254,9 @@ async function initDb() {
   migrate("ALTER TABLE applicant_profiles ADD COLUMN phone TEXT DEFAULT ''");
   migrate("ALTER TABLE applicant_profiles ADD COLUMN availability TEXT DEFAULT ''");
   migrate("ALTER TABLE applicant_profiles ADD COLUMN share_json TEXT DEFAULT '{}'");
+  migrate("ALTER TABLE group_settings ADD COLUMN persons INTEGER DEFAULT 0");
+  migrate("ALTER TABLE group_settings ADD COLUMN children INTEGER DEFAULT 0");
+  migrate("ALTER TABLE group_settings ADD COLUMN household_type TEXT DEFAULT ''");
   migrate("ALTER TABLE search_jobs ADD COLUMN visibility_id INTEGER");
   migrate("ALTER TABLE users       ADD COLUMN notify_matrix   TEXT");
 
@@ -649,6 +652,35 @@ function getGroupOverride(groupId) {
   return row && row.move_in_type ? row : null;
 }
 
+// Group-level household: how many people search together (a family of 6), how
+// many of them are children, and what kind of household it is. Independent of
+// the members' own profiles (which stay individual). persons=0 means "automatic".
+function getGroupHousehold(groupId) {
+  const row = dbGet('SELECT persons, children, household_type FROM group_settings WHERE group_id=?', [groupId]);
+  return { persons: row?.persons || 0, children: row?.children || 0, household_type: row?.household_type || '' };
+}
+
+app.get('/api/groups/:id/settings', requireAuth, (req, res) => {
+  if (!isGroupMember(req.params.id, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff' });
+  const filled = collectGroupProfiles(req.params.id).profiles.length;
+  res.json({ settings: getGroupHousehold(req.params.id), autoPersons: Math.max(filled, 1), override: getGroupOverride(req.params.id) });
+});
+
+app.put('/api/groups/:id/settings', requireAuth, (req, res) => {
+  const gid = req.params.id;
+  if (!isGroupMember(gid, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff' });
+  const vals = P.normalizeGroupSettings(req.body, getGroupHousehold(gid));
+  if (dbGet('SELECT 1 FROM group_settings WHERE group_id=?', [gid])) {
+    dbRun('UPDATE group_settings SET persons=?, children=?, household_type=?, updated_by=?, updated_at=CURRENT_TIMESTAMP WHERE group_id=?',
+      [vals.persons, vals.children, vals.household_type, req.session.userId, gid]);
+  } else {
+    dbRun('INSERT INTO group_settings (group_id, persons, children, household_type, updated_by) VALUES (?,?,?,?,?)',
+      [gid, vals.persons, vals.children, vals.household_type, req.session.userId]);
+  }
+  saveDb();
+  res.json({ success: true, settings: getGroupHousehold(gid) });
+});
+
 app.get('/api/groups/:id/move-in-override', requireAuth, (req, res) => {
   if (!isGroupMember(req.params.id, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff' });
   res.json({ override: getGroupOverride(req.params.id) });
@@ -708,7 +740,7 @@ app.get('/api/groups/:id/profile-overview', requireAuth, (req, res) => {
   if (!isGroupMember(gid, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff' });
   const members = dbAll(`SELECT u.id, u.username FROM group_members gm JOIN users u ON u.id=gm.user_id
                          WHERE gm.group_id=? ORDER BY gm.joined_at`, [gid]);
-  const overview = P.groupOverview(members.map(m => ({ user: m, profile: getProfile(m.id) })), getGroupOverride(gid));
+  const overview = P.groupOverview(members.map(m => ({ user: m, profile: getProfile(m.id) })), getGroupOverride(gid), getGroupHousehold(gid));
   res.json({ ...overview, me: req.session.userId });
 });
 
@@ -759,11 +791,12 @@ app.post('/api/groups/:id/template/preview', requireAuth, (req, res) => {
   let { profiles, missing } = collectGroupProfiles(gid);
   if (!profiles.length) profiles = [requester];
   const vis = profiles.map(pr => P.visibleProfile(pr, { override: getGroupOverride(gid) }));
+  const household = getGroupHousehold(gid);
   if (!tpl.trim()) {
-    return res.json({ message: P.buildGuidedMessage(SAMPLE_LISTING, vis, requester.formal ? 1 : 0),
+    return res.json({ message: P.buildGuidedMessage(SAMPLE_LISTING, vis, requester.formal ? 1 : 0, household),
                       missingProfiles: missing, unknownPlaceholders: [], guided: true });
   }
-  const { text, unknown } = P.applyTemplate(tpl, P.buildPlaceholders(SAMPLE_LISTING, vis[0], vis));
+  const { text, unknown } = P.applyTemplate(tpl, P.buildPlaceholders(SAMPLE_LISTING, vis[0], vis, household));
   res.json({ message: text, missingProfiles: missing, unknownPlaceholders: unknown });
 });
 
@@ -797,6 +830,13 @@ app.post('/api/message/generate', requireAuth, async (req, res) => {
   // Bausteine decide which fields reach the text (guided, template and AI).
   const blocks   = cleanBlocks(req.body.blocks);
   const profiles = rawProfiles.map(pr => P.visibleProfile(pr, { blocks, override }));
+  // A group's own household (size, children, type) replaces the per-profile numbers;
+  // switching the "Wohnform & Personen" block off still hides type and children.
+  let household = null;
+  if (groupId) {
+    household = getGroupHousehold(groupId);
+    if (blocks.household === false) household = { ...household, children: 0, household_type: '' };
+  }
   const formal   = tone === 'formal' ? 1 : tone === 'informal' ? 0 : (requester.formal ? 1 : 0);
 
   // ── Variant B: AI generation (only if server-side LLM creds exist) ──
@@ -805,7 +845,7 @@ app.post('/api/message/generate', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'KI-Modus ist auf diesem Server nicht konfiguriert' });
     }
     try {
-      const profileSummary = P.summarizeForAi(profiles);
+      const profileSummary = P.summarizeForAi(profiles, household);
 
       const prompt = `Schreibe eine höfliche, authentische deutsche Nachricht an einen Vermieter als Antwort auf eine Wohnungsanzeige. ${formal ? 'Nutze die förmliche Sie-Anrede.' : 'Nutze eine freundliche, lockere Du/Hallo-Anrede.'} Halte sie knapp (max. 150 Wörter), ehrlich und ohne übertriebene Floskeln. Verwende ausschließlich die unten genannten Angaben und erfinde nichts dazu.
 
@@ -861,16 +901,16 @@ Gib NUR den Nachrichtentext zurück, ohne Betreff, ohne Erklärungen.`;
     const groupTpl = groupId ? getGroupTemplate(req.session.userId, groupId) : '';
     const tpl = (groupTpl && groupTpl.trim()) ? groupTpl : requester.custom_template;
     if (tpl && tpl.trim()) {
-      const { text, unknown } = P.applyTemplate(tpl, P.buildPlaceholders(listing, profiles[0], profiles));
+      const { text, unknown } = P.applyTemplate(tpl, P.buildPlaceholders(listing, profiles[0], profiles, household));
       return res.json({ message: text, mode: 'template', missingProfiles, unknownPlaceholders: unknown,
                         templateSource: (groupTpl && groupTpl.trim()) ? 'group' : 'personal' });
     }
-    return res.json({ message: P.buildGuidedMessage(listing, profiles, formal), mode: 'guided', missingProfiles,
+    return res.json({ message: P.buildGuidedMessage(listing, profiles, formal, household), mode: 'guided', missingProfiles,
                       info: 'Noch keine eigene Vorlage hinterlegt – es wird die geführte Nachricht angezeigt.' });
   }
 
   // ── Variant A1: guided template (default) ──
-  return res.json({ message: P.buildGuidedMessage(listing, profiles, formal), mode: 'guided', missingProfiles });
+  return res.json({ message: P.buildGuidedMessage(listing, profiles, formal, household), mode: 'guided', missingProfiles });
 });
 
 // Lets the frontend know whether the AI option should be shown at all,
