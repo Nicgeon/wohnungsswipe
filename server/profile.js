@@ -320,7 +320,7 @@ function blockStatus(profiles) {
 const employmentText = p => {
   const base = { employed: 'angestellt', self_employed: 'selbstständig', student: 'im Studium',
                  trainee: 'in Ausbildung', retired: 'in Rente' }[p.employment] || '';
-  return base && p.employment === 'employed' && p.employment_permanent ? `${base} (unbefristet)` : base;
+  return base && p.employment === 'employed' && p.employment_permanent ? `unbefristet ${base}` : base;
 };
 
 // Build the {placeholder} substitution map from a listing + profile(s).
@@ -384,110 +384,147 @@ function applyTemplate(tpl, placeholders) {
 }
 
 // ── Geführte Nachricht ─────────────────────────────────────
-// Variant A1 — guided template built from structured profile fields.
-// Expects visibleProfile() copies (hidden fields already blanked).
+// Number words for running text ("zwei Personen", "zu dritt", "ein Kind").
+const NUM_WORDS = ['null', 'ein', 'zwei', 'drei', 'vier', 'fünf', 'sechs', 'sieben', 'acht', 'neun', 'zehn', 'elf', 'zwölf'];
+const numWord = n => (n >= 1 && n <= 12) ? NUM_WORDS[n] : String(n);
+const ZU_WORD = { 2: 'zu zweit', 3: 'zu dritt', 4: 'zu viert', 5: 'zu fünft', 6: 'zu sechst', 7: 'zu siebt', 8: 'zu acht' };
+const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
+const NO_PETS_RE = /^(keine?|nein|-)$/i;
+
+// "Hund, Katze" → ["einen Hund", "eine Katze"]; free text keeps its own article if it has one.
+function petItems(profiles) {
+  const known = { hund: 'einen Hund', hunde: 'Hunde', katze: 'eine Katze', katzen: 'Katzen', kleintier: 'ein Kleintier', kleintiere: 'Kleintiere' };
+  const seen = new Set(), items = [], others = [];
+  let none = false;
+  for (const x of profiles) {
+    for (const raw of (x.pets || '').split(/\s*(?:,|\/|;|\bund\b)\s*/i).map(t => t.trim()).filter(Boolean)) {
+      if (NO_PETS_RE.test(raw)) { none = true; continue; }
+      const key = raw.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (known[key]) items.push(known[key]);
+      else if (/^(ein|eine|einen|zwei|drei|vier)\b/i.test(raw)) items.push(raw);
+      else others.push(raw);
+    }
+  }
+  if (others.length) items.push(`weitere Haustiere (${others.join(', ')})`);
+  return { none: none && !items.length, items };
+}
+
+// Variant A1 — guided template built from structured profile fields. Written as flowing
+// German: related facts share a sentence, subjects vary, grammar follows tone and head count
+// ("beide"/"alle", "zu zweit", "Ihre"/"deine"). Expects visibleProfile() copies (hidden
+// fields already blanked). `group` is the group's own household (see householdOf).
 function buildGuidedMessage(listing, profiles, formal, group = null) {
-  const greet  = formal ? 'Sehr geehrte Damen und Herren,' : 'Hallo,';
-  const p = profiles[0] || {};
-  const { persons: totalPersons, children: kids, type } = householdOf(profiles, group);
-  const plural = totalPersons > 1;           // "wir" instead of "ich"
-  const nameOf = (x, i) => x.display_name || `Person ${i + 1}`;
+  const { persons, children: kids, type } = householdOf(profiles, group);
+  const plural = persons > 1;                 // "wir" instead of "ich"
+  const Wir = plural ? 'Wir' : 'Ich';
+  const wir = plural ? 'wir' : 'ich';
+  const uns = plural ? 'uns' : 'mich';
+  const both = persons === 2 ? 'beide' : 'alle';
 
-  const lines = [];
-  lines.push(greet);
-  lines.push('');
+  // First names are enough once introduced — unless they collide (two Philipps).
+  const first = x => (x.display_name || '').trim().split(/\s+/)[0];
+  const nameOf = (x, i) => {
+    if (!x.display_name) return `Person ${i + 1}`;
+    return profiles.filter(y => first(y) === first(x)).length > 1 ? x.display_name.trim() : first(x);
+  };
 
-  const titleRef = listing.title ? `Ihre Anzeige „${listing.title}"` : 'Ihre Wohnungsanzeige';
+  const paragraphs = [];
+  paragraphs.push(formal ? 'Sehr geehrte Damen und Herren,' : 'Hallo,');
+
+  const titleRef = listing.title ? `${formal ? 'Ihre' : 'deine'} Anzeige „${listing.title}“` : `${formal ? 'Ihre' : 'deine'} Wohnungsanzeige`;
   const details = [];
   if (listing.size)  details.push(listing.size);
   if (listing.rooms) details.push(`${listing.rooms} Zimmer`);
   const detailStr = details.length ? ` (${details.join(', ')})` : '';
+  paragraphs.push(`mit großem Interesse ${plural ? 'haben wir' : 'habe ich'} ${titleRef}${detailStr} gesehen und ${plural ? 'würden uns' : 'würde mich'} sehr über eine Besichtigung freuen.`);
 
+  // ── Who we are ──
   const introProfiles = profiles.filter(x => !x._hideIntro);
+  const who = introProfiles.map(x => {
+    if (!x.display_name && !x.occupation) return '';
+    return x.occupation ? `${x.display_name || 'eine Person'} (${x.occupation})` : x.display_name;
+  }).filter(Boolean);
   if (plural) {
-    const whoList = introProfiles.map(x => {
-      const bits = [x.display_name].filter(Boolean);
-      if (x.occupation) bits.push(x.occupation);
-      return bits.join(', ');
-    }).filter(Boolean);
-    const typeText = { couple: 'als Paar', family: 'als Familie', wg: 'als WG' }[type];
-    const kidsText = kids ? ` (davon ${kids} ${kids === 1 ? 'Kind' : 'Kinder'})` : '';
-    lines.push(`mit großem Interesse haben wir ${titleRef}${detailStr} gesehen und würden uns sehr über eine Besichtigung freuen.`);
-    lines.push('');
-    const head = typeText ? `Wir bewerben uns ${typeText} mit ${totalPersons} Personen${kidsText}`
-                          : `Wir bewerben uns gemeinsam als ${totalPersons} Personen${kidsText}`;
-    lines.push(head + (whoList.length ? `: ${whoList.join('; ')}.` : '.'));
-  } else {
-    const who = [];
-    if (p.display_name && !p._hideIntro) who.push(`Mein Name ist ${p.display_name}`);
-    if (p.occupation)                    who.push(`ich bin ${p.occupation}`);
-    lines.push(`mit großem Interesse habe ich ${titleRef}${detailStr} gesehen und würde mich sehr über eine Besichtigung freuen.`);
-    lines.push('');
-    if (who.length) lines.push(who.join(', ') + '.');
+    const kidsText = kids ? ` (davon ${kids === 1 ? 'ein Kind' : `${numWord(kids)} Kinder`})` : '';
+    let head;
+    if (type === 'couple' && persons === 2) head = 'als Paar';
+    else if (type === 'couple')             head = `als Paar mit ${numWord(persons)} Personen${kidsText}`;
+    else if (type === 'family')             head = `als Familie mit ${numWord(persons)} Personen${kidsText}`;
+    else if (type === 'wg')                 head = ZU_WORD[persons] ? `als WG ${ZU_WORD[persons]}` : `als WG mit ${numWord(persons)} Personen`;
+    else                                    head = ZU_WORD[persons] || `als ${numWord(persons)} Personen`;
+    let intro = `Wir bewerben uns ${head}${type === 'couple' && persons === 2 ? kidsText : ''}`;
+    if (who.length >= 2)      intro += `: ${germanList(who)}.`;
+    else if (who.length === 1) intro += `. Ansprechperson ist ${who[0]}.`;
+    else                       intro += '.';
+    paragraphs.push(intro);
+  } else if (who.length || profiles[0]?.display_name) {
+    const p = profiles[0];
+    const name = !p._hideIntro && p.display_name;
+    const job = p.occupation;
+    if (name && job)      paragraphs.push(`Mein Name ist ${name} und ich bin ${job}.`);
+    else if (name)        paragraphs.push(`Mein Name ist ${name}.`);
+    else if (job)         paragraphs.push(`Ich bin ${job}.`);
   }
 
-  // Shared facts — each phrased as a complete, grammatical sentence.
+  // ── Facts: a few sentences instead of a chain of "Wir …" fragments ──
   const facts = [];
 
-  // Move-in: build a grammatical phrase from the structured type/date
-  // instead of just gluing a raw string after "Einzug wäre ... ab".
-  const movePhrases = [...new Set(profiles.map(x => movePhraseOf(x, true)).filter(Boolean))];
-  if (movePhrases.length) {
-    facts.push(`${plural ? 'einziehen könnten wir' : 'einziehen könnte ich'} ${movePhrases.join(' bzw. ')}`);
-  }
-
-  // Lease duration: "langfristig" wins over "befristet okay"; "egal" says nothing.
+  // Move-in (+ lease): one agreed wish is a clause, differing wishes are named per person.
+  const mv = profiles.map((x, i) => ({ name: nameOf(x, i), kind: x.move_in_type || (x.move_in_date ? 'date' : ''), text: movePhraseOf(x, true) })).filter(m => m.text);
   const leases = profiles.map(x => x.lease_duration);
-  if (leases.includes('long'))              facts.push(plural ? 'wir suchen langfristig' : 'ich suche langfristig');
-  else if (leases.includes('temporary_ok')) facts.push(`ein befristetes Mietverhältnis wäre für ${plural ? 'uns' : 'mich'} in Ordnung`);
-
-  const smokerProfiles = profiles.filter(x => !x._hideSmoker && isFilled(x));
-  if (smokerProfiles.length && smokerProfiles.every(x => !x.smoker)) {
-    facts.push(plural ? 'wir sind alle Nichtraucher' : 'ich bin Nichtraucher');
-  }
-
-  const pets = [...new Set(profiles.map(x => x.pets).filter(Boolean))];
-  if (pets.length) {
-    const noPets = pets.every(x => /^(keine?|nein|-)$/i.test(x.trim()));
-    if (noPets) facts.push(plural ? 'wir haben keine Haustiere' : 'ich habe keine Haustiere');
-    else        facts.push(`als Haustier${pets.length > 1 ? 'e' : ''} ${plural ? 'bringen wir' : 'bringe ich'} ${pets.join(' und ')} mit`);
-  }
-
-  // Employment: "wir sind alle angestellt" when everyone matches, else per person.
-  const emp = profiles.map((x, i) => ({ name: nameOf(x, i), text: employmentText(x) })).filter(e => e.text);
-  if (emp.length) {
-    if (!plural) {
-      facts.push(`ich bin ${emp[0].text}`);
-    } else if (emp.length === profiles.length && new Set(emp.map(e => e.text)).size === 1) {
-      facts.push(`wir sind alle ${emp[0].text}`);
+  const lease = leases.includes('long') ? 'long' : leases.includes('temporary_ok') ? 'temporary_ok' : '';
+  let leaseDone = false;
+  if (mv.length) {
+    const texts = [...new Set(mv.map(m => m.text))];
+    if (texts.length === 1) {
+      const m = mv[0];
+      let sentence = m.kind === 'flexible' ? `${Wir} ${plural ? 'sind' : 'bin'} beim Einzug flexibel`
+        : `${Wir} ${plural ? 'könnten' : 'könnte'} ${m.text} einziehen`;
+      if (lease === 'long') { sentence += ` und ${plural ? 'suchen' : 'suche'} langfristig`; leaseDone = true; }
+      facts.push(sentence + '.');
     } else {
-      facts.push(germanList(emp.map(e => `${e.name} ist ${e.text}`)));
+      const parts = mv.map(m => m.kind === 'flexible' ? `${m.name} ist beim Einzug flexibel`
+        : m.kind === 'asap' ? `${m.name} kann schnellstmöglich einziehen` : `${m.name} kann ${m.text} einziehen`);
+      facts.push(cap(germanList(parts)) + '.');
     }
   }
+  if (lease && !leaseDone) {
+    facts.push(lease === 'long' ? `${Wir} ${plural ? 'suchen' : 'suche'} langfristig.`
+                                : `Ein befristetes Mietverhältnis wäre für ${uns} in Ordnung.`);
+  }
 
-  // Income: only present if the person(s) chose to share it.
+  // Smoking + pets share one sentence.
+  const smokerProfiles = profiles.filter(x => !x._hideSmoker && isFilled(x));
+  const nonSmoker = smokerProfiles.length > 0 && smokerProfiles.every(x => !x.smoker);
+  const pets = petItems(profiles);
+  const smokeClause = nonSmoker ? (plural ? `sind ${both} Nichtraucher` : 'bin Nichtraucher') : '';
+  const petClause = pets.items.length ? `${plural ? 'haben' : 'habe'} ${germanList(pets.items)}`
+                  : pets.none ? `${plural ? 'haben' : 'habe'} keine Haustiere` : '';
+  if (smokeClause && petClause) facts.push(`${Wir} ${smokeClause} und ${petClause}.`);
+  else if (smokeClause || petClause) facts.push(`${Wir} ${smokeClause || petClause}.`);
+
+  // Employment: one statement if everyone matches, otherwise per person.
+  const emp = profiles.map((x, i) => ({ name: nameOf(x, i), text: employmentText(x) })).filter(e => e.text);
+  // "Wir sind beide …" only when the profiles cover every person (a family of six with one
+  // profile must not claim that the children are employed).
+  if (emp.length) {
+    const everyoneCovered = emp.length === profiles.length && profiles.length === persons;
+    if (!plural || profiles.length === 1) facts.push(`Ich bin ${emp[0].text}.`);
+    else if (everyoneCovered && new Set(emp.map(e => e.text)).size === 1) facts.push(`Wir sind ${both} ${emp[0].text}.`);
+    else facts.push(cap(germanList(emp.map(e => `${e.name} ist ${e.text}`))) + '.');
+  }
+
+  // Income — only present if the person(s) chose to share it.
   const inc = profiles.map((x, i) => ({ name: nameOf(x, i), label: optionLabel('income_range', x.income_range) })).filter(e => e.label);
   if (inc.length) {
-    if (inc.length === 1 && profiles.length === 1) {
-      facts.push(`${plural ? 'unser' : 'mein'} monatliches Netto-Haushaltseinkommen liegt bei ${inc[0].label}`);
-    } else {
-      facts.push(`unser monatliches Netto-Einkommen: ${inc.map(e => `${e.name} ${e.label}`).join(', ')}`);
-    }
+    if (inc.length === 1 && profiles.length === 1) facts.push(`${plural ? 'Unser' : 'Mein'} monatliches Netto-Haushaltseinkommen liegt bei ${inc[0].label}.`);
+    else facts.push(`Unser monatliches Nettoeinkommen liegt bei ${germanList(inc.map(e => `${e.label} (${e.name})`))}.`);
   }
+  if (facts.length) paragraphs.push(facts.join(' '));
 
-  if (facts.length) {
-    lines.push('');
-    // Join into flowing sentences, each capitalized.
-    const sentences = facts.map(f => f.charAt(0).toUpperCase() + f.slice(1));
-    lines.push(sentences.join('. ') + '.');
-  }
-
-  // Supporting documents (SCHUFA-Auskunft, Mieterselbstauskunft, …) are
-  // grouped by status so they read as flowing sentences — "SCHUFA-Auskunft
-  // und Mieterselbstauskunft liegen vor. Gehaltsnachweise sind beantragt."
-  // — instead of a flat "Dokument: Status" label dump. Deduplicated by
-  // document name across a group (first occurrence wins) so a document
-  // every roommate listed is only mentioned once.
+  // ── Supporting documents, grouped by status: "A und B liegen vor. C ist beantragt." ──
   const docsByName = new Map();
   for (const prof of profiles) {
     for (const d of parseDocuments(prof)) {
@@ -506,43 +543,33 @@ function buildGuidedMessage(listing, profiles, formal, group = null) {
       const label = DOC_STATUS_LABEL[status][(names.length > 1 || names.some(isPluralDoc)) ? 'many' : 'one'];
       statusSentences.push(`${germanList(names)} ${label}`);
     }
-    if (statusSentences.length) {
-      lines.push('');
-      lines.push(statusSentences.map(s => s.charAt(0).toUpperCase() + s.slice(1) + '.').join(' '));
-    }
+    if (statusSentences.length) paragraphs.push(statusSentences.map(x => cap(x) + '.').join(' '));
   }
 
   // Free-text about sections
   const abouts = profiles.map(x => x.about_text).filter(Boolean);
-  if (abouts.length) {
-    lines.push('');
-    lines.push(abouts.join('\n\n'));
-  }
+  if (abouts.length) paragraphs.push(abouts.join('\n\n'));
 
-  // Contact: phone + viewing times, only if shared.
-  const phones = [...new Set(profiles.map(x => x.phone).filter(Boolean))];
+  // ── Contact: phone (whose number, when there are several) + viewing times ──
+  const phoneOwners = profiles.filter(x => x.phone).map((x, i) => ({ phone: x.phone, name: nameOf(x, profiles.indexOf(x)) }));
+  const phones = [...new Map(phoneOwners.map(o => [o.phone, o])).values()];
   const avails = [...new Set(profiles.map(x => x.availability).filter(Boolean))];
-  if (phones.length || avails.length) {
-    lines.push('');
-    const contact = [];
-    if (phones.length) contact.push(formal
-      ? `Sie erreichen ${plural ? 'uns' : 'mich'} telefonisch unter ${phones.join(' oder ')}.`
-      : `Du erreichst ${plural ? 'uns' : 'mich'} telefonisch unter ${phones.join(' oder ')}.`);
-    if (avails.length) contact.push(`Besichtigungstermine sind ${plural ? 'bei uns' : 'bei mir'} ${avails.join(' bzw. ')} möglich.`);
-    lines.push(contact.join(' '));
+  const contact = [];
+  if (phones.length) {
+    const list = phones.length > 1 && profiles.length > 1
+      ? phones.map(o => `${o.phone} (${o.name})`).join(' oder ') : phones.map(o => o.phone).join(' oder ');
+    contact.push(formal ? `Sie erreichen ${uns} telefonisch unter ${list}.` : `Du erreichst ${uns} telefonisch unter ${list}.`);
   }
+  if (avails.length) contact.push(`Besichtigungstermine sind ${plural ? 'bei uns' : 'bei mir'} ${avails.join(' bzw. ')} möglich.`);
+  if (contact.length) paragraphs.push(contact.join(' '));
 
-  lines.push('');
-  const closeVerb = plural ? 'würden wir uns' : 'würde ich mich';
-  lines.push(formal
-    ? `Über eine Rückmeldung ${closeVerb} sehr freuen.`
-    : `Über eine kurze Rückmeldung ${closeVerb} sehr freuen.`);
-  lines.push('');
-  lines.push(formal ? 'Mit freundlichen Grüßen' : 'Viele Grüße');
+  paragraphs.push(formal
+    ? `Über eine Rückmeldung ${plural ? 'würden wir uns' : 'würde ich mich'} sehr freuen.`
+    : `Über eine kurze Rückmeldung ${plural ? 'würden wir uns' : 'würde ich mich'} sehr freuen.`);
   const sigNames = profiles.map(x => x.display_name).filter(Boolean);
-  if (sigNames.length) lines.push(sigNames.join(', '));
+  paragraphs.push([formal ? 'Mit freundlichen Grüßen' : 'Viele Grüße', sigNames.join(', ')].filter(Boolean).join('\n'));
 
-  return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  return paragraphs.join('\n\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 // One line per person for the LLM prompt (visibleProfile() copies).
