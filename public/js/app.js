@@ -8,6 +8,7 @@ const state = {
   swipeQueue: [],
   ratedFilter: 'all',
   lastSwipe:  null, // { listing, action } – powers the "Sofort-Undo" button
+  ratedSelected: new Set(), // listing ids ticked for bulk removal in "Bewertet"
 };
 
 // ── Helpers ───────────────────────────────────────────────
@@ -587,9 +588,10 @@ function buildListCard(listing, opts = {}) {
   const visLabel = { global:'🌐 Alle', private:'🔒 Nur ich', group:'👥 Gruppe' }[listing.visibility || 'global'];
 
   const div = document.createElement('div');
-  div.className = 'list-card';
+  div.className = 'list-card' + (opts.selectable ? ' list-card-selectable' : '');
 
   div.innerHTML = `
+    ${opts.selectable ? `<label class="rated-select-wrap" title="Inserat auswählen"><input type="checkbox" class="rated-select" data-listing-id="${listing.id}" ${state.ratedSelected.has(Number(listing.id)) ? 'checked' : ''}><span></span></label>` : ''}
     <div class="list-card-img-area">
       ${hasImg
         ? `<img class="list-card-img" src="${esc(images[0])}" onerror="this.style.display='none'" />`
@@ -641,6 +643,16 @@ function buildListCard(listing, opts = {}) {
         </div>
       </div>
     </div>`;
+
+  if (opts.selectable) {
+    const cb = div.querySelector('.rated-select');
+    cb?.addEventListener('click', e => e.stopPropagation());
+    cb?.addEventListener('change', () => {
+      const id = Number(cb.dataset.listingId);
+      if (cb.checked) state.ratedSelected.add(id); else state.ratedSelected.delete(id);
+      updateRatedBulkButtons();
+    });
+  }
 
   if (hasImg) div.querySelector('.list-card-img-area').addEventListener('click', e => {
     if (e.target.closest('[data-menu-toggle]') || e.target.closest('[data-menu]')) return;
@@ -1268,24 +1280,69 @@ let _ratedAll = [];
 async function loadRated() {
   const d = await api('/api/listings/rated');
   _ratedAll = d.listings || [];
+  state.ratedSelected.clear();
   renderRated();
+}
+
+function ratedVisible() {
+  const filter = state.ratedFilter;
+  return filter === 'all' ? _ratedAll : _ratedAll.filter(l => l.my_swipe === filter);
+}
+
+function updateRatedBulkButtons() {
+  const count = state.ratedSelected.size;
+  const del = $id('rated-delete-selected-btn');
+  const sel = $id('rated-select-all-btn');
+  if (del) {
+    del.disabled = count === 0;
+    del.textContent = count ? `🗑 ${count} Bewertung${count === 1 ? '' : 'en'} entfernen` : '🗑 Bewertungen entfernen';
+  }
+  if (sel) {
+    const visible = ratedVisible();
+    const all = visible.length > 0 && visible.every(l => state.ratedSelected.has(Number(l.id)));
+    sel.textContent = all ? 'Auswahl aufheben' : 'Alle auswählen';
+    sel.disabled = visible.length === 0;
+  }
 }
 
 function renderRated() {
   const list   = $id('rated-list');
   const empty  = $id('rated-empty');
   const filter = state.ratedFilter;
-  const items  = filter === 'all' ? _ratedAll : _ratedAll.filter(l => l.my_swipe === filter);
+  const items  = ratedVisible();
+  // Never keep hidden (filtered-out) items selected, so "entfernen" only
+  // ever deletes what the user can currently see ticked.
+  const visibleIds = new Set(items.map(l => Number(l.id)));
+  [...state.ratedSelected].forEach(id => { if (!visibleIds.has(id)) state.ratedSelected.delete(id); });
   list.innerHTML = '';
-  if (!items.length) { empty.style.display = ''; return; }
+  if (!items.length) { empty.style.display = ''; updateRatedBulkButtons(); return; }
   empty.style.display = 'none';
-  items.forEach(l => list.appendChild(buildListCard(l)));
+  items.forEach(l => list.appendChild(buildListCard(l, { selectable: true })));
+  updateRatedBulkButtons();
 }
+
+$id('rated-select-all-btn').addEventListener('click', () => {
+  const visible = ratedVisible();
+  const all = visible.length > 0 && visible.every(l => state.ratedSelected.has(Number(l.id)));
+  visible.forEach(l => { if (all) state.ratedSelected.delete(Number(l.id)); else state.ratedSelected.add(Number(l.id)); });
+  renderRated();
+});
+
+$id('rated-delete-selected-btn').addEventListener('click', async () => {
+  const ids = [...state.ratedSelected];
+  if (!ids.length) return;
+  if (!confirm(`${ids.length} Bewertung${ids.length === 1 ? '' : 'en'} entfernen? Die Inserate selbst bleiben bestehen und erscheinen beim Swipen wieder.`)) return;
+  const r = await api('/api/listings/rated', { method: 'DELETE', body: { listingIds: ids } });
+  if (!r.success) { toast('❌ ' + (r.error || 'Entfernen fehlgeschlagen')); return; }
+  state.ratedSelected.clear();
+  toast(`🗑 ${r.deleted} Bewertung${r.deleted === 1 ? '' : 'en'} entfernt`);
+  await loadRated();
+});
 
 document.getElementById('rated-filter').addEventListener('click', e => {
   const btn = e.target.closest('.filter-btn');
   if (!btn) return;
-  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('#rated-filter .filter-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   state.ratedFilter = btn.dataset.filter;
   renderRated();

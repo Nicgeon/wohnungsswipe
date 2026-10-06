@@ -172,7 +172,13 @@
   <div id="view-rated" class="view">
     <div class="view-content">
       <div class="rated-header">
-        <h2 class="view-title">Meine Bewertungen</h2>
+        <div>
+          <h2 class="view-title">Meine Bewertungen</h2>
+          <div class="rated-bulk-actions">
+            <button class="btn-ghost compact" id="rated-select-all-btn" type="button">Alle auswählen</button>
+            <button class="btn-danger compact" id="rated-delete-selected-btn" type="button" disabled>🗑 Bewertungen entfernen</button>
+          </div>
+        </div>
         <div class="rated-filter" id="rated-filter">
           <button class="filter-btn active" data-filter="all">Alle</button>
           <button class="filter-btn" data-filter="like">♥ Likes</button>

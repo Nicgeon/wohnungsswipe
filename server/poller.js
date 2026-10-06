@@ -19,6 +19,17 @@ const HEADERS = {
   'Cache-Control':   'no-cache',
 };
 
+// Immowelt only serializes the complete photo gallery (gallery.images) in its
+// mobile webview variant of the expose page; the desktop HTML often contains
+// just the first photo. scrapeListing() fetches this variant additionally.
+const IMMOWELT_MOBILE_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
+  'Accept': 'text/html,application/xhtml+xml,*/*',
+  'Accept-Language': 'de-DE,de;q=0.9',
+  'Cache-Control': 'no-cache',
+  'Cookie': 'aviv_client=ios',
+};
+
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ── Platform detection ─────────────────────────────────────
@@ -40,8 +51,8 @@ async function fetchPage(url, timeoutMs = 18000, allowedFailCodes = []) {
 // callers can detect when a listing URL silently redirected somewhere else
 // (Kleinanzeigen bounces expired ads to a category/search page with HTTP
 // 200 instead of returning a 404, which would otherwise look "alive").
-async function fetchPageRaw(url, timeoutMs = 18000, allowedFailCodes = []) {
-  const res = await fetch(url, { headers: HEADERS, timeout: timeoutMs });
+async function fetchPageRaw(url, timeoutMs = 18000, allowedFailCodes = [], requestHeaders = HEADERS) {
+  const res = await fetch(url, { headers: requestHeaders, timeout: timeoutMs });
   if (!res.ok && !allowedFailCodes.includes(res.status)) {
     throw new Error(`HTTP ${res.status}`);
   }
@@ -72,8 +83,18 @@ function extractListingUrls(html, searchUrl) {
     $('a[href*="/expose/"]').each((_, el) => {
       let href = $(el).attr('href') || '';
       if (href.startsWith('/')) href = 'https://www.immowelt.de' + href;
-      if (href.startsWith('http')) urls.add(href.split('?')[0]);
+      if (href.startsWith('http') && /immowelt\.de\/expose\//i.test(href)) urls.add(href.split('?')[0]);
     });
+    // Current Immowelt search pages can embed the result URLs in script/JSON
+    // state without rendering <a> elements. Only used as a fallback so that
+    // "similar listings" teasers embedded in the page state never get mixed
+    // in when the regular result links are present.
+    if (!urls.size) {
+      const raw = html.replace(/\\u002F/gi, '/').replace(/\\\//g, '/');
+      const re = /https?:\/\/(?:www\.)?immowelt\.de\/expose\/[a-z0-9-]+/gi;
+      let m;
+      while ((m = re.exec(raw))) urls.add(m[0].replace(/\\/g, '').split('?')[0]);
+    }
   } else if (platform === 'rentola') {
     $('a[href*="/listings/"]').each((_, el) => {
       let href = $(el).attr('href') || '';
@@ -209,6 +230,128 @@ function collectImages($, selectors) {
         set.add(src);
     });
   });
+  return [...set];
+}
+
+// Immowelt-specific image collector. Immowelt's CDN URLs often carry no
+// .jpg/.png extension and use srcset/data-imgsrc, which the generic
+// collectImages() filter drops. Restricted to immowelt.de hosts so
+// tracking pixels / third-party images can't leak into the gallery.
+function collectImmoweltPageImages($, selectors) {
+  const set = new Set();
+  const add = src => {
+    if (!src) return;
+    src = String(src).trim().replace(/\\u0026/g, '&').replace(/\\\\\//g, '/');
+    if (!/^https?:\/\/[a-z0-9.-]*immowelt\.de\//i.test(src)) return;
+    if (/logo|icon|avatar|favicon|sprite/i.test(src)) return;
+    set.add(src);
+  };
+  selectors.forEach(sel => {
+    $(sel).each((_, el) => {
+      const srcset = ($(el).attr('srcset') || $(el).attr('data-srcset') || '')
+        .split(',').map(x => x.trim().split(/\s+/)[0]).filter(Boolean);
+      [$(el).attr('src'), $(el).attr('data-src'), $(el).attr('data-lazy-src'),
+       $(el).attr('data-imgsrc'), $(el).attr('content'), ...srcset].forEach(add);
+    });
+  });
+  return [...set];
+}
+
+// Extract image URLs from serialized page state. Immowelt exposes its gallery
+// as an array of image objects in embedded application JSON; relying only on
+// rendered <img> tags can therefore miss lazy-loaded photos.
+function collectImmoweltEmbeddedImages($, html) {
+  const set = new Set();
+
+  const add = src => {
+    if (!src) return;
+    src = String(src).trim()
+      .replace(/\\u0026/g, '&')
+      .replace(/\\u002F/gi, '/')
+      .replace(/\\\//g, '/')
+      .replace(/\\\\/g, '/');
+    if (/^https?:\/\/mms\.immowelt\.de\//i.test(src)) set.add(src);
+  };
+
+  const walk = value => {
+    if (!value || typeof value !== 'object') return;
+
+    if (Array.isArray(value)) {
+      value.forEach(walk);
+      return;
+    }
+
+    for (const [key, val] of Object.entries(value)) {
+      const keyLower = key.toLowerCase();
+
+      if (keyLower === 'gallery' && val && typeof val === 'object') {
+        const images = val.images;
+        if (Array.isArray(images)) {
+          images.forEach(img => {
+            if (typeof img === 'string') add(img);
+            else if (img && typeof img === 'object') {
+              add(img.url);
+              add(img.src);
+            }
+          });
+        }
+      }
+
+      if (keyLower === 'imageurls' || keyLower === 'image_urls') {
+        if (Array.isArray(val)) val.forEach(add);
+      }
+
+      if (keyLower === 'images' && Array.isArray(val)) {
+        val.forEach(img => {
+          if (typeof img === 'string') add(img);
+          else if (img && typeof img === 'object') add(img.url);
+        });
+      }
+
+      walk(val);
+    }
+  };
+
+  const raw = String(html || '')
+    .replace(/\\u002F/gi, '/')
+    .replace(/\\\//g, '/');
+
+  // Normal JSON script tags, including __NEXT_DATA__.
+  $('script').each((_, el) => {
+    const text = $(el).html() || '';
+    try {
+      walk(JSON.parse(text.trim()));
+    } catch (_) {}
+  });
+
+  // Immowelt's detail payload is usually a JavaScript assignment containing
+  // a DOUBLE-ENCODED JSON string. It is not a normal JSON script tag:
+  // window["__UFRN_LIFECYCLE_SERVERREQUEST__"] = JSON.parse("...");
+  const lifecycleRe =
+    /window\s*\[\s*["']__UFRN_LIFECYCLE_SERVERREQUEST__["']\s*\]\s*=\s*JSON\.parse\("((?:\\.|[^"\\])*)"\)/g;
+
+  let match;
+  while ((match = lifecycleRe.exec(raw))) {
+    try {
+      const decodedJson = JSON.parse('"' + match[1] + '"');
+      walk(JSON.parse(decodedJson));
+    } catch (e) {
+      console.warn('[Immowelt] UFRN-Detaildaten konnten nicht geparst werden:', e.message);
+    }
+  }
+
+  // Fallback for serialized gallery objects not wrapped in the lifecycle
+  // assignment.
+  const galleryBlock =
+    /["']gallery["']\s*:\s*\{[\s\S]*?["']images["']\s*:\s*\[([\s\S]*?)\]/gi;
+
+  while ((match = galleryBlock.exec(raw))) {
+    const chunk = match[1];
+    const imageUrls =
+      chunk.match(/https?:\/\/mms\.immowelt\.de\/[^"'\s<>\\]+/gi) || [];
+    imageUrls.forEach(add);
+  }
+
   return [...set];
 }
 
@@ -493,7 +636,9 @@ async function geocodeLocation(locationText) {
 }
 
 // ── Scrape a single listing ───────────────────────────────
-async function scrapeListing(url) {
+// opts.lite: skip the extra Immowelt mobile request (used by the periodic
+// status re-check, which only needs status/price/title — not the full gallery).
+async function scrapeListing(url, opts = {}) {
   const platform = detectPlatform(url);
   const d = {
     url, platform,
@@ -544,6 +689,25 @@ async function scrapeListing(url) {
   }
 
   const $ = cheerio.load(html);
+
+  // Immowelt: additionally load the mobile webview variant of the expose,
+  // which contains the complete serialized gallery (see IMMOWELT_MOBILE_HEADERS).
+  // Best-effort: a failure here just means we fall back to the desktop HTML.
+  let immoweltMobileHtml = '';
+  let immoweltMobile$ = null;
+  if (platform === 'immowelt' && !opts.lite) {
+    try {
+      const mobileUrl = new URL(url);
+      mobileUrl.searchParams.set('app', '1');
+      const mobileRaw = await fetchPageRaw(mobileUrl.toString(), 22000, [403], IMMOWELT_MOBILE_HEADERS);
+      if (mobileRaw.text && mobileRaw.text.length > 1000) {
+        immoweltMobileHtml = mobileRaw.text;
+        immoweltMobile$ = cheerio.load(immoweltMobileHtml);
+      }
+    } catch (e) {
+      console.warn(`[Immowelt] Mobile-Detail fehlgeschlagen für ${url}: ${e.message}`);
+    }
+  }
 
   // Remove any content belonging to OTHER listings (e.g. the "Das könnte
   // dich auch interessieren" carousel) before extracting anything at all,
@@ -684,19 +848,82 @@ async function scrapeListing(url) {
     d.image_url   = imgs[0] || $('meta[property="og:image"]').attr('content') || '';
   }
   else if (platform === 'immowelt') {
-    d.title = $('h1').first().text().trim();
+    // Immowelt's current HTML contains a lot of repeated/hidden metadata in
+    // the H1 subtree. Prefer the actual short heading and clean any metadata
+    // that accidentally got concatenated into it.
+    const rawH1    = $('h1').first().text().replace(/\s+/g, ' ').trim();
+    const ogTitle  = $('meta[property="og:title"]').attr('content') || '';
+    const pageTitle = $('title').text().replace(/\s+/g, ' ').trim();
+
+    let cleanTitle = rawH1 || ogTitle || pageTitle || 'Wohnung zur Miete';
+    // If the selected heading contains the price/metadata block, keep only
+    // the actual property headline before the first euro amount.
+    cleanTitle = cleanTitle.split(/\d[\d.,]*\s*€/)[0].trim();
+    cleanTitle = cleanTitle
+      .replace(/\s*(?:SCHUFA-Bonitätscheck|geschätzte Warmmiete|Kaltmiete|Warmmiete).*$/i, '')
+      .trim();
+    d.title = cleanTitle || 'Wohnung zur Miete';
+
     d.price = extractPrice($('[class*="AdvertPrice"]').text() || $('.price').first().text());
     $('[data-test*="fact"], [class*="FactItem"]').each((_, el) => {
       const lbl = $(el).text().toLowerCase();
       const val = $(el).find('[class*="value"], strong, b').text().trim() || $(el).text().trim();
-      if (/zimmer/.test(lbl))    d.rooms      = extractRooms(lbl) || val;
-      if (/fläche/.test(lbl))    d.size       = extractSize(lbl)  || val;
+      if (/zimmer/.test(lbl))    d.rooms      = extractRooms(lbl) || extractRooms(val) || val;
+      if (/fläche/.test(lbl))    d.size       = extractSize(lbl)  || extractSize(val) || val;
       if (/kaltmiete/.test(lbl)) d.price_cold = extractPrice(val) || val;
     });
-    if (!d.price_cold) d.price_cold = findKaltmiete($, getVisibleText($, 'body').substring(0, 3000));
-    const imgs = collectImages($, ['[class*="Gallery"] img', '[class*="gallery"] img', '[class*="Slider"] img']);
-    d.images_json = JSON.stringify(imgs);
-    d.image_url   = imgs[0] || $('meta[property="og:image"]').attr('content') || '';
+
+    // Address/location appears as a dedicated address block on current
+    // Immowelt exposes. Keep it separate from the noisy title metadata.
+    d.location = $('[data-test*="address"], [data-testid*="address"], [class*="Address"], [class*="address"], [class*="Location"], [class*="location"]')
+      .first().text().replace(/\s+/g, ' ').trim();
+
+    const bodyText = getVisibleText($, 'body').replace(/\s+/g, ' ');
+    if (!d.rooms) d.rooms = extractRooms(bodyText);
+    if (!d.size)  d.size  = extractSize(bodyText);
+
+    if (!d.price_cold) d.price_cold = findKaltmiete($, bodyText.substring(0, 5000));
+    if (!d.price) d.price = extractPrice($('[class*="Warmmiete"], [class*="warmmiete"]').text()) || d.price_cold;
+
+    // Make the title useful in the app without copying Immowelt's complete
+    // metadata string into it.
+    const titleParts = [];
+    if (d.rooms) titleParts.push(d.rooms + ' Zimmer');
+    if (d.size)  titleParts.push(d.size);
+    if (titleParts.length) d.title += ' – ' + titleParts.join(' · ');
+
+    const immoweltSelectors = [
+      '[class*="Gallery"] img',
+      '[class*="gallery"] img',
+      '[class*="Slider"] img',
+      '[class*="slider"] img',
+      'img[src*="mms.immowelt.de"]',
+      'img[data-src*="mms.immowelt.de"]',
+      'img[data-lazy-src*="mms.immowelt.de"]'
+    ];
+
+    const imageCandidates = [
+      ...collectImmoweltPageImages($, immoweltSelectors),
+      ...collectImmoweltEmbeddedImages($, html),
+    ];
+
+    // Merge the complete gallery from the direct listing page's mobile
+    // representation as well. Immowelt exposes the image objects under
+    // gallery.images in this variant even when desktop HTML contains only
+    // the first visible photo.
+    if (immoweltMobile$) {
+      imageCandidates.push(
+        ...collectImmoweltPageImages(immoweltMobile$, immoweltSelectors),
+        ...collectImmoweltEmbeddedImages(immoweltMobile$, immoweltMobileHtml)
+      );
+    }
+
+    const og = $('meta[property="og:image"]').attr('content') || '';
+    if (og && /mms\.immowelt\.de/i.test(og)) imageCandidates.unshift(og);
+
+    const uniqueImgs = [...new Set(imageCandidates)];
+    d.images_json = JSON.stringify(uniqueImgs);
+    d.image_url   = uniqueImgs[0] || og;
   }
   else if (platform === 'rentola') {
     // Rentola is a Next.js SPA – most content is client-rendered.
@@ -835,7 +1062,7 @@ async function checkExistingListings(listings, onStatusChange, onFieldChange) {
 
   for (const listing of listings) {
     try {
-      const fresh = await scrapeListing(listing.url);
+      const fresh = await scrapeListing(listing.url, { lite: true });
 
       if (fresh.status && fresh.status !== 'active') {
         onStatusChange(listing.id, fresh.status);

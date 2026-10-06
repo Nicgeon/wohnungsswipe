@@ -1390,6 +1390,26 @@ app.delete('/api/listings/swipe/:id', requireAuth, (req, res) => {
   res.json({ success: true });
 });
 
+// Bulk-remove the current user's own ratings. Only the caller's swipes are
+// touched — the listings themselves and other users' ratings stay as they
+// are. Removed listings show up in the swipe queue again (same as the
+// single-delete route above).
+app.delete('/api/listings/rated', requireAuth, (req, res) => {
+  const ids = Array.isArray(req.body?.listingIds)
+    ? [...new Set(req.body.listingIds.map(Number).filter(Number.isInteger))].slice(0, 500)
+    : [];
+  if (!ids.length) return res.status(400).json({ error: 'Keine Inserate ausgewählt' });
+
+  const ph = ids.map(() => '?').join(',');
+  const { c = 0 } = dbGet(
+    `SELECT COUNT(*) AS c FROM swipes WHERE user_id=? AND listing_id IN (${ph})`,
+    [req.session.userId, ...ids]
+  ) || {};
+  dbRun(`DELETE FROM swipes WHERE user_id=? AND listing_id IN (${ph})`, [req.session.userId, ...ids]);
+  saveDb();
+  res.json({ success: true, deleted: c });
+});
+
 // User-reported offline: lets anyone flag a listing they notice is dead
 // (expired, rented, deleted on the source site) without waiting for the
 // 6-hour auto status check. Marks it offline + archives it immediately,
