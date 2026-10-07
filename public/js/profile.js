@@ -303,8 +303,8 @@ function pfBuildEditor() {
       </div>
       <div class="pf-section-body">${pfSectionBody(s.id)}</div>
       <div class="pf-section-foot">
-        ${i > 0 ? `<button type="button" class="btn-ghost" data-goto-section="${secs[i - 1].id}">← ${secs[i - 1].title}</button>` : '<span></span>'}
-        ${i < secs.length - 1 ? `<button type="button" class="btn-primary" data-goto-section="${secs[i + 1].id}">Weiter: ${secs[i + 1].title} →</button>` : '<span></span>'}
+        ${i > 0 ? `<button type="button" class="btn-ghost" data-goto-section="${secs[i - 1].id}">${icon('back', 'sm')}${secs[i - 1].title}</button>` : '<span></span>'}
+        ${i < secs.length - 1 ? `<button type="button" class="btn-primary" data-goto-section="${secs[i + 1].id}">Weiter: ${secs[i + 1].title}${icon('next', 'sm')}</button>` : '<span></span>'}
       </div>
     </section>`).join('');
   pfRenderDocs();
@@ -342,7 +342,7 @@ function pfRenderDocs() {
       <select class="doc-status" aria-label="Status">
         ${DOC_STATUS_OPTIONS.map(o => `<option value="${o.value}"${o.value === d.status ? ' selected' : ''}>${o.label}</option>`).join('')}
       </select>
-      <button type="button" class="doc-remove" title="Entfernen" aria-label="Dokument entfernen">✕</button>
+      <button type="button" class="doc-remove" title="Entfernen" aria-label="Dokument entfernen">${icon('x', 'sm')}</button>
     </div>`).join('');
 }
 
@@ -519,7 +519,7 @@ async function pfPreviewNow() {
   if (pf.target !== 'me') body.template = pf.p.custom_template;
   const d = await api(pf.target === 'me' ? '/api/message/preview' : `/api/groups/${pf.target}/profile/preview`, { method: 'POST', body });
   if (d.error) return;
-  const warn = d.unknownPlaceholders?.length ? `\n\n⚠️ Unbekannte Platzhalter: ${d.unknownPlaceholders.join(' ')}` : '';
+  const warn = d.unknownPlaceholders?.length ? `\n\nHinweis – unbekannte Platzhalter: ${d.unknownPlaceholders.join(' ')}` : '';
   $id('pf-preview').textContent = (d.message || '—') + warn;
   if (d.completeness) { pf.completeness = d.completeness; pfRenderHero(); pfRenderNav(); pfRenderMissing(); }
 }
@@ -786,7 +786,7 @@ const messageModal = {
         !confirm('Du hast den Text bearbeitet. Neu generieren überschreibt deine Änderungen – fortfahren?')) return false;
     this.tone = tone; this.renderControls();
     clr('message-error');
-    ta.value = '⏳ Wird erstellt…'; this.edited = false;
+    ta.value = 'Wird erstellt …'; this.edited = false;
     const body = { listingId: this.listing.id, groupId: this.groupId,
       mode: tone === 'template' ? 'template' : tone === 'ai' ? 'ai' : 'guided' };
     if (tone === 'formal' || tone === 'informal') body.tone = tone;
@@ -930,7 +930,7 @@ async function renderGroupProfile(group, el) {
       <div class="pf-card gp-right">
         <div class="gp-right-head"><h3>So liest sich eure Nachricht</h3><span class="gp-active">Beispiel-Inserat</span></div>
         <div class="gp-preview" id="gp-preview"></div>
-        ${notes.length ? `<p class="pf-hint">⚠️ ${esc(notes.join(' '))}</p>` : ''}
+        ${notes.length ? `<p class="pf-hint pf-hint-warn">${icon('alert', 'sm')}<span>${esc(notes.join(' '))}</span></p>` : ''}
       </div>
     </div>`;
   $id('gp-preview').textContent = pv.message || '—';

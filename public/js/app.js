@@ -23,13 +23,26 @@ async function api(path, opts = {}) {
   return res.json();
 }
 
+// Leading emoji/symbols in toast texts are rendered as line icons (tone: ok / err).
+const TOAST_ICONS = {
+  '✓': ['check', 'ok'], '✅': ['check', 'ok'], '❌': ['x', 'err'], '⚠️': ['alert', 'err'], '⚠': ['alert', 'err'],
+  '🔗': ['link'], '🚫': ['flag'], '📬': ['mail', 'ok'], '↩': ['undo'], '🗑': ['trash'], '📋': ['copy'], '👋': ['send'],
+  '🎉': ['heart', 'ok'], '💚': ['heart', 'ok'], '⭐': ['star'], '🔕': ['bell'], '🔔': ['bell', 'ok'], '⏸': ['pause'], '▶': ['play'], '📦': ['archive'],
+};
 function toast(msg, ms = 2800) {
   const t = $id('toast');
-  t.textContent = msg;
+  const m = /^(\S+?)\s+(.*)$/s.exec(String(msg));
+  const hit = m && TOAST_ICONS[m[1]];
+  t.classList.remove('ok', 'err'); if (hit && hit[1]) t.classList.add(hit[1]);
+  t.innerHTML = hit ? `${icon(hit[0], 'sm')}<span>${esc(m[2])}</span>` : `<span>${esc(String(msg))}</span>`;
   t.classList.add('show');
   clearTimeout(t._t);
   t._t = setTimeout(() => t.classList.remove('show'), ms);
 }
+
+// Button/label content with a leading line icon
+const withIcon = (name, text, cls = 'sm') => `${icon(name, cls)}${text}`;
+const contactMenuLabel = on => on ? withIcon('check', 'Angeschrieben (Notiz bearbeiten)') : withIcon('mail', 'Als angeschrieben markieren');
 
 function setErr(id, msg) { const el = $id(id); if (el) el.textContent = msg; }
 function setOk(id, msg)  { const el = $id(id); if (el) el.textContent = msg; }
@@ -274,7 +287,7 @@ function applyContactToCards(listingId, groupId, contacted, note = '') {
   if (rated) { rated.contacted = contacted ? 1 : 0; rated.contact_note = contacted ? note : ''; }
   document.querySelectorAll(`.list-card.rc[data-listing-id="${listingId}"]`).forEach(card => {
     const badge = card.querySelector('.contacted-badge');
-    if (badge) { badge.hidden = !contacted; badge.textContent = '✓ Angeschrieben' + noteTxt; }
+    if (badge) { badge.hidden = !contacted; badge.textContent = 'Angeschrieben' + noteTxt; }
     const lbl = card.querySelector('.rc-contact span'); if (lbl) lbl.textContent = contacted ? 'Notiz' : 'Als angeschrieben';
   });
 }
@@ -722,19 +735,19 @@ function buildSwipeCard(listing) {
 // existing handler already listens for. Adding a shared item = editing this
 // one function.
 function sharedCardMenuHtml(id, contacted, ctx) {
-  const contactLabel = contacted ? '✓ Angeschrieben (Notiz bearbeiten)' : '📬 Als angeschrieben markieren';
+  const contactLabel = contactMenuLabel(contacted);
   if (ctx === 'group') {
     return [
-      `<button data-prepare-message data-listing="${id}">💬 Nachricht vorbereiten</button>`,
+      `<button data-prepare-message data-listing="${id}">${withIcon('chat', 'Nachricht vorbereiten')}</button>`,
       `<button data-contact-toggle data-listing="${id}">${contactLabel}</button>`,
-      `<button data-report-offline data-listing="${id}">🚫 Als offline melden</button>`,
+      `<button data-report-offline data-listing="${id}">${withIcon('flag', 'Als offline melden')}</button>`,
     ].join('\n');
   }
   // ctx === 'list'
   return [
-    `<button data-menu-action="prepare-message">💬 Nachricht vorbereiten</button>`,
+    `<button data-menu-action="prepare-message">${withIcon('chat', 'Nachricht vorbereiten')}</button>`,
     `<button data-menu-action="contact-toggle">${contactLabel}</button>`,
-    `<button data-menu-action="report-offline">🚫 Als offline melden</button>`,
+    `<button data-menu-action="report-offline">${withIcon('flag', 'Als offline melden')}</button>`,
   ].join('\n');
 }
 
@@ -745,31 +758,30 @@ function buildListCard(listing, opts = {}) {
   const cold   = (listing.price_cold || '').trim();
   const total  = (listing.price      || '').trim();
   const swipe  = listing.my_swipe;
-  const swipeLabelMap = { like:'♥ Like', superlike:'⭐ Super-Like', dislike:'✕ Nein' };
-  const cardUid = `lc_${listing.id}_${Math.random().toString(36).slice(2,7)}`;
+    const cardUid = `lc_${listing.id}_${Math.random().toString(36).slice(2,7)}`;
 
   // Only the person who manually added a listing (no search-agent source) can
   // change its visibility from the card menu.
   const canChangeVisibility = !listing.source_job_id && listing.added_by === state.user?.userId;
-  const visLabel = { global:'🌐 Alle', private:'🔒 Nur ich', group:'👥 Gruppe' }[listing.visibility || 'global'];
+  const visLabel = { global:'Alle', private:'Nur ich', group:'Gruppe' }[listing.visibility || 'global'];
 
   const div = document.createElement('div');
-  div.className = 'list-card' + (opts.selectable ? ' list-card-selectable' : '') + (opts.rated ? ' rc' : '');
+  div.className = 'list-card' + (opts.selectable ? ' list-card-selectable' : '') + ' rc';
   div.dataset.listingId = listing.id;
 
   // Shared pieces (same data-* hooks for both card layouts)
   const menuHtml = `
     <div class="card-menu" data-menu style="display:none">
-      ${!opts.isArchive ? `<button data-menu-action="unswipe">↩ Bewertung zurückziehen</button>` : ''}
+      ${!opts.isArchive ? `<button data-menu-action="unswipe">${withIcon('undo', 'Bewertung zurückziehen')}</button>` : ''}
       ${!opts.isArchive
         ? sharedCardMenuHtml(listing.id, listing.contacted, 'list')
-        : `<button data-menu-action="contact-toggle">${listing.contacted ? '✓ Angeschrieben (Notiz bearbeiten)' : '📬 Als angeschrieben markieren'}</button>`}
+        : `<button data-menu-action="contact-toggle">${contactMenuLabel(listing.contacted)}</button>`}
       ${canChangeVisibility ? `
       <div class="card-menu-divider"></div>
       <div class="card-menu-section-label">Sichtbarkeit (${esc(visLabel)})</div>
-      <button data-vis-action="global">🌐 Alle Nutzer</button>
-      <button data-vis-action="private">🔒 Nur ich</button>
-      <button data-vis-action="group">👥 Gruppe wählen…</button>
+      <button data-vis-action="global">${withIcon('globe', 'Alle Nutzer')}</button>
+      <button data-vis-action="private">${withIcon('lock', 'Nur ich')}</button>
+      <button data-vis-action="group">${withIcon('users', 'Gruppe wählen…')}</button>
       ` : ''}
     </div>
     ${canChangeVisibility ? `
@@ -788,11 +800,11 @@ function buildListCard(listing, opts = {}) {
         </div>
       </div>`;
 
-  if (opts.rated) {
+  {
     // "Meine Bewertungen": one card, laid out as a row on phones and as a
     // vertical card (price on the photo) on wider screens – see .rc in style.css.
     const rate = { like: ['heart', 'Like'], superlike: ['star', 'Super-Like'], dislike: ['x', 'Nein'] }[swipe];
-    const contactedText = '✓ Angeschrieben' + (listing.contact_note ? ' · ' + listing.contact_note.substring(0, 40) : '');
+    const contactedText = 'Angeschrieben' + (listing.contact_note ? ' · ' + listing.contact_note.substring(0, 40) : '');
     div.classList.toggle('rc-dim', swipe === 'dislike');
     div.dataset.rate = swipe || '';
     div.innerHTML = `
@@ -827,34 +839,7 @@ function buildListCard(listing, opts = {}) {
         </div>
         ${noteHtml}
       </div>`;
-  } else div.innerHTML = `
-    ${opts.selectable ? `<label class="rated-select-wrap" title="Inserat auswählen"><input type="checkbox" class="rated-select" data-listing-id="${listing.id}" ${state.ratedSelected.has(Number(listing.id)) ? 'checked' : ''}><span></span></label>` : ''}
-    <div class="list-card-img-area">
-      ${hasImg
-        ? `<img class="list-card-img" src="${esc(images[0])}" onerror="this.style.display='none'" />`
-        : `<div class="list-card-img-placeholder">🏠</div>`}
-      ${images.length > 1 ? `<span class="list-card-photo-badge">📷 ${images.length}</span>` : ''}
-      ${listing.status === 'offline'   ? `<span class="list-card-offline-badge">Offline</span>` : ''}
-      ${listing.status === 'reserved'  ? `<span class="list-card-offline-badge" style="background:rgba(240,200,60,.8)">Reserviert</span>` : ''}
-    </div>
-    <button class="card-menu-btn" data-menu-toggle title="Optionen">⋮</button>
-    ${menuHtml}
-    <div class="list-card-body">
-      <div class="list-card-title">${esc(listing.title || 'Inserat')}</div>
-      ${cold  ? `<div class="list-card-price">${esc(cold)} <span style="font-size:.7rem;font-weight:400;color:var(--text2)">kalt</span></div>` : ''}
-      ${total && total !== cold ? `<div class="list-card-price-warm">${esc(total)} warm</div>` : ''}
-      <div class="list-card-meta">
-        ${listing.size     ? `<span>📐 ${esc(listing.size)}</span>` : ''}
-        ${listing.rooms    ? `<span>🚪 ${esc(listing.rooms)} Zi.</span>` : ''}
-        ${listing.location ? `<span>📍 ${esc(listing.location)}</span>` : ''}
-      </div>
-      ${tags.length ? `<div class="list-card-tags">${tags.map(t=>`<span class="list-card-tag">${esc(t)}</span>`).join('')}</div>` : ''}
-      ${opts.matchInfo ? `<div class="match-count" style="font-size:.76rem;color:var(--like);margin-bottom:5px">${esc(opts.matchInfo)}</div>` : ''}
-      ${swipe ? `<div class="swipe-badge ${swipe}">${swipeLabelMap[swipe]||swipe}</div>` : ''}
-      ${listing.contacted ? `<div class="contacted-badge">📬 Angeschrieben${listing.contact_note ? ' · ' + esc(listing.contact_note.substring(0,40)) : ''}</div>` : ''}
-      <button class="list-card-link" data-open-detail type="button">Details ansehen →</button>
-      ${noteHtml}
-    </div>`;
+  }
 
   if (opts.selectable) {
     const cb = div.querySelector('.rated-select');
@@ -866,11 +851,7 @@ function buildListCard(listing, opts = {}) {
     });
   }
 
-  if (hasImg && !opts.rated) div.querySelector('.list-card-img-area').addEventListener('click', e => {
-    if (e.target.closest('[data-menu-toggle]') || e.target.closest('[data-menu]')) return;
-    lb.open(images);
-  });
-  if (opts.rated) {
+  {
     // Tap anywhere on the card (except its controls) → detail view; footer shortcuts reuse the menu actions.
     div.addEventListener('click', e => {
       if (e.target.closest('button, a, label, input, textarea, select, [data-menu], [data-note-wrap], [data-vis-group-picker]')) return;
@@ -923,14 +904,14 @@ function buildListCard(listing, opts = {}) {
             listing.contacted = true;
             toast('📬 Als angeschrieben markiert');
             noteWrap.classList.add('open');
-            btn.textContent = '✓ Angeschrieben (Notiz bearbeiten)';
+            btn.innerHTML = contactMenuLabel(true);
             div.querySelector('.contacted-badge')?.removeAttribute('hidden');
             const rcSpan = div.querySelector('.rc-contact span'); if (rcSpan) rcSpan.textContent = 'Notiz';
             // Insert contacted badge if not already present
             if (!div.querySelector('.contacted-badge')) {
               const badge = document.createElement('div');
               badge.className = 'contacted-badge';
-              badge.textContent = '📬 Angeschrieben';
+              badge.textContent = 'Angeschrieben';
               div.querySelector('.swipe-badge')?.insertAdjacentElement('afterend', badge)
                 ?? div.querySelector('.list-card-link').insertAdjacentElement('beforebegin', badge);
             }
@@ -988,7 +969,7 @@ function buildListCard(listing, opts = {}) {
         if (r.success) {
           listing.visibility = r.visibility;
           listing.visibility_id = r.visibility_id;
-          const label = { global:'🌐 Alle Nutzer', private:'🔒 Nur ich' }[choice];
+          const label = { global:'Alle Nutzer', private:'Nur ich' }[choice];
           toast(`✓ Sichtbarkeit: ${label}`);
           const secLabel = div.querySelector('.card-menu-section-label');
           if (secLabel) secLabel.textContent = `Sichtbarkeit (${label})`;
@@ -1010,9 +991,9 @@ function buildListCard(listing, opts = {}) {
         listing.visibility = 'group';
         listing.visibility_id = gid;
         const groupName = state.groups.find(g => g.id == gid)?.name || 'Gruppe';
-        toast(`✓ Sichtbarkeit: 👥 ${groupName}`);
+        toast(`✓ Sichtbarkeit: Gruppe ${groupName}`);
         const secLabel = div.querySelector('.card-menu-section-label');
-        if (secLabel) secLabel.textContent = `Sichtbarkeit (👥 ${groupName})`;
+        if (secLabel) secLabel.textContent = `Sichtbarkeit (Gruppe ${groupName})`;
       } else {
         toast('❌ ' + (r.error || 'Fehler'));
       }
@@ -1026,7 +1007,7 @@ function buildListCard(listing, opts = {}) {
     noteWrap.classList.remove('open');
     toast('✓ Notiz gespeichert');
     const badge = div.querySelector('.contacted-badge');
-    if (badge) badge.textContent = (opts.rated ? '✓ Angeschrieben' : '📬 Angeschrieben') + (noteText.value ? ' · ' + noteText.value.substring(0,40) : '');
+    if (badge) badge.textContent = 'Angeschrieben' + (noteText.value ? ' · ' + noteText.value.substring(0,40) : '');
   });
   div.querySelector('[data-note-cancel]')?.addEventListener('click', () => noteWrap.classList.remove('open'));
 
@@ -1035,7 +1016,7 @@ function buildListCard(listing, opts = {}) {
     const ts = document.createElement('div');
     ts.className = 'archive-ts';
     const d = new Date(listing.archived_at + 'Z');
-    ts.textContent = `📦 Archiviert ${d.toLocaleDateString('de-DE', { day:'2-digit', month:'2-digit', year:'numeric' })}`;
+    ts.innerHTML = `${icon('archive', 'sm')}Archiviert ${d.toLocaleDateString('de-DE', { day:'2-digit', month:'2-digit', year:'numeric' })}`;
     div.querySelector('.list-card-body')?.prepend(ts);
   }
 
@@ -1356,10 +1337,10 @@ async function doSwipe(listing, action) {
   if (isFlying) return;
 
   const toastMsg = {
-    like:      '💚 Gefällt dir!',
-    dislike:   '✕ Abgelehnt',
-    superlike: '⭐ Super-Like!',
-    skip:      '⏭ Übersprungen – kommt später wieder',
+    like:      'Gefällt dir!',
+    dislike:   'Abgelehnt',
+    superlike: 'Super-Like!',
+    skip:      'Übersprungen – kommt später wieder',
   }[action];
 
   // Fire API in background
@@ -1647,7 +1628,7 @@ function renderGroups() {
   const grid = $id('groups-list');
   grid.innerHTML = '';
   if (!state.groups.length) {
-    grid.innerHTML = '<div class="empty-state"><div class="empty-icon">👥</div><p>Noch keine Gruppen.</p><p class="empty-sub">Erstelle eine oder tritt bei.</p></div>';
+    grid.innerHTML = `<div class="empty-state"><div class="empty-icon i">${icon('users')}</div><p>Noch keine Gruppen.</p><p class="empty-sub">Erstelle eine oder tritt bei.</p></div>`;
     return;
   }
   state.groups.forEach(g => {
@@ -1696,19 +1677,19 @@ async function openGroupDetail(group, opts = {}) {
         <div class="member-card-info">
           <span class="member-card-name">${esc(m.username)}${isMe ? ' <span class="you-badge">(du)</span>' : ''}</span>
           <span class="member-card-status" style="color:${statusColor}">
-            ${allDone ? '✓ Alle geswiped' : `${pendingCount} noch offen`}
+            ${allDone ? withIcon('check', 'Alle geswiped') : `${pendingCount} noch offen`}
           </span>
         </div>
-        ${!isMe ? `<button class="nudge-btn" data-nudge="${m.id}" data-name="${esc(m.username)}" title="${esc(m.username)} erinnern zu swipen">👋</button>` : ''}
+        ${!isMe ? `<button class="nudge-btn" data-nudge="${m.id}" data-name="${esc(m.username)}" title="${esc(m.username)} erinnern zu swipen" aria-label="${esc(m.username)} erinnern zu swipen">${icon('send', 'sm')}</button>` : ''}
       </div>`;
   }).join('');
 
   const tiers = ['einstimmig','mehrheitlich','gespalten','abgelehnt'];
   const tierLabels = {
-    einstimmig:   '🎉 Volle Zustimmung',
-    mehrheitlich: '👍 Mehrheitlich positiv',
-    gespalten:    '🤔 Gespalten',
-    abgelehnt:    '👎 Abgelehnt',
+    einstimmig:   withIcon('heart', 'Volle Zustimmung'),
+    mehrheitlich: withIcon('check', 'Mehrheitlich positiv'),
+    gespalten:    withIcon('split', 'Gespalten'),
+    abgelehnt:    withIcon('x', 'Abgelehnt'),
   };
 
   const tierSections = tiers.map(tier => {
@@ -1720,40 +1701,39 @@ async function openGroupDetail(group, opts = {}) {
       const cold    = (r.price_cold||'').trim();
       const total   = (r.price||'').trim();
       const voteChips = r.votes.map(v =>
-        `<span class="vote-chip ${v.action}">${esc(v.username)}: ${v.action==='like'?'♥':v.action==='superlike'?'⭐':'✕'}</span>`
+        `<span class="vote-chip ${v.action}">${esc(v.username)} ${icon(v.action==='like'?'heart':v.action==='superlike'?'star':'x', 'sm')}</span>`
       ).join('');
       const myChip = r.my_swipe
-        ? `<div class="swipe-badge ${r.my_swipe}" style="margin-top:5px">${{like:'♥ Dein Like',superlike:'⭐ Dein Super',dislike:'✕ Dein Nein'}[r.my_swipe]}</div>`
+        ? `<div class="swipe-badge ${r.my_swipe}" style="margin-top:5px">${{like: withIcon('heart','Dein Like'), superlike: withIcon('star','Dein Super'), dislike: withIcon('x','Dein Nein')}[r.my_swipe]}</div>`
         : '';
-      const rateLabel = { like:'♥ Like', superlike:'⭐ Super-Like', dislike:'✕ Nein', '':'Bewerten…' };
       const curRating = r.my_swipe || '';
       return `
         <div class="group-listing-card" data-listing-id="${r.id}">
-          <button class="card-menu-btn group-card-menu-btn" data-menu-toggle title="Optionen">⋮</button>
+          <button class="card-menu-btn group-card-menu-btn" data-menu-toggle title="Optionen" aria-label="Optionen">${icon('dots')}</button>
           <div class="card-menu" data-menu style="display:none">
             <div class="card-menu-section-label">Bewertung ändern</div>
-            <button data-rerate-action="like"      data-listing="${r.id}">♥ Like</button>
-            <button data-rerate-action="superlike" data-listing="${r.id}">⭐ Super-Like</button>
-            <button data-rerate-action="dislike"   data-listing="${r.id}">✕ Nein</button>
-            <button data-rerate-action="remove"    data-listing="${r.id}">↩ Zurückziehen</button>
+            <button data-rerate-action="like"      data-listing="${r.id}">${withIcon('heart', 'Like')}</button>
+            <button data-rerate-action="superlike" data-listing="${r.id}">${withIcon('star', 'Super-Like')}</button>
+            <button data-rerate-action="dislike"   data-listing="${r.id}">${withIcon('x', 'Nein')}</button>
+            <button data-rerate-action="remove"    data-listing="${r.id}">${withIcon('undo', 'Zurückziehen')}</button>
             <div class="card-menu-divider"></div>
             ${sharedCardMenuHtml(r.id, r.group_contacted, 'group')}
           </div>
           ${hasImg
             ? `<img class="group-listing-img" src="${esc(imgs[0])}" onclick="window.__lb && window.__lb.open(${JSON.stringify(imgs).replace(/"/g,'&quot;')})" style="cursor:pointer" />`
-            : `<div class="group-listing-img-placeholder">🏠</div>`}
+            : `<div class="group-listing-img-placeholder">${icon('image', 'lg')}</div>`}
           <div class="group-listing-info">
             <div class="group-listing-title">${esc(r.title||'Inserat')}</div>
             <div class="group-listing-meta">
-              ${cold  ? `<strong>${esc(cold)}</strong> kalt &nbsp;` : total ? `<strong>${esc(total)}</strong> &nbsp;` : ''}
-              ${r.size     ? `📐 ${esc(r.size)} &nbsp;` : ''}
-              ${r.rooms    ? `🚪 ${esc(r.rooms)} Zi. &nbsp;` : ''}
-              ${r.location ? `📍 ${esc(r.location)}` : ''}
+              ${cold  ? `<strong>${esc(cold)}</strong> <span class="gl-sub">kalt</span>` : total ? `<strong>${esc(total)}</strong>` : ''}
+              ${r.size     ? `<span class="rc-chip">${esc(r.size)}</span>` : ''}
+              ${r.rooms    ? `<span class="rc-chip">${esc(r.rooms)} Zi.</span>` : ''}
+              ${r.location ? `<span class="gl-loc">${icon('pin', 'sm')}${esc(r.location)}</span>` : ''}
             </div>
             <div class="vote-chips">${voteChips}</div>
             ${myChip}
             <div class="contacted-badge" data-contacted-badge style="${r.group_contacted ? '' : 'display:none'}">
-              📬 Angeschrieben<span data-contacted-note>${r.group_contact_note ? ' · ' + esc(r.group_contact_note.substring(0,40)) : ''}</span>
+              ${icon('mail', 'sm')}Angeschrieben<span data-contacted-note>${r.group_contact_note ? ' · ' + esc(r.group_contact_note.substring(0,40)) : ''}</span>
             </div>
             <div class="contact-note-wrap" data-note-wrap>
               <textarea class="contact-note" placeholder="Notiz (optional): Wann kontaktiert, Antwort, etc." data-note-text>${esc(r.group_contact_note || '')}</textarea>
@@ -1782,7 +1762,7 @@ async function openGroupDetail(group, opts = {}) {
       <div class="invite-row">
         <span style="font-size:.8rem;color:var(--text2)">Einladungscode:</span>
         <span class="invite-code-big">${esc(group.invite_code)}</span>
-        <button class="btn-ghost" style="padding:5px 10px;font-size:.76rem" onclick="navigator.clipboard?.writeText('${esc(group.invite_code)}').then(()=>window.__toast('📋 Kopiert!'))">📋</button>
+        <button class="btn-ghost" style="padding:5px 10px;font-size:.76rem" onclick="navigator.clipboard?.writeText('${esc(group.invite_code)}').then(()=>window.__toast('📋 Kopiert!'))" aria-label="Code kopieren">${icon('copy', 'sm')}</button>
       </div>
     </div>
 
@@ -1795,7 +1775,7 @@ async function openGroupDetail(group, opts = {}) {
     <p class="section-label">Mitglieder</p>
     <div class="members-nudge-list" style="margin-bottom:18px">${membersHtml}</div>
     ${results.length
-      ? `<p class="section-label">${memberCount} Mitglieder · ${results.length} gemeinsam bewertet</p>${tierSections}`
+      ? `<p class="section-label">${memberCount} ${memberCount === 1 ? "Mitglied" : "Mitglieder"} · ${results.length} gemeinsam bewertet</p>${tierSections}`
       : '<p style="color:var(--text2);font-size:.85rem">Noch keine Bewertungen in dieser Gruppe.</p>'}
     </div>
     <div id="gd-panel-profile" style="display:none"></div>
@@ -1822,15 +1802,15 @@ async function openGroupDetail(group, opts = {}) {
       const uid  = parseInt(btn.dataset.nudge);
       const name = btn.dataset.name;
       btn.disabled = true;
-      btn.textContent = '⏳';
+      btn.innerHTML = icon('refresh', 'sm');
       const r = await api(`/api/groups/${group.id}/nudge/${uid}`, { method: 'POST' });
       if (r.success) {
         toast(`👋 ${name} erinnert!`);
-        btn.textContent = '✓';
-        setTimeout(() => { btn.disabled = false; btn.textContent = '👋'; }, 30000);
+        btn.innerHTML = icon('check', 'sm');
+        setTimeout(() => { btn.disabled = false; btn.innerHTML = icon('send', 'sm'); }, 30000);
       } else {
         toast('❌ ' + (r.error || 'Fehler'));
-        btn.disabled = false; btn.textContent = '👋';
+        btn.disabled = false; btn.innerHTML = icon('send', 'sm');
       }
     });
   });
@@ -1890,7 +1870,7 @@ async function openGroupDetail(group, opts = {}) {
         toast('↩ Bewertung zurückgezogen');
       } else {
         await api('/api/listings/swipe', { method: 'POST', body: { listingId: lid, action } });
-        const labels = { like:'💚 Like gesetzt', superlike:'⭐ Super-Like gesetzt', dislike:'✕ Abgelehnt' };
+        const labels = { like:'💚 Like gesetzt', superlike:'⭐ Super-Like gesetzt', dislike:'❌ Abgelehnt' };
         toast(labels[action] || '✓ Gespeichert');
       }
 
@@ -1942,7 +1922,7 @@ async function openGroupDetail(group, opts = {}) {
         if (r.success) {
           toast('📬 Als angeschrieben markiert');
           if (badge) badge.style.display = '';
-          contactToggle.textContent = '✓ Angeschrieben (Notiz bearbeiten)';
+          contactToggle.innerHTML = contactMenuLabel(true);
           card?.querySelector('[data-note-wrap]')?.classList.add('open');
         }
       } else {
@@ -2090,9 +2070,9 @@ $id('reset-all-jobs-btn').addEventListener('click', async () => {
   );
   if (!confirmed) return;
   const btn = $id('reset-all-jobs-btn');
-  btn.disabled = true; btn.textContent = '🔄 Setze zurück…';
+  btn.disabled = true; btn.innerHTML = withIcon('refresh', 'Setze zurück…');
   const r = await api('/api/jobs/reset-all', { method: 'POST' });
-  btn.disabled = false; btn.textContent = '🔄 Alle zurücksetzen';
+  btn.disabled = false; btn.innerHTML = withIcon('refresh', 'Alle zurücksetzen');
   if (r.success) {
     toast(r.message || `✓ ${r.jobCount} Suchagenten zurückgesetzt`);
     setTimeout(() => loadJobs(), 3000);
@@ -2106,7 +2086,7 @@ function buildJobCard(job) {
   div.className = 'job-card' + (job.active ? '' : ' paused');
   const status = job.last_error ? 'error' : job.active ? 'active' : 'paused';
   const statusLabel = { error:'Fehler', active:'Aktiv', paused:'Pausiert' }[status];
-  const visLabel = { global:'🌐 Alle', private:'🔒 Nur ich', group:'👥 Gruppe' }[job.visibility||'global'];
+  const visLabel = { global: withIcon('globe','Alle'), private: withIcon('lock','Nur ich'), group: withIcon('users','Gruppe') }[job.visibility||'global'];
   const lastRun = job.last_run
     ? new Date(job.last_run+'Z').toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})
     : 'noch nie';
@@ -2123,11 +2103,11 @@ function buildJobCard(job) {
         <div class="job-badges">
           <span class="job-badge platform-${esc(job.platform)}">${esc(job.platform)}</span>
           <span class="job-badge status-${status}">${statusLabel}</span>
-          <span class="job-badge" style="color:var(--text2)">${visLabel}</span>
+          <span class="job-badge job-badge-vis">${visLabel}</span>
         </div>
       </div>
     </div>
-    ${job.last_error ? `<div class="job-error">⚠ ${esc(job.last_error)}</div>` : ''}
+    ${job.last_error ? `<div class="job-error">${icon('alert', 'sm')}<span>${esc(job.last_error)}</span></div>` : ''}
     <div class="job-stats">
       <span><strong>${job.last_new??0}</strong> neue beim letzten Lauf</span>
       <span><strong>${job.total_found??0}</strong> gesamt gefunden</span>
@@ -2141,28 +2121,28 @@ function buildJobCard(job) {
       <button class="btn-ghost" style="padding:3px 8px;font-size:.72rem" data-save-iv>Speichern</button>
     </div>
     <div class="job-actions">
-      <button class="btn-run"           data-run>⟳ Jetzt abrufen</button>
-      <button class="btn-toggle ${job.active?'on':''}" data-toggle>${job.active?'⏸ Pausieren':'▶ Aktivieren'}</button>
-      <button class="btn-vis"           data-vis>🔒 Sichtbarkeit</button>
-      <button class="btn-listings"      data-listings-toggle>📋 Inserate anzeigen</button>
-      <button class="btn-reset"         data-reset>🔄 Zurücksetzen</button>
-      <button class="btn-del"           data-del>🗑 Löschen</button>
+      <button class="btn-run"           data-run>${withIcon('refresh', 'Jetzt abrufen')}</button>
+      <button class="btn-toggle ${job.active?'on':''}" data-toggle>${job.active ? withIcon('pause', 'Pausieren') : withIcon('play', 'Aktivieren')}</button>
+      <button class="btn-vis"           data-vis>${withIcon('lock', 'Sichtbarkeit')}</button>
+      <button class="btn-listings"      data-listings-toggle>${withIcon('list', 'Inserate anzeigen')}</button>
+      <button class="btn-reset"         data-reset>${withIcon('refresh', 'Zurücksetzen')}</button>
+      <button class="btn-del"           data-del>${withIcon('trash', 'Löschen')}</button>
     </div>
     <div class="job-listings-panel" style="display:none" data-listings-panel>
-      <div class="job-listings-grid listings-grid" data-listings-grid></div>
+      <div class="job-listings-grid listings-grid rc-grid" data-listings-grid></div>
     </div>
     <div class="vis-panel" style="display:none" data-vis-panel>
       <div class="vis-panel-inner">
         <span style="font-size:.78rem;color:var(--text2)">Wer sieht diese Inserate?</span>
         <div class="vis-options">
           <label class="vis-option ${(job.visibility||'global')==='global'?'active':''}">
-            <input type="radio" name="vis_${job.id}" value="global" ${(job.visibility||'global')==='global'?'checked':''} /> 🌐 Alle Nutzer
+            <input type="radio" name="vis_${job.id}" value="global" ${(job.visibility||'global')==='global'?'checked':''} /> ${withIcon('globe', 'Alle Nutzer')}
           </label>
           <label class="vis-option ${job.visibility==='private'?'active':''}">
-            <input type="radio" name="vis_${job.id}" value="private" ${job.visibility==='private'?'checked':''} /> 🔒 Nur ich
+            <input type="radio" name="vis_${job.id}" value="private" ${job.visibility==='private'?'checked':''} /> ${withIcon('lock', 'Nur ich')}
           </label>
           <label class="vis-option ${job.visibility==='group'?'active':''}">
-            <input type="radio" name="vis_${job.id}" value="group" ${job.visibility==='group'?'checked':''} /> 👥 Gruppe
+            <input type="radio" name="vis_${job.id}" value="group" ${job.visibility==='group'?'checked':''} /> ${withIcon('users', 'Gruppe')}
           </label>
         </div>
         <select class="vis-group-sel" style="${job.visibility==='group'?'':'display:none'}">
@@ -2181,9 +2161,9 @@ function buildJobCard(job) {
     if (isOpen) { panel.style.display = 'none'; return; }
 
     panel.style.display = '';
-    btn.textContent = '⏳ Lädt…';
+    btn.innerHTML = withIcon('refresh', 'Lädt…');
     const d = await api(`/api/jobs/${job.id}/listings`);
-    btn.textContent = '📋 Inserate anzeigen';
+    btn.innerHTML = withIcon('list', 'Inserate anzeigen');
     grid.innerHTML = '';
     const listings = d.listings || [];
     if (!listings.length) {
@@ -2195,10 +2175,10 @@ function buildJobCard(job) {
 
   div.querySelector('[data-run]').addEventListener('click', async () => {
     const btn = div.querySelector('[data-run]');
-    btn.disabled = true; btn.textContent = '⟳ Lädt…';
+    btn.disabled = true; btn.innerHTML = withIcon('refresh', 'Lädt…');
     const r = await api(`/api/jobs/${job.id}/run`, { method:'POST' });
-    toast(r.message || '⟳ Job gestartet');
-    btn.disabled = false; btn.textContent = '⟳ Jetzt abrufen';
+    toast(r.message || 'Job gestartet');
+    btn.disabled = false; btn.innerHTML = withIcon('refresh', 'Jetzt abrufen');
     setTimeout(() => loadJobs(), 3000);
   });
   div.querySelector('[data-reset]').addEventListener('click', async () => {
@@ -2207,14 +2187,14 @@ function buildJobCard(job) {
     );
     if (!confirmed) return;
     const btn = div.querySelector('[data-reset]');
-    btn.disabled = true; btn.textContent = '🔄 Setze zurück…';
+    btn.disabled = true; btn.innerHTML = withIcon('refresh', 'Setze zurück…');
     const r = await api(`/api/jobs/${job.id}/reset`, { method:'POST' });
     if (r.success) {
       toast(r.message || `✓ ${r.removed} Inserate entfernt, wird neu gescannt…`);
       setTimeout(() => loadJobs(), 3000);
     } else {
       toast('❌ ' + (r.error || 'Fehler'));
-      btn.disabled = false; btn.textContent = '🔄 Zurücksetzen';
+      btn.disabled = false; btn.innerHTML = withIcon('refresh', 'Zurücksetzen');
     }
   });
   div.querySelector('[data-toggle]').addEventListener('click', async () => {
@@ -2465,7 +2445,7 @@ async function updatePushButtonState() {
   const reg = await navigator.serviceWorker.getRegistration().catch(()=>null);
   const sub = reg ? await reg.pushManager.getSubscription().catch(()=>null) : null;
   if (sub) {
-    txt.textContent = '✓ Aktiviert'; btn.textContent = 'Deaktivieren';
+    txt.textContent = 'Aktiviert'; btn.textContent = 'Deaktivieren';
   } else {
     txt.textContent = 'Nicht aktiviert'; btn.textContent = 'Aktivieren';
   }
@@ -2580,8 +2560,8 @@ $id('admin-users-btn')?.addEventListener('click', async () => {
       </div>
       <div class="admin-user-actions">
         ${!u.is_admin
-          ? `<button class="btn-ghost" style="font-size:.75rem;padding:4px 10px" data-promote="${u.id}">↑ Admin machen</button>`
-          : `<button class="btn-ghost" style="font-size:.75rem;padding:4px 10px;color:var(--dislike)" data-demote="${u.id}">↓ Entfernen</button>`}
+          ? `<button class="btn-ghost" style="font-size:.75rem;padding:4px 10px" data-promote="${u.id}">Admin machen</button>`
+          : `<button class="btn-ghost" style="font-size:.75rem;padding:4px 10px;color:var(--dislike)" data-demote="${u.id}">Admin-Rechte entfernen</button>`}
       </div>`;
 
     row.querySelector('[data-promote]')?.addEventListener('click', async () => {

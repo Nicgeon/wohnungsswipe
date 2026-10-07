@@ -269,8 +269,8 @@ textarea.pf-input { line-height:1.55; resize:vertical; }
   .gp-layout { flex-direction:row; align-items:flex-start; gap:24px; }
   .gp-left { flex:0 0 380px; }
   .gp-right { flex:1; min-width:0; padding:28px; }
-  .gp-editor { flex-direction:row; gap:24px; }
-  .gp-editor textarea, .gp-preview { min-height:380px; font-size:.92rem; }
+  
+   .gp-preview { min-height:380px; font-size:.92rem; }
 }
 
 /* accent-coloured switches (profile + generator) instead of the settings page's green */
@@ -294,3 +294,9 @@ textarea.pf-input { line-height:1.55; resize:vertical; }
 .pf-link:hover { color:var(--accent-text); }
 .gp-sum-row { display:flex; justify-content:space-between; align-items:center; gap:10px; }
 #pf-members { padding:0; overflow:hidden; }
+
+/* line icons in buttons / hints */
+.pf-section-foot button:has(> .ic) { display:inline-flex; align-items:center; justify-content:center; gap:7px; }
+.doc-remove { display:inline-flex; align-items:center; justify-content:center; }
+.pf-hint-warn { display:flex; gap:8px; align-items:flex-start; color:var(--text2); }
+.pf-hint-warn .ic { width:15px; height:15px; margin-top:2px; color:var(--dislike); }

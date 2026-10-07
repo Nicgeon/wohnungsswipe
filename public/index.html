@@ -100,7 +100,7 @@
         <input type="email" id="forgot-email" placeholder="deine@email.de" />
       </div>
       <button class="btn-primary" id="forgot-submit">Reset-Link senden</button>
-      <button class="btn-link" id="hide-forgot">← Zurück zum Login</button>
+      <button class="btn-link" id="hide-forgot">Zurück zum Login</button>
       <p class="form-success" id="forgot-ok"></p>
       <p class="form-error" id="forgot-error"></p>
     </div>
@@ -152,7 +152,7 @@
       <div class="swipe-main">
         <div class="card-stack" id="card-stack">
           <div class="empty-state" id="empty-swipe">
-            <div class="empty-icon">🏘️</div>
+            <div class="empty-icon i" data-icon="cards"></div>
             <p>Keine Inserate mehr.</p>
             <p class="empty-sub">Füge welche hinzu oder richte einen Suchagenten ein.</p>
           </div>
@@ -186,9 +186,9 @@
         <div class="field-group">
           <label>Sichtbarkeit</label>
           <select id="add-visibility">
-            <option value="global">🌐 Alle Nutzer sehen dieses Inserat</option>
-            <option value="private">🔒 Nur ich (privat)</option>
-            <option value="group">👥 Bestimmte Gruppe</option>
+            <option value="global">Alle Nutzer sehen dieses Inserat</option>
+            <option value="private">Nur ich (privat)</option>
+            <option value="group">Bestimmte Gruppe</option>
           </select>
         </div>
         <div id="add-visibility-group-row" class="field-group" style="display:none">
@@ -223,9 +223,9 @@
           <p class="section-label" style="margin-bottom:0">Meine hinzugefügten Inserate</p>
         </div>
       </div>
-      <div id="my-added-list" class="listings-grid"></div>
+      <div id="my-added-list" class="listings-grid rc-grid"></div>
       <div id="my-added-empty" class="empty-state" style="display:none">
-        <div class="empty-icon">➕</div>
+        <div class="empty-icon i" data-icon="addbox"></div>
         <p>Du hast noch keine Inserate manuell hinzugefügt.</p>
       </div>
     </div>
@@ -259,9 +259,9 @@
           </div>
         </div>
       </div>
-      <div id="rated-list" class="listings-grid"></div>
+      <div id="rated-list" class="listings-grid rc-grid"></div>
       <div id="rated-empty" class="empty-state" style="display:none">
-        <div class="empty-icon">💔</div><p>Keine Bewertungen.</p>
+        <div class="empty-icon i" data-icon="bookmark"></div><p>Keine Bewertungen.</p>
       </div>
     </div>
   </div>
@@ -287,7 +287,7 @@
         <div id="groups-list" class="groups-grid"></div>
       </div>
       <div id="group-detail" style="display:none">
-        <button class="btn-ghost back-btn" id="back-to-groups">← Zurück</button>
+        <button class="btn-ghost back-btn" id="back-to-groups"><span class="i sm" data-icon="back"></span>Zurück</button>
         <div id="group-detail-content"></div>
       </div>
     </div>
@@ -396,7 +396,7 @@
   <!-- ── JOBS (Suchagenten) ─────────────────────────── -->
   <div id="view-jobs" class="view">
     <div class="view-content">
-      <button class="btn-ghost back-btn" data-back-to-more>← Zurück</button>
+      <button class="btn-ghost back-btn" data-back-to-more><span class="i sm" data-icon="back"></span>Zurück</button>
       <h2 class="view-title">Suchagenten</h2>
       <p class="view-subtitle">Suchergebnis-URL eintragen – neue Inserate werden automatisch geladen.</p>
       <div class="card-form">
@@ -415,9 +415,9 @@
         <div class="field-group">
           <label>Sichtbarkeit</label>
           <select id="job-visibility">
-            <option value="global">🌐 Alle Nutzer sehen diese Inserate</option>
-            <option value="private">🔒 Nur ich (privat)</option>
-            <option value="group">👥 Bestimmte Gruppe</option>
+            <option value="global">Alle Nutzer sehen diese Inserate</option>
+            <option value="private">Nur ich (privat)</option>
+            <option value="group">Bestimmte Gruppe</option>
           </select>
         </div>
         <div id="job-visibility-group-row" class="field-group" style="display:none">
@@ -446,11 +446,11 @@
 
       <div class="jobs-list-header" id="jobs-list-header" style="display:none">
         <p class="section-label" style="margin-bottom:0">Meine Suchagenten</p>
-        <button class="btn-ghost" id="reset-all-jobs-btn" style="font-size:.78rem;padding:6px 12px">🔄 Alle zurücksetzen</button>
+        <button class="btn-ghost" id="reset-all-jobs-btn" style="font-size:.78rem;padding:6px 12px"><span class="i sm" data-icon="refresh"></span>Alle zurücksetzen</button>
       </div>
       <div id="jobs-list"></div>
       <div id="jobs-empty" class="empty-state" style="display:none">
-        <div class="empty-icon">📡</div>
+        <div class="empty-icon i" data-icon="agent"></div>
         <p>Noch keine Suchagenten.</p>
         <p class="empty-sub">Trage oben eine Suchergebnis-URL ein.</p>
       </div>
@@ -461,7 +461,7 @@
   <!-- ── ARCHIVE ──────────────────────────────────────── -->
   <div id="view-archive" class="view">
     <div class="view-content">
-      <button class="btn-ghost back-btn" data-back-to-more>← Zurück</button>
+      <button class="btn-ghost back-btn" data-back-to-more><span class="i sm" data-icon="back"></span>Zurück</button>
       <div class="rated-header">
         <div>
           <h2 class="view-title">Archiv</h2>
@@ -469,15 +469,15 @@
         </div>
         <div class="rated-filter" id="archive-filter">
           <button class="filter-btn active" data-filter="all">Alle</button>
-          <button class="filter-btn" data-filter="like">♥ Likes</button>
-          <button class="filter-btn" data-filter="superlike">⭐ Super</button>
-          <button class="filter-btn" data-filter="dislike">✕ Nein</button>
-          <button class="filter-btn" data-filter="contacted">📬 Angeschrieben</button>
+          <button class="filter-btn" data-filter="like"><span class="i sm" data-icon="heart"></span>Likes</button>
+          <button class="filter-btn" data-filter="superlike"><span class="i sm" data-icon="star"></span>Super</button>
+          <button class="filter-btn" data-filter="dislike"><span class="i sm" data-icon="x"></span>Nein</button>
+          <button class="filter-btn" data-filter="contacted"><span class="i sm" data-icon="mail"></span>Angeschrieben</button>
         </div>
       </div>
-      <div id="archive-list" class="listings-grid"></div>
+      <div id="archive-list" class="listings-grid rc-grid"></div>
       <div id="archive-empty" class="empty-state" style="display:none">
-        <div class="empty-icon">🗃️</div>
+        <div class="empty-icon i" data-icon="archive"></div>
         <p>Noch nichts im Archiv.</p>
         <p class="empty-sub">Offline gegangene Inserate landen hier automatisch.</p>
       </div>
@@ -487,8 +487,8 @@
   <!-- ── SETTINGS ──────────────────────────────────── -->
   <div id="view-settings" class="view">
     <div class="view-content">
-      <button class="btn-ghost back-btn" data-back-to-more>← Zurück</button>
-      <h2 class="view-title">Profil</h2>
+      <button class="btn-ghost back-btn" data-back-to-more><span class="i sm" data-icon="back"></span>Zurück</button>
+      <h2 class="view-title">Konto &amp; Einstellungen</h2>
 
       <!-- Account card -->
       <div class="settings-card">
@@ -502,20 +502,9 @@
         </div>
       </div>
 
-      <!-- Appearance -->
-      <div class="settings-card theme-card">
-        <div class="section-label">Darstellung</div>
-        <div class="theme-seg theme-seg-lg" role="group" aria-label="Darstellung">
-          <button type="button" data-theme-mode="auto"  aria-pressed="false"><span class="i" data-icon="auto"></span>Automatisch</button>
-          <button type="button" data-theme-mode="light" aria-pressed="false"><span class="i" data-icon="sun"></span>Hell</button>
-          <button type="button" data-theme-mode="dark"  aria-pressed="false"><span class="i" data-icon="moon"></span>Dunkel</button>
-        </div>
-        <p class="settings-hint">„Automatisch“ folgt der Einstellung deines Geräts.</p>
-      </div>
-
       <!-- ══ Kategorie: Konto ══ -->
       <details class="settings-cat">
-        <summary>👤 Konto &amp; Statistiken</summary>
+        <summary><span class="i " data-icon="user"></span>Konto &amp; Statistiken</summary>
 
       <!-- Stats -->
       <div class="settings-section">
@@ -579,7 +568,7 @@
 
       <!-- ══ Kategorie: Benachrichtigungen ══ -->
       <details class="settings-cat">
-        <summary>🔔 Benachrichtigungen</summary>
+        <summary><span class="i " data-icon="bell"></span>Benachrichtigungen</summary>
 
       <div class="settings-section">
         <div class="section-label">Benachrichtigungen – Kanäle</div>
@@ -587,7 +576,7 @@
         <!-- Browser Push -->
         <div class="notify-row">
           <div class="notify-info">
-            <span class="notify-label">🔔 Browser-Push</span>
+            <span class="notify-label"><span class="i sm" data-icon="bell"></span>Browser-Push</span>
             <span class="notify-sub" id="push-status-text">Nicht aktiviert</span>
           </div>
           <button class="btn-secondary compact" id="push-toggle-btn">Aktivieren</button>
@@ -596,7 +585,7 @@
         <!-- ntfy -->
         <div class="notify-row" style="align-items:flex-start;flex-direction:column;gap:8px">
           <div class="notify-info">
-            <span class="notify-label">📲 ntfy (Mobile Push)</span>
+            <span class="notify-label"><span class="i sm" data-icon="phone"></span>ntfy (Mobile Push)</span>
             <span class="notify-sub">Topic aus der ntfy-App eintragen</span>
           </div>
           <div class="inline-row" style="width:100%">
@@ -619,13 +608,13 @@
         <!-- Email -->
         <div class="toggle-list" style="margin-top:4px">
           <label class="toggle-row">
-            <span>📧 E-Mail-Versand grundsätzlich aktiv</span>
+            <span class="notify-label"><span class="i sm" data-icon="mail"></span>E-Mail-Versand grundsätzlich aktiv</span>
             <input type="checkbox" id="notify-email" class="toggle-cb" />
             <span class="toggle-switch"></span>
           </label>
         </div>
         <p class="notify-hint" id="email-config-hint" style="display:none">
-          ⚠️ E-Mail-Versand ist nicht konfiguriert. Setze die SMTP_* Umgebungsvariablen im Docker-Container.
+          <span class="i sm" data-icon="alert"></span>E-Mail-Versand ist nicht konfiguriert. Setze die SMTP_* Umgebungsvariablen im Docker-Container.
         </p>
       </div>
 
@@ -635,30 +624,30 @@
         <div class="notify-matrix" id="notify-matrix">
           <div class="notify-matrix-header">
             <span></span>
-            <span title="E-Mail">📧</span>
-            <span title="Browser-Push">🔔</span>
-            <span title="ntfy">📲</span>
+            <span title="E-Mail"><span class="i sm" data-icon="mail"></span></span>
+            <span title="Browser-Push"><span class="i sm" data-icon="bell"></span></span>
+            <span title="ntfy"><span class="i sm" data-icon="phone"></span></span>
           </div>
           <div class="notify-matrix-row" data-type="match">
-            <span class="notify-matrix-label">🎉 Match in Gruppe</span>
+            <span class="notify-matrix-label">Match in Gruppe</span>
             <input type="checkbox" data-channel="email" />
             <input type="checkbox" data-channel="push" />
             <input type="checkbox" data-channel="ntfy" />
           </div>
           <div class="notify-matrix-row" data-type="new">
-            <span class="notify-matrix-label">📡 Neue Inserate</span>
+            <span class="notify-matrix-label">Neue Inserate</span>
             <input type="checkbox" data-channel="email" />
             <input type="checkbox" data-channel="push" />
             <input type="checkbox" data-channel="ntfy" />
           </div>
           <div class="notify-matrix-row" data-type="nudge">
-            <span class="notify-matrix-label">👋 Anstupsen</span>
+            <span class="notify-matrix-label">Anstupsen</span>
             <input type="checkbox" data-channel="email" />
             <input type="checkbox" data-channel="push" />
             <input type="checkbox" data-channel="ntfy" />
           </div>
           <div class="notify-matrix-row" data-type="change">
-            <span class="notify-matrix-label">🔄 Inserat-Änderungen</span>
+            <span class="notify-matrix-label">Inserat-Änderungen</span>
             <input type="checkbox" data-channel="email" />
             <input type="checkbox" data-channel="push" />
             <input type="checkbox" data-channel="ntfy" />
@@ -675,7 +664,7 @@
 
         <!-- Digest interval -->
         <div class="digest-row" id="digest-row">
-          <span class="notify-label">⏱ Sammelbenachrichtigung (Digest)</span>
+          <span class="notify-label">Sammelbenachrichtigung (Digest)</span>
           <span class="notify-sub">Mehrere Treffer werden gesammelt und zusammen verschickt</span>
           <div class="digest-options" id="digest-options">
             <button class="digest-btn active" data-interval="instant">Sofort</button>
@@ -686,7 +675,7 @@
           </div>
         </div>
         <div class="threshold-row" style="margin-top:10px">
-          <span class="notify-label">🔢 Schwellenwert</span>
+          <span class="notify-label">Schwellenwert</span>
           <span class="notify-sub">Benachrichtige mich erst ab dieser Anzahl neuer Inserate</span>
           <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
             <input type="number" id="notify-threshold" min="1" max="100" value="1"
@@ -701,9 +690,9 @@
 
       <!-- Admin section (only visible for admins) -->
       <div class="settings-section" id="admin-section" style="display:none">
-        <div class="section-label">⚙️ Administration</div>
+        <div class="section-label">Administration</div>
         <p style="font-size:var(--fs-small);color:var(--text2);margin-bottom:10px">Du bist Administrator. Du siehst alle Suchagenten und kannst Nutzerrechte verwalten.</p>
-        <button class="btn-secondary" id="admin-users-btn" style="width:100%;margin-bottom:8px">👥 Nutzerverwaltung</button>
+        <button class="btn-secondary" id="admin-users-btn" style="width:100%;margin-bottom:8px"><span class="i sm" data-icon="users"></span>Nutzerverwaltung</button>
         <div id="admin-users-panel" style="display:none">
           <div id="admin-users-list"></div>
         </div>
@@ -717,9 +706,9 @@
 
 <!-- ══ LIGHTBOX ═══════════════════════════════════════════ -->
 <div id="lightbox" class="lightbox" style="display:none">
-  <button class="lb-close" id="lb-close">✕</button>
-  <button class="lb-arrow lb-prev" id="lb-prev">‹</button>
-  <button class="lb-arrow lb-next" id="lb-next">›</button>
+  <button class="lb-close" id="lb-close" aria-label="Schließen"><span class="i" data-icon="x"></span></button>
+  <button class="lb-arrow lb-prev" id="lb-prev" aria-label="Zurück"><span class="i" data-icon="back"></span></button>
+  <button class="lb-arrow lb-next" id="lb-next" aria-label="Weiter"><span class="i" data-icon="next"></span></button>
   <div class="lb-img-wrap"><img id="lb-img" src="" alt="" /></div>
   <div class="lb-counter" id="lb-counter"></div>
   <div class="lb-thumbnails" id="lb-thumbnails"></div>
@@ -799,10 +788,10 @@
   <div class="modal-card msg-card" role="dialog" aria-modal="true" aria-labelledby="message-title">
     <div class="msg-head">
       <div>
-        <h3 id="message-title">💬 Nachricht vorbereiten</h3>
+        <h3 id="message-title">Nachricht vorbereiten</h3>
         <p class="notify-sub" id="message-context"></p>
       </div>
-      <a class="msg-open-link" id="message-open-link" href="#" target="_blank" rel="noopener">Inserat öffnen ↗</a>
+      <a class="msg-open-link" id="message-open-link" href="#" target="_blank" rel="noopener">Inserat öffnen<span class="i sm" data-icon="external"></span></a>
     </div>
     <div class="msg-layout">
       <div class="msg-controls">
@@ -812,7 +801,7 @@
             <button class="msg-mode-tab active" data-msgmode="formal">Förmlich (Sie)</button>
             <button class="msg-mode-tab" data-msgmode="informal">Locker (Du)</button>
             <button class="msg-mode-tab" data-msgmode="template">Eigene Vorlage</button>
-            <button class="msg-mode-tab" data-msgmode="ai" id="msg-mode-ai" style="display:none">✨ KI</button>
+            <button class="msg-mode-tab" data-msgmode="ai" id="msg-mode-ai" style="display:none"><span class="i sm" data-icon="sparkle"></span>KI</button>
           </div>
         </div>
         <div class="msg-block" id="message-members-block" style="display:none">
@@ -836,8 +825,8 @@
         <p class="form-error" id="message-error"></p>
         <div id="message-contact" class="msg-contact"></div>
         <div class="msg-actions">
-          <button class="btn-secondary" id="message-regen">🔄 Neu erzeugen</button>
-          <button class="btn-primary" id="message-copy">📋 Kopieren</button>
+          <button class="btn-secondary" id="message-regen"><span class="i sm" data-icon="refresh"></span>Neu erzeugen</button>
+          <button class="btn-primary" id="message-copy"><span class="i sm" data-icon="copy"></span>Kopieren</button>
           <button class="btn-ghost" id="message-close">Schließen</button>
         </div>
         <p class="notify-sub msg-footnote">Prüfe den Text, passe ihn an und sende ihn selbst bei der jeweiligen Plattform.</p>

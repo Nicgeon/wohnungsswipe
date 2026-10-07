@@ -89,7 +89,7 @@ a { color:var(--accent-text); text-decoration:none; }
 /* ── Fields ──────────────────────────────────────────── */
 .field-group { display:flex;flex-direction:column;gap:5px; }
 .field-group label { font-size:.78rem;font-weight:600;color:var(--text2);letter-spacing:.5px;text-transform:uppercase; }
-.field-group input,.field-group select,input.field-input {
+.field-group input,.field-group select{
   background:var(--bg3);border:1px solid var(--border);border-radius:11px;
   padding:11px 14px;color:var(--text);font-size:.93rem;outline:none;
   transition:border-color .2s,box-shadow .2s;width:100%;
@@ -182,8 +182,8 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline:2px solid
 .theme-seg button .ic { width:16px;height:16px;stroke-width:2; }
 .theme-seg button[aria-pressed="true"] { background:var(--bg2);color:var(--text);font-weight:600;box-shadow:var(--shadow-seg); }
 .theme-seg-lg button { height:44px;font-size:.88rem; }
-.theme-card { display:flex;flex-direction:column;gap:10px; }
-.settings-hint { font-size:var(--fs-small);color:var(--text2); }
+
+
 
 .tab-bar { display:flex;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0; }
 .tab-nav { flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:9px 0;background:transparent;border:none;color:var(--text2);font-size:var(--fs-tiny);font-weight:500;cursor:pointer;transition:color .2s;position:relative; }
@@ -256,8 +256,8 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline:2px solid
 .price-tag-cold  { font-size:.75rem;color:var(--accent-text);background:var(--accent-soft);border-radius:5px;padding:1px 7px; }
 .price-tag-warm  { font-size:.75rem;color:var(--text2);background:var(--bg3);border-radius:5px;padding:1px 7px; }
 .card-meta { display:flex;flex-wrap:wrap;gap:5px;margin-bottom:7px; }
-.card-meta-item { font-size:.78rem;color:var(--text2);background:var(--bg3);border-radius:6px;padding:2px 7px; }
-.card-desc { font-size:var(--fs-small);color:var(--text2);line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden; }
+
+
 
 /* ── Swipe buttons ───────────────────────────────────── */
 .swipe-actions { display:flex;align-items:center;justify-content:center;gap:14px;padding:12px 18px 16px;flex-shrink:0; }
@@ -271,7 +271,8 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline:2px solid
 .action-btn.superlike:hover { background:rgba(96,180,240,.14);transform:scale(1.08); }
 
 .empty-state { text-align:center;padding:40px 20px;color:var(--text2); }
-.empty-icon  { font-size:2.8rem;margin-bottom:10px; }
+.empty-icon  { width:68px;height:68px;border-radius:22px;background:var(--bg3);color:var(--accent-text);margin:0 auto 14px; }
+.empty-icon .ic { width:30px;height:30px; }
 .empty-sub   { font-size:.83rem;margin-top:5px;color:var(--text3); }
 
 /* ── Add / form cards ────────────────────────────────── */
@@ -299,16 +300,16 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline:2px solid
 .list-card-img { width:100%;height:100%;object-fit:cover;display:block;transition:transform .3s; }
 .list-card-img-area:hover .list-card-img { transform:scale(1.04); }
 .list-card-img-placeholder { width:100%;height:100%;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:2.4rem; }
-.list-card-photo-badge { position:absolute;bottom:6px;right:6px;background:rgba(0,0,0,.65);border-radius:20px;padding:2px 8px;font-size:.68rem;color:#fff;backdrop-filter:blur(4px); }
-.list-card-offline-badge { position:absolute;top:6px;left:6px;background:rgba(240,80,96,.8);border-radius:6px;padding:2px 7px;font-size:.68rem;color:#fff;font-weight:600; }
+
+
 
 .list-card-body { padding:11px 13px 13px; }
 .list-card-title { font-family:'Fraunces',serif;font-size:var(--fs-title);font-weight:700;margin-bottom:5px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden; }
-.list-card-price { font-size:.85rem;font-weight:600;color:var(--accent-text);margin-bottom:2px; }
-.list-card-price-warm { font-size:.73rem;color:var(--text2);margin-bottom:5px; }
-.list-card-meta { font-size:.75rem;color:var(--text2);display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px; }
-.list-card-tags { display:flex;flex-wrap:wrap;gap:3px;margin-bottom:6px; }
-.list-card-tag { font-size:.64rem;color:var(--text3);border:1px solid var(--border);border-radius:20px;padding:1px 6px; }
+
+
+
+
+
 .list-card-link { font-size:.73rem;color:var(--accent-text);display:block;margin-bottom:6px;background:none;border:none;width:100%;text-align:left;padding:0;cursor:pointer;font-family:inherit; }
 .list-card-link:hover { text-decoration:underline; }
 
@@ -317,8 +318,8 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline:2px solid
 .swipe-badge.superlike { background:rgba(96,180,240,.12);color:var(--superlike); }
 .swipe-badge.dislike   { background:rgba(240,80,96,.10);color:var(--dislike); }
 
-.unswipe-btn { width:100%;background:transparent;border:1px solid var(--border);border-radius:8px;padding:5px 9px;font-size:.73rem;color:var(--text2);cursor:pointer;transition:background .2s,color .2s;display:flex;align-items:center;justify-content:center;gap:4px; }
-.unswipe-btn:hover { background:var(--bg3);color:var(--text); }
+
+
 
 /* ── Groups ──────────────────────────────────────────── */
 .groups-grid { display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px; }
@@ -335,8 +336,8 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline:2px solid
 .invite-row { display:flex;align-items:center;gap:10px;flex-wrap:wrap; }
 .invite-code-big { font-family:monospace;font-size:1.15rem;color:var(--accent-text);background:var(--bg3);border-radius:8px;padding:4px 14px;letter-spacing:3px; }
 
-.members-list { display:flex;flex-wrap:wrap;gap:7px;margin-bottom:16px; }
-.member-chip { background:var(--bg3);border:1px solid var(--border);border-radius:20px;padding:3px 11px;font-size:.8rem; }
+
+
 .you-badge { color:var(--accent-text);font-size:.7rem; }
 
 /* Tier badges */
@@ -459,38 +460,21 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline:2px solid
 ::-webkit-scrollbar-thumb { background:var(--bg3);border-radius:2px; }
 
 /* ── Re-rate menu in group detail ──────────────────────── */
-.rerate-row { position:relative; margin-top:6px; display:inline-block; }
 
-.rerate-btn {
-  background:var(--bg3); border:1px solid var(--border);
-  border-radius:8px; padding:5px 11px; font-size:.76rem;
-  cursor:pointer; color:var(--text2); transition:background .15s, color .15s, border-color .15s;
-  white-space:nowrap;
-}
-.rerate-btn:hover           { background:var(--bg2); color:var(--text); }
-.rerate-btn.like            { color:var(--like);      border-color:rgba(91,220,138,.35);  background:rgba(91,220,138,.08); }
-.rerate-btn.superlike       { color:var(--superlike); border-color:rgba(96,180,240,.35);  background:rgba(96,180,240,.08); }
-.rerate-btn.dislike         { color:var(--dislike);   border-color:rgba(240,80,96,.35);   background:rgba(240,80,96,.08); }
 
-.rerate-menu {
-  position:absolute; bottom:calc(100% + 6px); left:0;
-  background:var(--bg2); border:1px solid var(--border);
-  border-radius:10px; padding:4px; min-width:160px;
-  box-shadow:var(--shadow); z-index:50;
-  display:flex; flex-direction:column; gap:2px;
-  animation:fadeIn .15s ease;
-}
-.rerate-menu button {
-  background:transparent; border:none; border-radius:7px;
-  padding:8px 12px; font-size:.82rem; color:var(--text2);
-  cursor:pointer; text-align:left; transition:background .12s, color .12s;
-  white-space:nowrap;
-}
-.rerate-menu button:hover { background:var(--bg3); color:var(--text); }
-.rerate-menu button[data-action="like"]:hover      { color:var(--like); }
-.rerate-menu button[data-action="superlike"]:hover { color:var(--superlike); }
-.rerate-menu button[data-action="dislike"]:hover   { color:var(--dislike); }
-.rerate-menu button[data-action="remove"]:hover    { color:var(--text2); }
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 /* ── Visibility panel in job cards ────────────────────── */
 .vis-panel { margin-top:10px; }
@@ -529,15 +513,9 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline:2px solid
   border:1px solid rgba(96,180,240,.25);
   border-radius:6px; padding:2px 8px; margin-bottom:6px;
 }
-.contact-btn {
-  width:100%; display:flex; align-items:center; justify-content:center; gap:5px;
-  background:rgba(96,180,240,.08); color:var(--superlike);
-  border:1px solid rgba(96,180,240,.2); border-radius:8px;
-  padding:6px 10px; font-size:.76rem; cursor:pointer; transition:background .2s;
-  margin-bottom:5px;
-}
-.contact-btn:hover { background:rgba(96,180,240,.16); }
-.contact-btn.active { background:rgba(91,220,138,.1); color:var(--like); border-color:rgba(91,220,138,.25); }
+
+
+
 
 /* Note textarea inside cards */
 .contact-note-wrap { margin-top:6px; display:none; }
@@ -587,10 +565,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline:2px solid
   transition:transform .4s cubic-bezier(.4,0,.2,1), opacity .4s;
   transform:translateY(120%) scale(.92) !important; opacity:0;
 }
-.card-overlay-badge.badge-skip {
-  bottom:18px; left:50%; transform:translateX(-50%);
-  color:var(--text2); border-color:var(--text2); top:auto;
-}
+
 
 /* ══════════════════════════════════════════════════════════
    THREE-DOT CARD MENU (replaces inline contact/unswipe buttons)
@@ -640,19 +615,14 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline:2px solid
 /* ══════════════════════════════════════════════════════════
    "MEHR" MENU (consolidates Jobs / Archive / Settings)
 ══════════════════════════════════════════════════════════ */
-.more-menu { display:flex; flex-direction:column; gap:10px; }
-.more-menu-row {
-  display:flex; align-items:center; gap:14px;
-  background:var(--bg2); border:1px solid var(--border); border-radius:14px;
-  padding:16px; cursor:pointer; text-align:left; width:100%;
-  transition:border-color .2s, transform .15s;
-}
-.more-menu-row:hover { border-color:var(--border-hover); transform:translateY(-1px); }
-.more-menu-icon { font-size:1.6rem; flex-shrink:0; }
-.more-menu-text { flex:1; display:flex; flex-direction:column; gap:2px; min-width:0; }
-.more-menu-title { font-family:'Fraunces',serif; font-size:var(--fs-title); font-weight:700; color:var(--text); }
-.more-menu-sub { font-size:var(--fs-small); color:var(--text2); }
-.more-menu-arrow { font-size:1.4rem; color:var(--text3); flex-shrink:0; }
+
+
+
+
+
+
+
+
 
 /* ══════════════════════════════════════════════════════════
    RESPONSIVE SAFETY NET — narrow phones (≤380px)
@@ -716,10 +686,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline:2px solid
 }
 
 /* ── Toggle sub-hint (small text beside a toggle label) ── */
-.toggle-sub-hint {
-  font-size:var(--fs-tiny); color:var(--text3);
-  margin-left:auto; margin-right:10px; white-space:nowrap;
-}
+
 
 /* ── Tab notification badge ────────────────────────────── */
 .tab-icon { position:relative; display:inline-block; }
@@ -1054,24 +1021,22 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline:2px solid
 }
 .settings-cat > summary {
   padding:16px 18px; font-family:'Fraunces',serif; font-size:1.05rem; font-weight:600;
-  cursor:pointer; list-style:none; display:flex; align-items:center; justify-content:space-between;
+  cursor:pointer; list-style:none; display:flex; align-items:center; gap:12px;
   user-select:none;
 }
+.settings-cat > summary > .i { color:var(--accent-text); }
 .settings-cat > summary::-webkit-details-marker { display:none; }
 .settings-cat > summary::after {
-  content:'▸'; color:var(--text2); font-size:.9rem; transition:transform .2s;
+  content:''; margin:0 4px 0 auto; width:8px; height:8px; border:solid var(--text2); border-width:0 2px 2px 0;
+  transform:rotate(-45deg); transition:transform .2s; flex:none;
 }
-.settings-cat[open] > summary::after { transform:rotate(90deg); }
+.settings-cat[open] > summary::after { transform:rotate(45deg); }
 .settings-cat > summary:hover { background:var(--bg3); }
 .settings-cat .settings-section { border:none; background:transparent; padding:0 18px 18px; margin:0; }
 .settings-cat .settings-section + .settings-section { border-top:1px solid var(--border); padding-top:16px; }
 
 /* ── Message preview box ───────────────────────────────── */
-.msg-preview {
-  background:var(--bg3); border:1px solid var(--border); border-radius:11px;
-  padding:14px; font-size:.84rem; line-height:1.55; color:var(--text2);
-  white-space:pre-wrap; max-height:260px; overflow-y:auto;
-}
+
 
 /* ── Applicant profile: document list (name + status per row) ──────── */
 .doc-list { display:flex; flex-direction:column; gap:8px; margin-bottom:10px; }
@@ -1098,7 +1063,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline:2px solid
 
 /* ── Message modal: member selection & group template preview ── */
 .msg-members { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:12px; align-items:center; }
-.msg-members-label { font-size:var(--fs-tiny); color:var(--text2); margin-right:2px; }
+
 .msg-member {
   display:inline-flex; align-items:center; gap:5px; background:var(--bg3);
   border:1px solid var(--border); border-radius:999px; padding:4px 10px;
@@ -1107,7 +1072,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline:2px solid
 .msg-member input { accent-color:var(--accent); margin:0; }
 .msg-member.on { border-color:var(--accent); color:var(--accent-text); background:rgba(232,201,122,.1); }
 .msg-member.off { opacity:.5; cursor:not-allowed; }
-.group-tpl-preview { margin-top:10px; }
+
 
 #message-text {
   width:100%; background:var(--bg3); color:var(--text); border:1px solid var(--border);
@@ -1116,7 +1081,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline:2px solid
 #message-text:focus { border-color:var(--accent); box-shadow:0 0 0 3px rgba(232,201,122,.12); }
 
 /* ── Rated bulk actions ───────────────────────────────── */
-.rated-bulk-actions { display:flex;gap:7px;flex-wrap:wrap;margin-top:8px; }
+
 .btn-ghost.compact,.btn-danger.compact { width:auto;padding:6px 10px;font-size:.76rem; }
 .btn-danger.compact { margin:0; }
 .btn-danger:disabled { opacity:.4;cursor:not-allowed; }
@@ -1132,7 +1097,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline:2px solid
 }
 .rated-select:checked + span { background:var(--accent);border-color:var(--accent);box-shadow:inset 0 0 0 3px rgba(0,0,0,.15); }
 .rated-select:focus-visible + span { outline:2px solid var(--accent);outline-offset:2px; }
-@media (max-width:640px) { .rated-bulk-actions { width:100%; } }
+
 
 /* Light theme: tinted platform badges need darker text to stay readable */
 :root[data-theme="light"] .job-badge.platform-kleinanzeigen { color:#8a5200; }
@@ -1255,7 +1220,7 @@ kbd { display:inline-flex; align-items:center; justify-content:center; min-width
 .rated-tool[aria-pressed="true"] { background:var(--accent); border-color:var(--accent); color:var(--on-accent); font-weight:600; }
 .rated-sort:focus-within, .rated-tool:focus-visible { outline:2px solid var(--accent-text); outline-offset:2px; }
 
-#rated-list { grid-template-columns:minmax(0,1fr); gap:12px; }
+.rc-grid { grid-template-columns:minmax(0,1fr); gap:12px; }
 
 /* Card – phone layout: photo left, text right */
 .list-card.rc { display:flex; gap:14px; padding:12px; border-radius:20px; background:var(--bg2); cursor:pointer; overflow:visible; }
@@ -1335,7 +1300,7 @@ body.rated-selecting #view-rated .view-content { padding-bottom:150px; }
   .rated-seg .rf-label { display:inline; }
   .rated-seg .filter-btn { flex:none; padding:0 16px; }
   .rated-tools { justify-content:flex-start; }
-  #rated-list { grid-template-columns:repeat(auto-fill, minmax(min(320px, 100%), 1fr)); gap:20px; }
+  .rc-grid { grid-template-columns:repeat(auto-fill, minmax(min(320px, 100%), 1fr)); gap:20px; }
   .list-card.rc { flex-direction:column; gap:0; padding:0; overflow:hidden; cursor:default; }
   .list-card.rc.list-card-selectable { overflow:hidden; }
   .rc-ph { flex:none; width:100%; height:190px; border-radius:0; }
@@ -1405,3 +1370,43 @@ body.rated-selecting #view-rated .view-content { padding-bottom:150px; }
 .gl-link { margin-left:auto; display:inline-flex; align-items:center; gap:2px; background:none; border:0; padding:0 4px; height:36px; color:var(--accent-text); font-size:.8rem; font-weight:600; cursor:pointer; font-family:inherit; }
 .gl-link:hover { text-decoration:underline; }
 [data-contacted-badge] { cursor:pointer; }
+
+/* ── Buttons / labels with a leading line icon ─────────── */
+:is(.btn-ghost,.btn-secondary,.btn-primary,.btn-danger,.filter-btn,.msg-mode-tab,.msg-open-link,.notify-label,.btn-link):has(> .i) { display:inline-flex; align-items:center; justify-content:center; gap:7px; }
+.notify-label:has(> .i) { justify-content:flex-start; }
+.notify-label > .i { color:var(--text2); }
+.notify-matrix-header .i { color:var(--text2); }
+.btn-ghost.back-btn { padding-left:10px; }
+.lb-close .ic, .lb-arrow .ic { width:22px; height:22px; }
+.lb-arrow .ic { width:26px; height:26px; }
+.lb-close, .lb-arrow { display:flex; align-items:center; justify-content:center; }
+.notify-hint:has(> .i) { display:flex; gap:8px; align-items:flex-start; }
+
+/* ── Line icons inside chips, menus and job controls ───── */
+:is(.vote-chip,.swipe-badge,.tier-header,.member-card-status,.job-badge,.archive-ts,.job-actions button,.vis-option,.card-menu-section-label,.gl-loc,.group-listing-meta):has(> .ic) { display:inline-flex; align-items:center; gap:5px; }
+.card-menu button:has(> .ic) { display:flex; align-items:center; gap:10px; }
+.card-menu button > .ic { width:17px; height:17px; flex:none; color:var(--text2); }
+.vote-chip { display:inline-flex; align-items:center; gap:4px; }
+.vote-chip .ic { width:13px; height:13px; stroke-width:2.2; }
+.job-actions button { display:inline-flex; align-items:center; gap:6px; }
+.job-actions button .ic { width:15px; height:15px; }
+.job-badge-vis { display:inline-flex; align-items:center; gap:4px; color:var(--text2); border-color:var(--border); }
+.job-badge-vis .ic { width:12px; height:12px; }
+.job-error { display:flex; gap:8px; align-items:flex-start; }
+.job-error .ic { width:15px; height:15px; margin-top:1px; }
+.contacted-badge .ic, .archive-ts .ic { width:13px; height:13px; }
+.nudge-btn { display:inline-flex; align-items:center; justify-content:center; padding:0; width:36px; height:36px; color:var(--accent-text); }
+.nudge-btn .ic { width:17px; height:17px; }
+.tier-header .ic { width:15px; height:15px; }
+.group-listing-img-placeholder { color:var(--text3); }
+.group-listing-img-placeholder .ic { width:26px; height:26px; }
+.group-listing-meta { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
+.group-listing-meta strong { color:var(--accent-text); }
+.gl-sub { color:var(--text2); font-size:.7rem; margin-left:-3px; }
+.gl-loc .ic { width:13px; height:13px; }
+.invite-row .btn-ghost { display:inline-flex; align-items:center; justify-content:center; width:36px; height:36px; padding:0; }
+#toast { display:flex; align-items:center; gap:8px; }
+#toast .ic { width:16px; height:16px; stroke-width:2.2; }
+#toast.ok .ic { color:var(--like); }
+#toast.err .ic { color:var(--dislike); }
+#toast span { overflow:hidden; text-overflow:ellipsis; }
