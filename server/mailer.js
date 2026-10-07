@@ -137,6 +137,18 @@ async function sendNudgeMail(email, username, senderName, groupName, unsubToken=
   });
 }
 
+async function sendProfileReminderMail(email, username, senderName, groupName, unsubToken='') {
+  return sendMail({
+    to:      email,
+    subject: `${senderName} bittet dich um dein Bewerber-Profil`,
+    html: template('Erinnerung', `
+      <h2>Bewerber-Profil ausfüllen</h2>
+      <p>Hallo ${username},<br><strong>${senderName}</strong> aus der Gruppe <strong>${groupName}</strong> bittet dich, dein Bewerber-Profil auszufüllen, damit eure gemeinsamen Anfragen an Vermieter vollständig sind.</p>
+      <a href="${BASE_URL()}" class="btn">Profil ausfüllen →</a>
+    `, unsubToken),
+  });
+}
+
 async function sendListingChangeMail(email, username, changeTitle, changeBody, unsubToken='') {
   return sendMail({
     to:      email,
@@ -166,6 +178,7 @@ module.exports = {
   sendMatchMail,
   sendNewListingsMail,
   sendNudgeMail,
+  sendProfileReminderMail,
   sendListingChangeMail,
   sendPasswordChangedMail,
 };

@@ -8,6 +8,7 @@ const state = {
   swipeQueue: [],
   ratedFilter: 'all',
   lastSwipe:  null, // { listing, action } – powers the "Sofort-Undo" button
+  ratedSelected: new Set(), // listing ids ticked for bulk removal in "Bewertet"
 };
 
 // ── Helpers ───────────────────────────────────────────────
@@ -22,13 +23,29 @@ async function api(path, opts = {}) {
   return res.json();
 }
 
+// Leading emoji/symbols in toast texts are rendered as line icons (tone: ok / err).
+const TOAST_ICONS = {
+  '✓': ['check', 'ok'], '✅': ['check', 'ok'], '❌': ['x', 'err'], '⚠️': ['alert', 'err'], '⚠': ['alert', 'err'],
+  '🔗': ['link'], '🚫': ['flag'], '📬': ['mail', 'ok'], '↩': ['undo'], '🗑': ['trash'], '📋': ['copy'], '👋': ['send'],
+  '🎉': ['heart', 'ok'], '💚': ['heart', 'ok'], '⭐': ['star'], '🔕': ['bell'], '🔔': ['bell', 'ok'], '⏸': ['pause'], '▶': ['play'], '📦': ['archive'],
+};
 function toast(msg, ms = 2800) {
   const t = $id('toast');
-  t.textContent = msg;
+  const m = /^(\S+?)\s+(.*)$/s.exec(String(msg));
+  const hit = m && TOAST_ICONS[m[1]];
+  t.classList.remove('ok', 'err'); if (hit && hit[1]) t.classList.add(hit[1]);
+  t.innerHTML = hit ? `${icon(hit[0], 'sm')}<span>${esc(m[2])}</span>` : `<span>${esc(String(msg))}</span>`;
   t.classList.add('show');
   clearTimeout(t._t);
   t._t = setTimeout(() => t.classList.remove('show'), ms);
 }
+
+// Button/label content with a leading line icon
+const withIcon = (name, text, cls = 'sm') => `${icon(name, cls)}${text}`;
+const contactMenuLabel = on => on ? withIcon('check', 'Angeschrieben (Notiz bearbeiten)') : withIcon('mail', 'Als angeschrieben markieren');
+
+// Blurred copy of the photo behind a 'contain'-fitted image: the whole photo is always visible, the frame is always filled.
+const phStyle = src => `--ph:url('${esc(String(src || '')).replace(/'/g, '%27')}')`;
 
 function setErr(id, msg) { const el = $id(id); if (el) el.textContent = msg; }
 function setOk(id, msg)  { const el = $id(id); if (el) el.textContent = msg; }
@@ -68,36 +85,56 @@ function showScreen(id) {
   $id(id).classList.add('active');
 }
 
-const SUB_VIEWS = new Set(['add', 'jobs', 'archive', 'settings']);
+const SUB_VIEWS = new Set(['add', 'jobs', 'archive', 'settings', 'profile']);
+
+const isDesktopNav = () => window.innerWidth >= 900;
+const backTarget = () => isDesktopNav() ? 'swipe' : 'more';
 
 function showView(name, isSubNav = false) {
+  if (name !== 'rated' && state.ratedSelectMode) setRatedSelectMode(false);
+  // The profile page autosaves; make sure nothing is lost when leaving it.
+  if (name !== 'profile') window.pfFlush?.();
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.querySelectorAll('.tab-nav').forEach(b => b.classList.remove('active'));
   $id(`view-${name}`).classList.add('active');
+  $id('swipe-counter').style.display = name === 'swipe' ? '' : 'none';
 
-  // Sub-views (jobs/archive/settings) keep the "Mehr" tab highlighted
+  // Desktop has no "Mehr" page: it is split between the "Inserate" dropdown and the avatar menu.
+  if (name === 'more' && isDesktopNav()) { showView('swipe'); return; }
+  // Sub-views keep their entry point highlighted: "Inserate"/avatar on desktop, "Mehr" on phones
+  const huntView = name === 'add' || name === 'jobs' || name === 'archive';
+  const desktop = isDesktopNav();
+  $id('nav-inserate')?.classList.toggle('active', desktop && huntView);
+  $id('account-btn')?.classList.toggle('on', desktop && (name === 'settings' || name === 'profile'));
   const tabKey = SUB_VIEWS.has(name) ? 'more' : name;
-  document.querySelector(`.tab-nav[data-view="${tabKey}"]`)?.classList.add('active');
+  if (!(desktop && SUB_VIEWS.has(name))) document.querySelector(`.tab-nav[data-view="${tabKey}"]`)?.classList.add('active');
 
+  if (name === 'more')     window.renderAccountMeta?.();
   if (name === 'swipe')    loadSwipeQueue();
   if (name === 'rated')    loadRated();
   if (name === 'groups')   loadGroups();
   if (name === 'jobs')     loadJobs();
   if (name === 'settings') loadSettings();
+  if (name === 'profile')  window.loadProfilePage?.();
   if (name === 'archive')  loadArchive();
   if (name === 'add')      loadMyAddedListings();
+  syncDetailMount();
 }
 
-document.querySelectorAll('.tab-nav').forEach(btn =>
+document.querySelectorAll('.tab-nav[data-view]').forEach(btn =>
   btn.addEventListener('click', () => showView(btn.dataset.view))
 );
+// Resizing from phone to desktop while on "Mehr" – that page doesn't exist there
+window.addEventListener('resize', () => {
+  if (isDesktopNav() && $id('view-more').classList.contains('active')) showView('swipe');
+});
 
 // "Mehr" sub-menu navigation
 document.querySelectorAll('[data-goto]').forEach(btn =>
   btn.addEventListener('click', () => showView(btn.dataset.goto, true))
 );
 document.querySelectorAll('[data-back-to-more]').forEach(btn =>
-  btn.addEventListener('click', () => showView('more', true))
+  btn.addEventListener('click', () => showView(backTarget(), true))
 );
 
 // ══════════════════════════════════════════════════════════
@@ -152,7 +189,7 @@ $id('forgot-submit').addEventListener('click', async () => {
 
 function onLogin(data) {
   state.user = data;
-  $id('nav-username').textContent = data.username;
+  setNavUser(data.username);
   showScreen('app-screen');
   loadGroups().then(() => loadSwipeQueue());
   openSharedListingFromUrl();
@@ -220,17 +257,138 @@ $id('lightbox').addEventListener('click', e => { if (e.target === $id('lightbox'
 //  swipe actions themselves) so tapping through to the original
 //  listing becomes the exception rather than the default habit.
 // ══════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════
+//  "Angeschrieben" – one place for the contact state of a listing
+//  (own, or per group when groupId is set). Used by the detail view,
+//  the message dialog and the cards; cards are kept in sync through
+//  applyContactToCards().
+// ══════════════════════════════════════════════════════════
+const contactApi = {
+  q: g => g ? `?groupId=${g}` : '',
+  async get(id, g)        { const r = await api(`/api/contacts/${id}${this.q(g)}`); return r.contact || null; },
+  mark(id, g, note = '')  { return api('/api/contacts', { method: 'POST', body: { listingId: id, groupId: g || null, note } }); },
+  unmark(id, g)           { return api(`/api/contacts/${id}${this.q(g)}`, { method: 'DELETE' }); },
+  note(id, g, note)       { return api(`/api/contacts/${id}`, { method: 'PATCH', body: { note, groupId: g || null } }); },
+};
+
+// Keeps already rendered cards (group results, "Bewertet") in step with a change made elsewhere.
+function applyContactToCards(listingId, groupId, contacted, note = '') {
+  const noteTxt = note ? ' · ' + note.substring(0, 40) : '';
+  if (!groupId) {
+    const rated = _ratedAll.find(l => Number(l.id) === Number(listingId));
+    if (rated) { rated.contacted = contacted ? 1 : 0; rated.contact_note = contacted ? note : ''; }
+  }
+  const scope = groupId ? `[data-group-id="${groupId}"]` : ':not([data-group-id])';
+  document.querySelectorAll(`.list-card.rc[data-listing-id="${listingId}"]${scope}`).forEach(card => {
+    const badge = card.querySelector('.contacted-badge');
+    if (badge) { badge.hidden = !contacted; badge.textContent = 'Angeschrieben' + noteTxt; }
+    const lbl = card.querySelector('.rc-contact span'); if (lbl) lbl.textContent = contacted ? 'Notiz' : 'Als angeschrieben';
+    const mi = card.querySelector('[data-menu-action="contact-toggle"]'); if (mi) mi.innerHTML = contactMenuLabel(contacted);
+    if (!contacted) card.querySelector('[data-note-wrap]')?.classList.remove('open');
+  });
+}
+
+// Toggle button (+ note field once marked). `el` is a container; returns {nudge()}.
+function mountContactBar(el, listingId, groupId) {
+  let contact = null, alive = true;
+  const draw = () => {
+    const on = !!contact;
+    el.innerHTML = `
+      <div class="cbar${on ? ' on' : ''}">
+        <button type="button" class="cbar-toggle" aria-pressed="${on}">${icon(on ? 'check' : 'mail', 'sm')}<span>${on ? 'Angeschrieben' : 'Als angeschrieben markieren'}</span></button>
+        ${on ? `<input type="text" class="cbar-note" maxlength="200" placeholder="Notiz (optional): z. B. Besichtigung Fr 17 Uhr" value="${esc(contact.note || '')}" aria-label="Notiz zum Anschreiben">` : ''}
+      </div>`;
+  };
+  el.innerHTML = '<div class="cbar"><button type="button" class="cbar-toggle" disabled>…</button></div>';
+  contactApi.get(listingId, groupId).then(c => { if (alive) { contact = c; draw(); } }).catch(() => {});
+  el.onclick = async e => {
+    if (!e.target.closest('.cbar-toggle') || e.target.closest('[disabled]')) return;
+    if (!contact) {
+      const r = await contactApi.mark(listingId, groupId, '');
+      if (!r.success) { toast('❌ ' + (r.error || 'Fehler')); return; }
+      contact = { note: '' }; draw(); applyContactToCards(listingId, groupId, true, '');
+      toast('✓ Als angeschrieben markiert');
+      el.querySelector('.cbar-note')?.focus();
+    } else {
+      const r = await contactApi.unmark(listingId, groupId);
+      if (!r.success) { toast('❌ ' + (r.error || 'Fehler')); return; }
+      contact = null; draw(); applyContactToCards(listingId, groupId, false);
+      toast('Markierung entfernt');
+    }
+  };
+  el.onchange = async e => {
+    if (!e.target.classList.contains('cbar-note') || !contact) return;
+    contact.note = e.target.value.trim();
+    await contactApi.note(listingId, groupId, contact.note);
+    applyContactToCards(listingId, groupId, true, contact.note);
+    toast('✓ Notiz gespeichert');
+  };
+  return {
+    nudge() { el.querySelector('.cbar')?.classList.add('nudge'); },
+    destroy() { alive = false; el.onclick = null; el.onchange = null; el.innerHTML = ''; },
+  };
+}
+
+// Kosten / Details lists, shared by the detail view and the desktop quick view.
+function listingLists(listing) {
+  const cold  = (listing.price_cold || '').trim();
+  const total = (listing.price      || '').trim();
+  const costRows = [
+    ['Kaltmiete',      cold],
+    ['Nebenkosten',    listing.nebenkosten],
+    ['Heizkosten',     listing.heizkosten],
+    ['Kaution',        listing.kaution],
+  ].filter(([, v]) => v && v.trim());
+  if (cold && total && total !== cold) costRows.push(['Warmmiete', total, true]);
+  const factRows = [
+    ['Wohnungstyp',    listing.property_type],
+    ['Verfügbar ab',   listing.available_from],
+  ].filter(([, v]) => v && v.trim());
+  const list = rows => `<ul class="detail-list">${rows.map(([l, v, isTotal]) =>
+    `<li${isTotal ? ' class="total"' : ''}><span>${esc(l)}</span><b>${esc(v)}</b></li>`).join('')}</ul>`;
+  return {
+    costsHtml: costRows.length ? `<div class="detail-section-label">Kosten</div>${list(costRows)}` : '',
+    factsHtml: factRows.length ? `<div class="detail-section-label">Details</div>${list(factRows)}` : '',
+  };
+}
+
+// Small OpenStreetMap embed around the listing's coordinates ('' without coordinates).
+function osmEmbedHtml(listing) {
+  if (!Number.isFinite(listing.latitude) || !Number.isFinite(listing.longitude)) return '';
+  const lat = listing.latitude, lon = listing.longitude, d = 0.006;
+  const bbox = `${lon - d}%2C${lat - d}%2C${lon + d}%2C${lat + d}`;
+  return `<iframe src="https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${lat}%2C${lon}" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>`;
+}
+
 const detailView = {
   listing:   null,
   imgs:      [],
   idx:       0,
   fromSwipe: false,
 
+  // Modal: the detail panel lives in the #detail-view overlay.
   open(listing, opts = {}) {
+    const inner = document.querySelector('.detail-view-inner');
+    if (inner.parentElement !== $id('detail-view')) $id('detail-view').appendChild(inner);
+    inner.classList.remove('embedded');
+    this.embedded = false;
+    this._populate(listing, opts);
+    $id('detail-view').style.display = 'flex';
+    document.addEventListener('keydown', detailView._key);
+  },
+
+  // Desktop swipe page: the same panel, docked next to the card stack (no overlay, no key handler).
+  embed(listing) {
+    this.embedded = true;
+    this._populate(listing, { fromSwipe: true, embedded: true });
+  },
+
+  _populate(listing, opts = {}) {
     this.listing   = listing;
     this.imgs      = parseImages(listing);
     this.idx       = 0;
     this.fromSwipe = !!opts.fromSwipe;
+    this.groupId   = opts.groupId || null;
 
     $id('detail-platform').textContent = listing.platform || 'Inserat';
     $id('detail-title').textContent    = listing.title || 'Inserat';
@@ -238,41 +396,38 @@ const detailView = {
     const cold  = (listing.price_cold || '').trim();
     const total = (listing.price      || '').trim();
     $id('detail-price').innerHTML = cold
-      ? `${esc(cold)} <span class="detail-price-sub">kalt</span>${total && total !== cold ? ` &nbsp;·&nbsp; ${esc(total)} warm` : ''}`
-      : (total ? esc(total) : '<span class="detail-price-sub">Preis nicht angegeben</span>');
+      ? `<b>${esc(cold)}</b><span>kalt${total && total !== cold ? ` · ${esc(total)} warm` : ''}</span>`
+      : (total ? `<b>${esc(total)}</b>` : '<span>Preis nicht angegeben</span>');
+
+    const locEl = $id('detail-loc');
+    locEl.innerHTML = listing.location ? `${icon('pin', 'sm')}${esc(listing.location)}` : '';
+    locEl.style.display = listing.location ? '' : 'none';
 
     const metaParts = [];
-    if (listing.size)     metaParts.push(`📐 ${esc(listing.size)}`);
-    if (listing.rooms)    metaParts.push(`🚪 ${esc(listing.rooms)} Zimmer`);
-    if (listing.location) metaParts.push(`📍 ${esc(listing.location)}`);
+    if (listing.size)  metaParts.push(`${icon('area', 'sm')}${esc(listing.size)}`);
+    if (listing.rooms) metaParts.push(`${icon('door', 'sm')}${esc(listing.rooms)} Zi.`);
     $id('detail-meta').innerHTML = metaParts.map(m => `<span class="detail-meta-item">${m}</span>`).join('');
 
-    // Structured cost/meta breakdown (Nebenkosten, Heizkosten, Kaution,
-    // Wohnungstyp, Verfügbar ab) — only rendered when at least one field
-    // was actually scraped, so older listings without this data don't
-    // show an empty box.
-    const costRows = [
-      ['Nebenkosten',    listing.nebenkosten],
-      ['Heizkosten',     listing.heizkosten],
-      ['Kaution',        listing.kaution],
-      ['Wohnungstyp',    listing.property_type],
-      ['Verfügbar ab',   listing.available_from],
-    ].filter(([, v]) => v && v.trim());
+    // Cost list (Kosten) and a second list for the remaining facts (Details).
+    // Only rendered when at least one field was actually scraped, so older
+    // listings without this data don't show an empty box.
+    const { costsHtml, factsHtml } = listingLists(listing);
     const costsEl = $id('detail-costs');
-    if (costRows.length) {
-      costsEl.style.display = '';
-      costsEl.innerHTML = costRows.map(([label, val]) =>
-        `<div class="detail-cost-row"><span class="detail-cost-label">${esc(label)}</span><span class="detail-cost-value">${esc(val)}</span></div>`
-      ).join('');
-    } else {
-      costsEl.style.display = 'none';
-      costsEl.innerHTML = '';
-    }
+    costsEl.style.display = (costsHtml || factsHtml) ? '' : 'none';
+    costsEl.innerHTML = costsHtml + factsHtml;
+
+    this._contact?.destroy();
+    this._contact = mountContactBar($id('detail-contact'), listing.id, this.groupId);
 
     this._loadChanges(listing.id);
 
     const tags = parseTags(listing.tags_json);
     $id('detail-tags').innerHTML = tags.map(t => `<span class="detail-tag">${esc(t)}</span>`).join('');
+    $id('detail-tags').style.display = tags.length ? '' : 'none';
+    $id('detail-tags-label').style.display = tags.length ? '' : 'none';
+    $id('detail-scroll').scrollTop = 0;
+    document.querySelector('.detail-body').scrollTop = 0;
+    document.querySelector('.detail-topbar').classList.remove('scrolled');
 
     $id('detail-description').textContent = listing.description?.trim() || 'Keine Beschreibung verfügbar.';
 
@@ -294,12 +449,7 @@ const detailView = {
     const mapLabel = $id('detail-map-label');
     const hasCoords = Number.isFinite(listing.latitude) && Number.isFinite(listing.longitude);
     if (hasCoords) {
-      const lat = listing.latitude, lon = listing.longitude;
-      const d = 0.006; // small bounding box around the point, roughly a few hundred metres
-      const bbox = `${lon - d}%2C${lat - d}%2C${lon + d}%2C${lat + d}`;
-      mapEmbed.innerHTML = `<iframe
-        src="https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${lat}%2C${lon}"
-        loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>`;
+      mapEmbed.innerHTML = osmEmbedHtml(listing);
       mapEmbed.style.display = ''; mapLabel.style.display = '';
     } else {
       mapEmbed.style.display = 'none'; mapLabel.style.display = 'none';
@@ -329,17 +479,18 @@ const detailView = {
 
     // Swipe actions only make sense (and only stay in sync with the queue)
     // when opened from the swipe page itself.
-    $id('detail-swipe-actions').style.display = this.fromSwipe ? 'flex' : 'none';
+    $id('detail-swipe-actions').style.display = (this.fromSwipe && !opts.embedded) ? 'flex' : 'none';
 
     this._renderGallery();
-    $id('detail-view').style.display = 'flex';
-    document.addEventListener('keydown', detailView._key);
   },
 
   close() {
+    if (this.embedded) return;                       // the docked panel is not closable
+    this._contact?.destroy(); this._contact = null;
     $id('detail-view').style.display = 'none';
     document.removeEventListener('keydown', detailView._key);
     this.listing = null;
+    syncDetailMount();                               // back to the docked panel on wide swipe pages
   },
 
   _renderGallery() {
@@ -347,14 +498,21 @@ const detailView = {
     const ph    = $id('detail-gallery-placeholder');
     const thumbs = $id('detail-gallery-thumbs');
 
+    const gal = $id('detail-gallery');
     if (this.imgs.length) {
       img.style.display = ''; ph.style.display = 'none';
       img.src = this.imgs[this.idx];
+      gal.style.setProperty('--ph', phStyle(this.imgs[this.idx]).slice(5));
+      gal.classList.add('has-photo');
     } else {
       img.style.display = 'none'; ph.style.display = 'flex';
+      gal.classList.remove('has-photo'); gal.style.removeProperty('--ph');
     }
+    $id('detail-gallery-expand').style.display = this.imgs.length ? '' : 'none';
 
     $id('detail-gallery-counter').textContent = this.imgs.length ? `${this.idx + 1} / ${this.imgs.length}` : '';
+    $id('detail-gallery-dots').innerHTML = this.imgs.length > 1 && this.imgs.length <= 12
+      ? this.imgs.map((_, i) => `<i class="${i === this.idx ? 'on' : ''}"></i>`).join('') : '';
     $id('detail-gallery-prev').style.display  = this.imgs.length > 1 ? '' : 'none';
     $id('detail-gallery-next').style.display  = this.imgs.length > 1 ? '' : 'none';
 
@@ -402,6 +560,7 @@ const detailView = {
   },
 
   _key(e) {
+    if ($id('lightbox').style.display === 'flex') return;   // the lightbox handles its own keys (Esc closes only the photo)
     if (e.key === 'Escape') { detailView.close(); return; }
 
     if (detailView.fromSwipe) {
@@ -428,6 +587,29 @@ const detailView = {
 };
 
 $id('detail-close').onclick        = () => detailView.close();
+// The floating top bar gets a soft background once content scrolls underneath it.
+(() => {
+  const tb = document.querySelector('.detail-topbar');
+  const sync = e => tb.classList.toggle('scrolled', e.target.scrollTop > 140);
+  $id('detail-scroll').addEventListener('scroll', sync, { passive: true });
+  document.querySelector('.detail-body').addEventListener('scroll', sync, { passive: true });
+})();
+// Swipe the photo left/right on touch screens
+(() => {
+  const g = $id('detail-gallery'); let x0 = null, y0 = null;
+  g.addEventListener('touchstart', e => { x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; }, { passive: true });
+  g.addEventListener('touchend', e => {
+    if (x0 === null) return;
+    const dx = e.changedTouches[0].clientX - x0, dy = e.changedTouches[0].clientY - y0;
+    if (Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.5) detailView.galleryGo(dx < 0 ? 1 : -1);
+    x0 = null;
+  }, { passive: true });
+})();
+// Tap the photo (or the "Vollbild" pill) → full-size lightbox at the current photo
+$id('detail-gallery').addEventListener('click', e => {
+  if (e.target.closest('.detail-gallery-arrow, .detail-gallery-thumbs')) return;
+  if (detailView.imgs.length) lb.open(detailView.imgs, detailView.idx);
+});
 $id('detail-gallery-prev').onclick = () => detailView.galleryGo(-1);
 $id('detail-gallery-next').onclick = () => detailView.galleryGo(1);
 $id('detail-view').addEventListener('click', e => { if (e.target.id === 'detail-view') detailView.close(); });
@@ -486,6 +668,10 @@ $id('detail-report-btn').onclick = async () => {
   }
 };
 
+$id('detail-msg-btn').onclick = () => {
+  if (detailView.listing) messageModal.open(detailView.listing, { groupId: detailView.groupId || null });
+};
+
 // ══════════════════════════════════════════════════════════
 //  CARD BUILDERS
 // ══════════════════════════════════════════════════════════
@@ -501,29 +687,35 @@ function buildSwipeCard(listing) {
   const statusBadge = listing.status === 'reserved'
     ? `<div class="card-status-badge status-reserved">Reserviert</div>` : '';
 
+  const cold  = (listing.price_cold || '').trim();
+  const total = (listing.price      || '').trim();
+  const mainPrice = cold || total;
+  const priceSub  = cold ? `kalt${total && total !== cold ? ` · ${esc(total)} warm` : ''}` : '';
+  const facts = [
+    listing.size  ? `<span class="card-fact">${icon('area', 'sm')}${esc(listing.size)}</span>` : '',
+    listing.rooms ? `<span class="card-fact">${icon('door', 'sm')}${esc(listing.rooms)} Zi.</span>` : '',
+  ].join('');
+  const shownTags = tags.slice(0, 3);
+
   card.innerHTML = `
-    <div class="card-img-area">
+    <div class="card-img-area" ${hasImg ? `style="${phStyle(images[0])}"` : ''}>
       ${hasImg
         ? `<img class="card-image" src="${esc(images[0])}" onerror="this.style.display='none'" />`
-        : `<div class="card-image-placeholder">🏠</div>`}
-      ${statusBadge}
-      ${images.length > 1 ? `<button class="card-photo-btn" data-gallery>📷 ${images.length}</button>` : ''}
-    </div>
-    <div class="card-overlay-badge badge-like">JA ♥</div>
-    <div class="card-overlay-badge badge-dislike">NEIN ✕</div>
-    <div class="card-overlay-badge badge-superlike">⭐ SUPER</div>
-    <div class="card-body">
+        : `<div class="card-image-placeholder">${icon('image', 'lg')}</div>`}
       <span class="card-platform">${esc(listing.platform || 'inserat')}</span>
+      ${statusBadge}
+      ${hasImg ? `<button class="card-photo-btn" data-gallery type="button" aria-label="${images.length > 1 ? `Alle ${images.length} Fotos ansehen` : 'Foto im Vollbild ansehen'}">${icon('expand', 'sm')}${images.length > 1 ? images.length : ''}</button>` : ''}
+      ${mainPrice ? `<div class="card-price-over"><b>${esc(mainPrice)}</b>${priceSub ? `<span>${priceSub}</span>` : ''}</div>` : ''}
+    </div>
+    <div class="card-overlay-badge badge-like">JA</div>
+    <div class="card-overlay-badge badge-dislike">NEIN</div>
+    <div class="card-overlay-badge badge-superlike">SUPER</div>
+    <div class="card-body">
       <div class="card-title">${esc(listing.title || 'Inserat')}</div>
-      ${priceHtml(listing, true)}
-      <div class="card-meta">
-        ${listing.size   ? `<span class="card-meta-item">📐 ${esc(listing.size)}</span>` : ''}
-        ${listing.rooms  ? `<span class="card-meta-item">🚪 ${esc(listing.rooms)} Zi.</span>` : ''}
-        ${listing.location ? `<span class="card-meta-item">📍 ${esc(listing.location)}</span>` : ''}
-      </div>
-      ${tags.length ? `<div class="card-tags">${tags.map(t=>`<span class="card-tag">${esc(t)}</span>`).join('')}</div>` : ''}
-      ${listing.description ? `<div class="card-desc">${esc(listing.description)}</div>` : ''}
-      <button class="card-link" data-open-detail type="button">Details ansehen →</button>
+      ${listing.location ? `<div class="card-loc">${icon('pin', 'sm')}<span>${esc(listing.location)}</span></div>` : ''}
+      ${facts ? `<div class="card-facts">${facts}</div>` : ''}
+      ${shownTags.length ? `<div class="card-tags">${shownTags.map(t=>`<span class="card-tag">${esc(t)}</span>`).join('')}</div>` : ''}
+      <button class="card-link" data-open-detail type="button">Details ${icon('next', 'sm')}</button>
     </div>`;
 
   card.querySelector('[data-gallery]')?.addEventListener('click', e => {
@@ -550,17 +742,19 @@ function buildSwipeCard(listing) {
 // existing handler already listens for. Adding a shared item = editing this
 // one function.
 function sharedCardMenuHtml(id, contacted, ctx) {
-  const contactLabel = contacted ? '✓ Angeschrieben (Notiz bearbeiten)' : '📬 Als angeschrieben markieren';
+  const contactLabel = contactMenuLabel(contacted);
   if (ctx === 'group') {
     return [
+      `<button data-prepare-message data-listing="${id}">${withIcon('chat', 'Nachricht vorbereiten')}</button>`,
       `<button data-contact-toggle data-listing="${id}">${contactLabel}</button>`,
-      `<button data-report-offline data-listing="${id}">🚫 Als offline melden</button>`,
+      `<button data-report-offline data-listing="${id}">${withIcon('flag', 'Als offline melden')}</button>`,
     ].join('\n');
   }
   // ctx === 'list'
   return [
+    `<button data-menu-action="prepare-message">${withIcon('chat', 'Nachricht vorbereiten')}</button>`,
     `<button data-menu-action="contact-toggle">${contactLabel}</button>`,
-    `<button data-menu-action="report-offline">🚫 Als offline melden</button>`,
+    `<button data-menu-action="report-offline">${withIcon('flag', 'Als offline melden')}</button>`,
   ].join('\n');
 }
 
@@ -571,38 +765,37 @@ function buildListCard(listing, opts = {}) {
   const cold   = (listing.price_cold || '').trim();
   const total  = (listing.price      || '').trim();
   const swipe  = listing.my_swipe;
-  const swipeLabelMap = { like:'♥ Like', superlike:'⭐ Super-Like', dislike:'✕ Nein' };
-  const cardUid = `lc_${listing.id}_${Math.random().toString(36).slice(2,7)}`;
+    const cardUid = `lc_${listing.id}_${Math.random().toString(36).slice(2,7)}`;
 
   // Only the person who manually added a listing (no search-agent source) can
   // change its visibility from the card menu.
   const canChangeVisibility = !listing.source_job_id && listing.added_by === state.user?.userId;
-  const visLabel = { global:'🌐 Alle', private:'🔒 Nur ich', group:'👥 Gruppe' }[listing.visibility || 'global'];
+  const visLabel = { global:'Alle', private:'Nur ich', group:'Gruppe' }[listing.visibility || 'global'];
 
   const div = document.createElement('div');
-  div.className = 'list-card';
+  div.className = 'list-card' + (opts.selectable ? ' list-card-selectable' : '') + ' rc';
+  div.dataset.listingId = listing.id;
+  if (opts.groupId) div.dataset.groupId = opts.groupId;
 
-  div.innerHTML = `
-    <div class="list-card-img-area">
-      ${hasImg
-        ? `<img class="list-card-img" src="${esc(images[0])}" onerror="this.style.display='none'" />`
-        : `<div class="list-card-img-placeholder">🏠</div>`}
-      ${images.length > 1 ? `<span class="list-card-photo-badge">📷 ${images.length}</span>` : ''}
-      ${listing.status === 'offline'   ? `<span class="list-card-offline-badge">Offline</span>` : ''}
-      ${listing.status === 'reserved'  ? `<span class="list-card-offline-badge" style="background:rgba(240,200,60,.8)">Reserviert</span>` : ''}
-    </div>
-    <button class="card-menu-btn" data-menu-toggle title="Optionen">⋮</button>
+  // Shared pieces (same data-* hooks for both card layouts)
+  const menuHtml = `
     <div class="card-menu" data-menu style="display:none">
-      ${!opts.isArchive ? `<button data-menu-action="unswipe">↩ Bewertung zurückziehen</button>` : ''}
+      ${!opts.isArchive ? `
+      <div class="card-menu-section-label">Bewertung ändern</div>
+      <button data-menu-action="rate:like">${withIcon('heart', 'Like')}</button>
+      <button data-menu-action="rate:superlike">${withIcon('star', 'Super-Like')}</button>
+      <button data-menu-action="rate:dislike">${withIcon('x', 'Nein')}</button>
+      <button data-menu-action="unswipe">${withIcon('undo', 'Zurückziehen')}</button>
+      <div class="card-menu-divider"></div>` : ''}
       ${!opts.isArchive
         ? sharedCardMenuHtml(listing.id, listing.contacted, 'list')
-        : `<button data-menu-action="contact-toggle">${listing.contacted ? '✓ Angeschrieben (Notiz bearbeiten)' : '📬 Als angeschrieben markieren'}</button>`}
+        : `<button data-menu-action="contact-toggle">${contactMenuLabel(listing.contacted)}</button>`}
       ${canChangeVisibility ? `
       <div class="card-menu-divider"></div>
       <div class="card-menu-section-label">Sichtbarkeit (${esc(visLabel)})</div>
-      <button data-vis-action="global">🌐 Alle Nutzer</button>
-      <button data-vis-action="private">🔒 Nur ich</button>
-      <button data-vis-action="group">👥 Gruppe wählen…</button>
+      <button data-vis-action="global">${withIcon('globe', 'Alle Nutzer')}</button>
+      <button data-vis-action="private">${withIcon('lock', 'Nur ich')}</button>
+      <button data-vis-action="group">${withIcon('users', 'Gruppe wählen…')}</button>
       ` : ''}
     </div>
     ${canChangeVisibility ? `
@@ -611,37 +804,81 @@ function buildListCard(listing, opts = {}) {
         <option value="">Gruppe wählen…</option>
       </select>
       <button data-vis-group-confirm>OK</button>
-    </div>` : ''}
-    <div class="list-card-body">
-      <div class="list-card-title">${esc(listing.title || 'Inserat')}</div>
-      ${cold  ? `<div class="list-card-price">${esc(cold)} <span style="font-size:.7rem;font-weight:400;color:var(--text2)">kalt</span></div>` : ''}
-      ${total && total !== cold ? `<div class="list-card-price-warm">${esc(total)} warm</div>` : ''}
-      <div class="list-card-meta">
-        ${listing.size     ? `<span>📐 ${esc(listing.size)}</span>` : ''}
-        ${listing.rooms    ? `<span>🚪 ${esc(listing.rooms)} Zi.</span>` : ''}
-        ${listing.location ? `<span>📍 ${esc(listing.location)}</span>` : ''}
-      </div>
-      ${tags.length ? `<div class="list-card-tags">${tags.map(t=>`<span class="list-card-tag">${esc(t)}</span>`).join('')}</div>` : ''}
-      ${opts.matchInfo ? `<div class="match-count" style="font-size:.76rem;color:var(--like);margin-bottom:5px">${esc(opts.matchInfo)}</div>` : ''}
-      ${swipe ? `<div class="swipe-badge ${swipe}">${swipeLabelMap[swipe]||swipe}</div>` : ''}
-      ${listing.contacted ? `<div class="contacted-badge">📬 Angeschrieben${listing.contact_note ? ' · ' + esc(listing.contact_note.substring(0,40)) : ''}</div>` : ''}
-      <button class="list-card-link" data-open-detail type="button">Details ansehen →</button>
+    </div>` : ''}`;
+  const noteHtml = `
       <div class="contact-note-wrap" data-note-wrap>
         <textarea class="contact-note" placeholder="Notiz (optional): Wann kontaktiert, Antwort, etc." data-note-text>${esc(listing.contact_note || '')}</textarea>
         <div class="contact-note-actions">
           <button class="contact-note-save" data-note-save>Speichern</button>
           <button data-note-cancel>Abbrechen</button>
+          <button data-note-unmark class="contact-note-unmark">Markierung entfernen</button>
         </div>
-      </div>
-    </div>`;
+      </div>`;
 
-  if (hasImg) div.querySelector('.list-card-img-area').addEventListener('click', e => {
-    if (e.target.closest('[data-menu-toggle]') || e.target.closest('[data-menu]')) return;
-    lb.open(images);
-  });
+  {
+    // "Meine Bewertungen": one card, laid out as a row on phones and as a
+    // vertical card (price on the photo) on wider screens – see .rc in style.css.
+    const rate = { like: ['heart', 'Like'], superlike: ['star', 'Super-Like'], dislike: ['x', 'Nein'] }[swipe];
+    const contactedText = 'Angeschrieben' + (listing.contact_note ? ' · ' + listing.contact_note.substring(0, 40) : '');
+    div.classList.toggle('rc-dim', swipe === 'dislike');
+    div.dataset.rate = swipe || '';
+    div.innerHTML = `
+      ${opts.selectable ? `<label class="rated-select-wrap rc-check" title="Inserat auswählen"><input type="checkbox" class="rated-select" data-listing-id="${listing.id}" ${state.ratedSelected.has(Number(listing.id)) ? 'checked' : ''}><span>${icon('check', 'sm')}</span></label>` : ''}
+      <div class="list-card-img-area rc-ph"${hasImg ? ` style="${phStyle(images[0])}"` : ''}>
+        ${hasImg
+          ? `<img class="list-card-img" src="${esc(images[0])}" loading="lazy" onerror="this.style.display='none'" />`
+          : `<div class="list-card-img-placeholder">${icon('image', 'lg')}</div>`}
+        ${rate ? `<span class="rc-rate ${swipe}">${icon(rate[0], 'sm')}<span class="rc-rate-label">${rate[1]}</span></span>` : ''}
+        ${listing.status === 'offline'  ? `<span class="rc-strip">Offline</span>` : ''}
+        ${listing.status === 'reserved' ? `<span class="rc-strip res">Reserviert</span>` : ''}
+        <div class="rc-price-over">${(cold || total) ? `<b>${esc(cold || total)}</b><span>${cold ? 'kalt' + (total && total !== cold ? ` · ${esc(total)} warm` : '') : ''}</span>` : ''}</div>
+      </div>
+      <button class="card-menu-btn" data-menu-toggle title="Optionen" aria-label="Optionen">${icon('dots')}</button>
+      ${menuHtml}
+      <div class="list-card-body rc-body">
+        <div class="list-card-title">${esc(listing.title || 'Inserat')}</div>
+        <div class="rc-price">${(cold || total) ? `<b>${esc(cold || total)}</b><span>${cold ? 'kalt' + (total && total !== cold ? ` · ${esc(total)} warm` : '') : ''}</span>` : ''}</div>
+        ${listing.location ? `<div class="rc-loc">${icon('pin', 'sm')}<span>${esc(listing.location)}</span></div>` : ''}
+        <div class="rc-facts">
+          ${listing.size  ? `<span class="rc-chip">${esc(listing.size)}</span>` : ''}
+          ${listing.rooms ? `<span class="rc-chip">${esc(listing.rooms)} Zi.</span>` : ''}
+          ${listing.status === 'reserved' ? `<span class="rc-chip warn">Reserviert</span>` : ''}
+          ${listing.status === 'offline'  ? `<span class="rc-chip bad">Nicht mehr verfügbar</span>` : ''}
+          <span class="contacted-badge rc-chip like" ${listing.contacted ? '' : 'hidden'}>${esc(contactedText)}</span>
+        </div>
+        ${opts.votes?.length ? `<div class="vote-chips">${opts.votes.map(v => `<span class="vote-chip ${v.action}">${esc(v.username)} ${icon(v.action === 'like' ? 'heart' : v.action === 'superlike' ? 'star' : 'x', 'sm')}</span>`).join('')}</div>` : ''}
+        ${opts.matchInfo ? `<div class="match-count" style="font-size:.76rem;color:var(--like);margin-bottom:5px">${esc(opts.matchInfo)}</div>` : ''}
+        <div class="rc-foot">
+          <button type="button" class="rc-btn primary" data-rc="message">${icon('chat', 'sm')}Nachricht</button>
+          <button type="button" class="rc-btn" data-open-detail>Details</button>
+          <button type="button" class="rc-btn rc-contact" data-rc="contact">${icon('mail', 'sm')}<span>${listing.contacted ? 'Notiz' : 'Als angeschrieben'}</span></button>
+        </div>
+        ${noteHtml}
+      </div>`;
+  }
+
+  if (opts.selectable) {
+    const cb = div.querySelector('.rated-select');
+    cb?.addEventListener('click', e => e.stopPropagation());
+    cb?.addEventListener('change', () => {
+      const id = Number(cb.dataset.listingId);
+      if (cb.checked) state.ratedSelected.add(id); else state.ratedSelected.delete(id);
+      updateRatedBulkButtons();
+    });
+  }
+
+  {
+    // Tap anywhere on the card (except its controls) → detail view; footer shortcuts reuse the menu actions.
+    div.addEventListener('click', e => {
+      if (e.target.closest('button, a, label, input, textarea, select, [data-menu], [data-note-wrap], [data-vis-group-picker]')) return;
+      detailView.open(listing, { groupId: opts.groupId || null });
+    });
+    div.querySelector('[data-rc="message"]')?.addEventListener('click', e => { e.stopPropagation(); messageModal.open(listing, { groupId: opts.groupId || null }); });
+    div.querySelector('[data-rc="contact"]')?.addEventListener('click', e => { e.stopPropagation(); div.querySelector('[data-menu-action="contact-toggle"]')?.click(); });
+  }
 
   div.querySelector('[data-open-detail]')?.addEventListener('click', e => {
-    e.stopPropagation(); detailView.open(listing);
+    e.stopPropagation(); detailView.open(listing, { groupId: opts.groupId || null });
   });
 
   // ── Three-dot menu wiring ──
@@ -666,13 +903,19 @@ function buildListCard(listing, opts = {}) {
       div.classList.remove('menu-open');
       const action = btn.dataset.menuAction;
 
-      if (action === 'unswipe') {
+      if (action.startsWith('rate:')) {
+        const act = action.slice(5);
+        await api('/api/listings/swipe', { method: 'POST', body: { listingId: listing.id, action: act } });
+        toast({ like: '💚 Like gesetzt', superlike: '⭐ Super-Like gesetzt', dislike: '❌ Abgelehnt' }[act]);
+        state.swipeQueue = [];
+        if (opts.onChange) opts.onChange();
+      } else if (action === 'unswipe') {
         const r = await api(`/api/listings/swipe/${listing.id}`, { method: 'DELETE' });
         if (r.success) {
-          div.style.opacity = '0'; div.style.transition = 'opacity .3s';
-          setTimeout(() => div.remove(), 280);
           toast('↩ Bewertung zurückgezogen');
           state.swipeQueue = [];
+          if (opts.onChange) opts.onChange();
+          else { div.style.opacity = '0'; div.style.transition = 'opacity .3s'; setTimeout(() => div.remove(), 280); }
         }
       } else if (action === 'contact-toggle') {
         if (!listing.contacted) {
@@ -683,12 +926,14 @@ function buildListCard(listing, opts = {}) {
             listing.contacted = true;
             toast('📬 Als angeschrieben markiert');
             noteWrap.classList.add('open');
-            btn.textContent = '✓ Angeschrieben (Notiz bearbeiten)';
+            btn.innerHTML = contactMenuLabel(true);
+            div.querySelector('.contacted-badge')?.removeAttribute('hidden');
+            const rcSpan = div.querySelector('.rc-contact span'); if (rcSpan) rcSpan.textContent = 'Notiz';
             // Insert contacted badge if not already present
             if (!div.querySelector('.contacted-badge')) {
               const badge = document.createElement('div');
               badge.className = 'contacted-badge';
-              badge.textContent = '📬 Angeschrieben';
+              badge.textContent = 'Angeschrieben';
               div.querySelector('.swipe-badge')?.insertAdjacentElement('afterend', badge)
                 ?? div.querySelector('.list-card-link').insertAdjacentElement('beforebegin', badge);
             }
@@ -701,12 +946,14 @@ function buildListCard(listing, opts = {}) {
         const r = await api(`/api/listings/${listing.id}/report-offline`, { method: 'POST' });
         if (r.success) {
           div.style.opacity = '0'; div.style.transition = 'opacity .3s';
-          setTimeout(() => div.remove(), 280);
+          setTimeout(() => { div.remove(); opts.onChange?.(); }, 280);
           toast(r.jobTriggered ? '🚫 Gemeldet – Suchagent wird neu durchsucht' : '🚫 Als offline gemeldet');
           state.swipeQueue = [];
         } else {
           toast('❌ ' + (r.error || 'Fehler'));
         }
+      } else if (action === 'prepare-message') {
+        messageModal.open(listing, { groupId: opts.groupId || null });
       }
     });
   });
@@ -744,7 +991,7 @@ function buildListCard(listing, opts = {}) {
         if (r.success) {
           listing.visibility = r.visibility;
           listing.visibility_id = r.visibility_id;
-          const label = { global:'🌐 Alle Nutzer', private:'🔒 Nur ich' }[choice];
+          const label = { global:'Alle Nutzer', private:'Nur ich' }[choice];
           toast(`✓ Sichtbarkeit: ${label}`);
           const secLabel = div.querySelector('.card-menu-section-label');
           if (secLabel) secLabel.textContent = `Sichtbarkeit (${label})`;
@@ -766,9 +1013,9 @@ function buildListCard(listing, opts = {}) {
         listing.visibility = 'group';
         listing.visibility_id = gid;
         const groupName = state.groups.find(g => g.id == gid)?.name || 'Gruppe';
-        toast(`✓ Sichtbarkeit: 👥 ${groupName}`);
+        toast(`✓ Sichtbarkeit: Gruppe ${groupName}`);
         const secLabel = div.querySelector('.card-menu-section-label');
-        if (secLabel) secLabel.textContent = `Sichtbarkeit (👥 ${groupName})`;
+        if (secLabel) secLabel.textContent = `Sichtbarkeit (Gruppe ${groupName})`;
       } else {
         toast('❌ ' + (r.error || 'Fehler'));
       }
@@ -782,16 +1029,23 @@ function buildListCard(listing, opts = {}) {
     noteWrap.classList.remove('open');
     toast('✓ Notiz gespeichert');
     const badge = div.querySelector('.contacted-badge');
-    if (badge) badge.textContent = '📬 Angeschrieben' + (noteText.value ? ' · ' + noteText.value.substring(0,40) : '');
+    if (badge) badge.textContent = 'Angeschrieben' + (noteText.value ? ' · ' + noteText.value.substring(0,40) : '');
   });
   div.querySelector('[data-note-cancel]')?.addEventListener('click', () => noteWrap.classList.remove('open'));
+  div.querySelector('[data-note-unmark]')?.addEventListener('click', async () => {
+    const r = await contactApi.unmark(listing.id, opts.groupId || null);
+    if (!r.success) { toast('❌ ' + (r.error || 'Fehler')); return; }
+    listing.contacted = false; listing.contact_note = '';
+    applyContactToCards(listing.id, opts.groupId || null, false);
+    toast('Markierung entfernt');
+  });
 
   // Archive timestamp
   if (opts.isArchive && listing.archived_at) {
     const ts = document.createElement('div');
     ts.className = 'archive-ts';
     const d = new Date(listing.archived_at + 'Z');
-    ts.textContent = `📦 Archiviert ${d.toLocaleDateString('de-DE', { day:'2-digit', month:'2-digit', year:'numeric' })}`;
+    ts.innerHTML = `${icon('archive', 'sm')}Archiviert ${d.toLocaleDateString('de-DE', { day:'2-digit', month:'2-digit', year:'numeric' })}`;
     div.querySelector('.list-card-body')?.prepend(ts);
   }
 
@@ -921,6 +1175,31 @@ function updateSwipeBadge(count) {
   }
 }
 
+// Wide screens (≥1100px) on the swipe page: the detail panel is docked next to the card stack
+// and always shows the top card; everywhere else it is the modal in #detail-view.
+const DOCK_MIN_WIDTH = 1100;
+function syncDetailMount() {
+  const inner = document.querySelector('.detail-view-inner');
+  const host = $id('swipe-quick'), overlay = $id('detail-view');
+  if (!inner || !host) return;
+  const want = window.innerWidth >= DOCK_MIN_WIDTH && $id('view-swipe').classList.contains('active')
+               && overlay.style.display === 'none' && !!state.user;
+  if (want) {
+    if (inner.parentElement !== host) host.appendChild(inner);
+    inner.classList.add('embedded');
+    const top = state.swipeQueue[0];
+    host.classList.toggle('empty', !top);
+    if (top && !(detailView.embedded && detailView.listing?.id === top.id)) detailView.embed(top);
+    if (!top) { detailView._contact?.destroy(); detailView._contact = null; detailView.listing = null; }
+  } else if (inner.parentElement === host) {
+    detailView._contact?.destroy(); detailView._contact = null;
+    overlay.appendChild(inner); inner.classList.remove('embedded');
+    detailView.embedded = false; detailView.listing = null;
+  }
+}
+let _dockTimer = null;
+window.addEventListener('resize', () => { clearTimeout(_dockTimer); _dockTimer = setTimeout(syncDetailMount, 150); });
+
 function renderStack() {
   const stack   = $id('card-stack');
   const actions = $id('swipe-actions');
@@ -929,8 +1208,9 @@ function renderStack() {
 
   if (!state.swipeQueue.length) {
     stack.querySelectorAll('.swipe-card').forEach(c => c.remove());
-    empty.style.display = ''; actions.style.display = 'none'; return;
+    empty.style.display = ''; actions.style.display = 'none'; syncDetailMount(); return;
   }
+  syncDetailMount();
   empty.style.display = 'none'; actions.style.display = 'flex';
 
   const top3 = state.swipeQueue.slice(0, 3);
@@ -1086,10 +1366,10 @@ async function doSwipe(listing, action) {
   if (isFlying) return;
 
   const toastMsg = {
-    like:      '💚 Gefällt dir!',
-    dislike:   '✕ Abgelehnt',
-    superlike: '⭐ Super-Like!',
-    skip:      '⏭ Übersprungen – kommt später wieder',
+    like:      'Gefällt dir!',
+    dislike:   'Abgelehnt',
+    superlike: 'Super-Like!',
+    skip:      'Übersprungen – kommt später wieder',
   }[action];
 
   // Fire API in background
@@ -1258,25 +1538,107 @@ let _ratedAll = [];
 
 async function loadRated() {
   const d = await api('/api/listings/rated');
-  _ratedAll = d.listings || [];
+  // The server returns newest rating first; remember that order for "Älteste zuerst".
+  _ratedAll = (d.listings || []).map((l, i) => ({ ...l, _order: i }));
+  state.ratedSelected.clear();
+  renderRated();
+}
+
+// "700 €" / "1.150 €" / "1.150,50 €" → number (Infinity when there is no price, so those sort last)
+function priceNumber(l) {
+  const raw = (l.price_cold || l.price || '').replace(/[^\d.,]/g, '');
+  if (!raw) return Infinity;
+  const n = parseFloat(raw.replace(/\./g, '').replace(',', '.'));
+  return Number.isFinite(n) ? n : Infinity;
+}
+
+function ratedVisible() {
+  const filter = state.ratedFilter;
+  const items = filter === 'all' ? _ratedAll.slice() : _ratedAll.filter(l => l.my_swipe === filter);
+  const sort = state.ratedSort || 'recent';
+  if (sort === 'oldest')          items.sort((a, b) => b._order - a._order);
+  else if (sort === 'price-asc')  items.sort((a, b) => priceNumber(a) - priceNumber(b) || a._order - b._order);
+  else if (sort === 'price-desc') items.sort((a, b) => (priceNumber(b) === Infinity ? -1 : priceNumber(b)) - (priceNumber(a) === Infinity ? -1 : priceNumber(a)) || a._order - b._order);
+  else                            items.sort((a, b) => a._order - b._order);
+  return items;
+}
+
+function updateRatedBulkButtons() {
+  const count = state.ratedSelected.size;
+  const del = $id('rated-delete-selected-btn');
+  const sel = $id('rated-select-all-btn');
+  $id('rated-bulk-count').textContent = `${count} ausgewählt`;
+  if (del) del.disabled = count === 0;
+  if (sel) {
+    const visible = ratedVisible();
+    const all = visible.length > 0 && visible.every(l => state.ratedSelected.has(Number(l.id)));
+    sel.textContent = all ? 'Auswahl aufheben' : 'Alle auswählen';
+    sel.disabled = visible.length === 0;
+  }
+}
+
+function setRatedSelectMode(on) {
+  state.ratedSelectMode = on;
+  $id('view-rated').classList.toggle('select-mode', on);
+  $id('rated-bulk-bar').hidden = !on;
+  document.body.classList.toggle('rated-selecting', on);
+  const t = $id('rated-select-toggle');
+  t.setAttribute('aria-pressed', String(on));
+  if (!on) state.ratedSelected.clear();
   renderRated();
 }
 
 function renderRated() {
   const list   = $id('rated-list');
   const empty  = $id('rated-empty');
-  const filter = state.ratedFilter;
-  const items  = filter === 'all' ? _ratedAll : _ratedAll.filter(l => l.my_swipe === filter);
+  const items  = ratedVisible();
+  // Counts + subtitle
+  const cnt = { all: _ratedAll.length, like: 0, superlike: 0, dislike: 0 };
+  _ratedAll.forEach(l => { if (cnt[l.my_swipe] !== undefined) cnt[l.my_swipe]++; });
+  document.querySelectorAll('#rated-filter [data-count]').forEach(el => { el.textContent = cnt[el.dataset.count] ?? 0; });
+  $id('rated-sub').textContent = _ratedAll.length ? `${_ratedAll.length} Inserat${_ratedAll.length === 1 ? '' : 'e'} bewertet` : 'Noch nichts bewertet';
+  // Never keep hidden (filtered-out) items selected, so "entfernen" only
+  // ever deletes what the user can currently see ticked.
+  const visibleIds = new Set(items.map(l => Number(l.id)));
+  [...state.ratedSelected].forEach(id => { if (!visibleIds.has(id)) state.ratedSelected.delete(id); });
   list.innerHTML = '';
-  if (!items.length) { empty.style.display = ''; return; }
+  list.classList.toggle('rated-selecting', !!state.ratedSelectMode);
+  if (!items.length) {
+    empty.style.display = '';
+    empty.querySelector('p').textContent = _ratedAll.length ? 'Keine Bewertungen in diesem Filter.' : 'Keine Bewertungen.';
+    updateRatedBulkButtons(); return;
+  }
   empty.style.display = 'none';
-  items.forEach(l => list.appendChild(buildListCard(l)));
+  items.forEach(l => list.appendChild(buildListCard(l, { selectable: !!state.ratedSelectMode, rated: true, onChange: () => loadRated() })));
+  updateRatedBulkButtons();
 }
+
+$id('rated-select-toggle').addEventListener('click', () => setRatedSelectMode(!state.ratedSelectMode));
+$id('rated-select-done').addEventListener('click', () => setRatedSelectMode(false));
+$id('rated-sort').addEventListener('change', e => { state.ratedSort = e.target.value; renderRated(); });
+
+$id('rated-select-all-btn').addEventListener('click', () => {
+  const visible = ratedVisible();
+  const all = visible.length > 0 && visible.every(l => state.ratedSelected.has(Number(l.id)));
+  visible.forEach(l => { if (all) state.ratedSelected.delete(Number(l.id)); else state.ratedSelected.add(Number(l.id)); });
+  renderRated();
+});
+
+$id('rated-delete-selected-btn').addEventListener('click', async () => {
+  const ids = [...state.ratedSelected];
+  if (!ids.length) return;
+  if (!confirm(`${ids.length} Bewertung${ids.length === 1 ? '' : 'en'} entfernen? Die Inserate selbst bleiben bestehen und erscheinen beim Swipen wieder.`)) return;
+  const r = await api('/api/listings/rated', { method: 'DELETE', body: { listingIds: ids } });
+  if (!r.success) { toast('❌ ' + (r.error || 'Entfernen fehlgeschlagen')); return; }
+  state.ratedSelected.clear();
+  toast(`🗑 ${r.deleted} Bewertung${r.deleted === 1 ? '' : 'en'} entfernt`);
+  await loadRated();
+});
 
 document.getElementById('rated-filter').addEventListener('click', e => {
   const btn = e.target.closest('.filter-btn');
   if (!btn) return;
-  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('#rated-filter .filter-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   state.ratedFilter = btn.dataset.filter;
   renderRated();
@@ -1295,7 +1657,7 @@ function renderGroups() {
   const grid = $id('groups-list');
   grid.innerHTML = '';
   if (!state.groups.length) {
-    grid.innerHTML = '<div class="empty-state"><div class="empty-icon">👥</div><p>Noch keine Gruppen.</p><p class="empty-sub">Erstelle eine oder tritt bei.</p></div>';
+    grid.innerHTML = `<div class="empty-state"><div class="empty-icon i">${icon('users')}</div><p>Noch keine Gruppen.</p><p class="empty-sub">Erstelle eine oder tritt bei.</p></div>`;
     return;
   }
   state.groups.forEach(g => {
@@ -1316,7 +1678,7 @@ function renderGroups() {
   });
 }
 
-async function openGroupDetail(group) {
+async function openGroupDetail(group, opts = {}) {
   $id('groups-main').style.display   = 'none';
   $id('group-detail').style.display  = '';
 
@@ -1326,7 +1688,6 @@ async function openGroupDetail(group) {
     api(`/api/groups/${group.id}/results`),
     api(`/api/groups/${group.id}/swipe-status`),
   ]);
-  const resultsById = Object.fromEntries(results.map(r => [r.id, r]));
 
   // Build members section with nudge buttons
   const myId = state.user?.userId;
@@ -1344,79 +1705,27 @@ async function openGroupDetail(group) {
         <div class="member-card-info">
           <span class="member-card-name">${esc(m.username)}${isMe ? ' <span class="you-badge">(du)</span>' : ''}</span>
           <span class="member-card-status" style="color:${statusColor}">
-            ${allDone ? '✓ Alle geswiped' : `${pendingCount} noch offen`}
+            ${allDone ? withIcon('check', 'Alle geswiped') : `${pendingCount} noch offen`}
           </span>
         </div>
-        ${!isMe ? `<button class="nudge-btn" data-nudge="${m.id}" data-name="${esc(m.username)}" title="${esc(m.username)} erinnern zu swipen">👋</button>` : ''}
+        ${!isMe ? `<button class="nudge-btn" data-nudge="${m.id}" data-name="${esc(m.username)}" title="${esc(m.username)} erinnern zu swipen" aria-label="${esc(m.username)} erinnern zu swipen">${icon('send', 'sm')}</button>` : ''}
       </div>`;
   }).join('');
 
   const tiers = ['einstimmig','mehrheitlich','gespalten','abgelehnt'];
   const tierLabels = {
-    einstimmig:   '🎉 Volle Zustimmung',
-    mehrheitlich: '👍 Mehrheitlich positiv',
-    gespalten:    '🤔 Gespalten',
-    abgelehnt:    '👎 Abgelehnt',
+    einstimmig:   withIcon('heart', 'Volle Zustimmung'),
+    mehrheitlich: withIcon('check', 'Mehrheitlich positiv'),
+    gespalten:    withIcon('split', 'Gespalten'),
+    abgelehnt:    withIcon('x', 'Abgelehnt'),
   };
 
   const tierSections = tiers.map(tier => {
     const items = results.filter(r => r.tier === tier);
     if (!items.length) return '';
-    const cards = items.map(r => {
-      const imgs    = (() => { try { return JSON.parse(r.images_json||'[]'); } catch { return []; } })();
-      const hasImg  = imgs[0]?.startsWith('http');
-      const cold    = (r.price_cold||'').trim();
-      const total   = (r.price||'').trim();
-      const voteChips = r.votes.map(v =>
-        `<span class="vote-chip ${v.action}">${esc(v.username)}: ${v.action==='like'?'♥':v.action==='superlike'?'⭐':'✕'}</span>`
-      ).join('');
-      const myChip = r.my_swipe
-        ? `<div class="swipe-badge ${r.my_swipe}" style="margin-top:5px">${{like:'♥ Dein Like',superlike:'⭐ Dein Super',dislike:'✕ Dein Nein'}[r.my_swipe]}</div>`
-        : '';
-      const rateLabel = { like:'♥ Like', superlike:'⭐ Super-Like', dislike:'✕ Nein', '':'Bewerten…' };
-      const curRating = r.my_swipe || '';
-      return `
-        <div class="group-listing-card" data-listing-id="${r.id}">
-          <button class="card-menu-btn group-card-menu-btn" data-menu-toggle title="Optionen">⋮</button>
-          <div class="card-menu" data-menu style="display:none">
-            <div class="card-menu-section-label">Bewertung ändern</div>
-            <button data-rerate-action="like"      data-listing="${r.id}">♥ Like</button>
-            <button data-rerate-action="superlike" data-listing="${r.id}">⭐ Super-Like</button>
-            <button data-rerate-action="dislike"   data-listing="${r.id}">✕ Nein</button>
-            <button data-rerate-action="remove"    data-listing="${r.id}">↩ Zurückziehen</button>
-            <div class="card-menu-divider"></div>
-            ${sharedCardMenuHtml(r.id, r.group_contacted, 'group')}
-          </div>
-          ${hasImg
-            ? `<img class="group-listing-img" src="${esc(imgs[0])}" onclick="window.__lb && window.__lb.open(${JSON.stringify(imgs).replace(/"/g,'&quot;')})" style="cursor:pointer" />`
-            : `<div class="group-listing-img-placeholder">🏠</div>`}
-          <div class="group-listing-info">
-            <div class="group-listing-title">${esc(r.title||'Inserat')}</div>
-            <div class="group-listing-meta">
-              ${cold  ? `<strong>${esc(cold)}</strong> kalt &nbsp;` : total ? `<strong>${esc(total)}</strong> &nbsp;` : ''}
-              ${r.size     ? `📐 ${esc(r.size)} &nbsp;` : ''}
-              ${r.rooms    ? `🚪 ${esc(r.rooms)} Zi. &nbsp;` : ''}
-              ${r.location ? `📍 ${esc(r.location)}` : ''}
-            </div>
-            <div class="vote-chips">${voteChips}</div>
-            ${myChip}
-            <div class="contacted-badge" data-contacted-badge style="${r.group_contacted ? '' : 'display:none'}">
-              📬 Angeschrieben<span data-contacted-note>${r.group_contact_note ? ' · ' + esc(r.group_contact_note.substring(0,40)) : ''}</span>
-            </div>
-            <div class="contact-note-wrap" data-note-wrap>
-              <textarea class="contact-note" placeholder="Notiz (optional): Wann kontaktiert, Antwort, etc." data-note-text>${esc(r.group_contact_note || '')}</textarea>
-              <div class="contact-note-actions">
-                <button class="contact-note-save" data-note-save data-listing="${r.id}">Speichern</button>
-                <button data-note-cancel>Abbrechen</button>
-              </div>
-            </div>
-            <button data-open-detail data-listing="${r.id}" type="button" style="font-size:.73rem;color:var(--accent);display:block;margin-top:5px;background:none;border:none;padding:0;cursor:pointer;text-align:left;font-family:inherit">Details ansehen →</button>
-          </div>
-        </div>`;
-    }).join('');
     return `<div class="tier-section">
       <div class="tier-header tier-${tier}">${tierLabels[tier]} <span style="opacity:.6;font-size:.75rem">(${items.length})</span></div>
-      ${cards}
+      <div class="rc-grid group-cards" data-tier-grid="${tier}"></div>
     </div>`;
   }).join('');
 
@@ -1426,17 +1735,47 @@ async function openGroupDetail(group) {
       <div class="invite-row">
         <span style="font-size:.8rem;color:var(--text2)">Einladungscode:</span>
         <span class="invite-code-big">${esc(group.invite_code)}</span>
-        <button class="btn-ghost" style="padding:5px 10px;font-size:.76rem" onclick="navigator.clipboard?.writeText('${esc(group.invite_code)}').then(()=>window.__toast('📋 Kopiert!'))">📋</button>
+        <button class="btn-ghost" style="padding:5px 10px;font-size:.76rem" onclick="navigator.clipboard?.writeText('${esc(group.invite_code)}').then(()=>window.__toast('📋 Kopiert!'))" aria-label="Code kopieren">${icon('copy', 'sm')}</button>
       </div>
     </div>
+
+    <div class="gd-tabs" id="gd-tabs" role="tablist">
+      <button class="gd-tab active" role="tab" data-gd-tab="ratings" aria-selected="true">Bewertungen</button>
+      <button class="gd-tab" role="tab" data-gd-tab="profile" aria-selected="false">Gruppen-Profil</button>
+    </div>
+
+    <div id="gd-panel-ratings">
     <p class="section-label">Mitglieder</p>
     <div class="members-nudge-list" style="margin-bottom:18px">${membersHtml}</div>
     ${results.length
-      ? `<p class="section-label">${memberCount} Mitglieder · ${results.length} gemeinsam bewertet</p>${tierSections}`
+      ? `<p class="section-label">${memberCount} ${memberCount === 1 ? "Mitglied" : "Mitglieder"} · ${results.length} gemeinsam bewertet</p>${tierSections}`
       : '<p style="color:var(--text2);font-size:.85rem">Noch keine Bewertungen in dieser Gruppe.</p>'}
+    </div>
+    <div id="gd-panel-profile" style="display:none"></div>
   `;
+
+  // Result cards: the same card as "Bewertet", plus every member's vote
+  const reloadGroup = () => setTimeout(() => openGroupDetail(group), 500);
+  results.forEach(r => {
+    const grid = $id('group-detail-content').querySelector(`[data-tier-grid="${r.tier}"]`);
+    if (!grid) return;
+    const listing = { ...r, contacted: r.group_contacted, contact_note: r.group_contact_note || '' };
+    grid.appendChild(buildListCard(listing, { groupId: group.id, votes: r.votes, onChange: reloadGroup }));
+  });
+
+  // Tabs: "Bewertungen" | "Gruppen-Profil" (the latter is rendered by profile.js on first open)
+  const showGroupTab = tab => {
+    $id('gd-tabs').querySelectorAll('.gd-tab').forEach(b => {
+      const on = b.dataset.gdTab === tab;
+      b.classList.toggle('active', on); b.setAttribute('aria-selected', on);
+    });
+    $id('gd-panel-ratings').style.display = tab === 'ratings' ? '' : 'none';
+    $id('gd-panel-profile').style.display = tab === 'profile' ? '' : 'none';
+    if (tab === 'profile') window.renderGroupProfile?.(group, $id('gd-panel-profile'));
+  };
+  $id('gd-tabs').querySelectorAll('.gd-tab').forEach(b => b.addEventListener('click', () => showGroupTab(b.dataset.gdTab)));
+  if (opts.tab === 'profile') showGroupTab('profile');
   window.__toast = toast;
-  window.__lb    = lb;
 
   // Wire nudge buttons
   $id('group-detail-content').querySelectorAll('[data-nudge]').forEach(btn => {
@@ -1444,169 +1783,21 @@ async function openGroupDetail(group) {
       const uid  = parseInt(btn.dataset.nudge);
       const name = btn.dataset.name;
       btn.disabled = true;
-      btn.textContent = '⏳';
+      btn.innerHTML = icon('refresh', 'sm');
       const r = await api(`/api/groups/${group.id}/nudge/${uid}`, { method: 'POST' });
       if (r.success) {
         toast(`👋 ${name} erinnert!`);
-        btn.textContent = '✓';
-        setTimeout(() => { btn.disabled = false; btn.textContent = '👋'; }, 30000);
+        btn.innerHTML = icon('check', 'sm');
+        setTimeout(() => { btn.disabled = false; btn.innerHTML = icon('send', 'sm'); }, 30000);
       } else {
         toast('❌ ' + (r.error || 'Fehler'));
-        btn.disabled = false; btn.textContent = '👋';
+        btn.disabled = false; btn.innerHTML = icon('send', 'sm');
       }
     });
   });
-
-
-  // IMPORTANT: openGroupDetail() can be called multiple times (after re-rate,
-  // contact-mark etc.). We must remove the previous click listeners before
-  // adding new ones, otherwise they accumulate and fight each other
-  // (old listeners call closeAllCardMenus() and immediately close the menu
-  // that the new listener just opened).
-  //
-  // We use an AbortController: each call aborts the previous controller,
-  // which removes all listeners registered with that signal.
-  if (window.__groupDetailAbort) {
-    window.__groupDetailAbort.abort();
-  }
-  const abortCtrl = new AbortController();
-  window.__groupDetailAbort = abortCtrl;
-  const sig = abortCtrl.signal;
-
-  const detailEl = $id('group-detail-content');
-
-  detailEl.addEventListener('click', async e => {
-    // Open the in-app detail view
-    const detailBtn = e.target.closest('[data-open-detail]');
-    if (detailBtn) {
-      e.stopPropagation();
-      const lid = parseInt(detailBtn.dataset.listing);
-      const r   = resultsById[lid];
-      if (r) detailView.open(r);
-      return;
-    }
-
-    // Open/close the menu
-    const menuToggle = e.target.closest('[data-menu-toggle]');
-    if (menuToggle) {
-      e.stopPropagation();
-      const menu = menuToggle.nextElementSibling;
-      closeAllCardMenus(menu);
-      const willOpen = menu.style.display === 'none';
-      menu.style.display = willOpen ? 'flex' : 'none';
-      if (willOpen) positionMenuNearButton(menu, menuToggle);
-      return;
-    }
-
-    // Re-rate action chosen from the menu
-    const rerateBtn = e.target.closest('[data-rerate-action]');
-    if (rerateBtn) {
-      e.stopPropagation();
-      const action = rerateBtn.dataset.rerateAction;
-      const lid    = parseInt(rerateBtn.dataset.listing);
-      const menu   = rerateBtn.closest('.card-menu');
-      menu.style.display = 'none';
-
-      if (action === 'remove') {
-        await api(`/api/listings/swipe/${lid}`, { method: 'DELETE' });
-        toast('↩ Bewertung zurückgezogen');
-      } else {
-        await api('/api/listings/swipe', { method: 'POST', body: { listingId: lid, action } });
-        const labels = { like:'💚 Like gesetzt', superlike:'⭐ Super-Like gesetzt', dislike:'✕ Abgelehnt' };
-        toast(labels[action] || '✓ Gespeichert');
-      }
-
-      // Reload results after a short delay so tiers update
-      setTimeout(() => openGroupDetail(group), 600);
-      return;
-    }
-
-    // Contact toggle chosen from the menu
-    const contactToggle = e.target.closest('[data-contact-toggle]');
-    if (contactToggle) {
-      e.stopPropagation();
-      const lid    = parseInt(contactToggle.dataset.listing);
-      const card   = detailEl.querySelector(`.group-listing-card[data-listing-id="${lid}"]`);
-      const menu   = contactToggle.closest('.card-menu');
-      const badge  = card?.querySelector('[data-contacted-badge]');
-      const isContacted = badge && badge.style.display !== 'none';
-      menu.style.display = 'none';
-
-      if (!isContacted) {
-        const r = await api('/api/contacts', { method: 'POST', body: { listingId: lid, groupId: group.id, note: '' } });
-        if (r.success) {
-          toast('📬 Als angeschrieben markiert');
-          if (badge) badge.style.display = '';
-          contactToggle.textContent = '✓ Angeschrieben (Notiz bearbeiten)';
-          card?.querySelector('[data-note-wrap]')?.classList.add('open');
-        }
-      } else {
-        card?.querySelector('[data-note-wrap]')?.classList.toggle('open');
-      }
-      return;
-    }
-
-    // Report-offline chosen from the menu
-    const reportBtn = e.target.closest('[data-report-offline]');
-    if (reportBtn) {
-      e.stopPropagation();
-      const lid  = parseInt(reportBtn.dataset.listing);
-      const menu = reportBtn.closest('.card-menu');
-      menu.style.display = 'none';
-      const card = detailEl.querySelector(`.group-listing-card[data-listing-id="${lid}"]`);
-      const titleText = card?.querySelector('.group-listing-title')?.textContent?.trim() || 'Dieses Inserat';
-      if (!confirm(`„${titleText}" als offline melden?\n\nDas Inserat wird ins Archiv verschoben und verschwindet aus der Gruppenansicht. Falls es über einen Suchagenten kam, wird dieser direkt neu durchsucht.`)) return;
-      const r = await api(`/api/listings/${lid}/report-offline`, { method: 'POST' });
-      if (r.success) {
-        toast(r.jobTriggered ? '🚫 Gemeldet – Suchagent wird neu durchsucht' : '🚫 Als offline gemeldet');
-        setTimeout(() => openGroupDetail(group), 600);
-      } else {
-        toast('❌ ' + (r.error || 'Fehler'));
-      }
-      return;
-    }
-
-    // Save note
-    const noteSave = e.target.closest('[data-note-save]');
-    if (noteSave) {
-      e.stopPropagation();
-      const lid     = parseInt(noteSave.dataset.listing);
-      const card    = detailEl.querySelector(`.group-listing-card[data-listing-id="${lid}"]`);
-      const noteVal = card?.querySelector('[data-note-text]')?.value || '';
-      await api(`/api/contacts/${lid}`, { method: 'PATCH', body: { note: noteVal, groupId: group.id } });
-      card?.querySelector('[data-note-wrap]')?.classList.remove('open');
-      const noteSpan = card?.querySelector('[data-contacted-note]');
-      if (noteSpan) noteSpan.textContent = noteVal ? ' · ' + noteVal.substring(0, 40) : '';
-      toast('✓ Notiz gespeichert');
-      return;
-    }
-
-    // Cancel note edit
-    const noteCancel = e.target.closest('[data-note-cancel]');
-    if (noteCancel) {
-      e.stopPropagation();
-      noteCancel.closest('[data-note-wrap]')?.classList.remove('open');
-      return;
-    }
-
-    // Click elsewhere inside the panel closes any open menu
-    closeAllCardMenus();
-  }, { signal: sig });
-
-  // Outside-click closes any open menu – also cleaned up via AbortController
-  document.addEventListener('click', e => {
-    if (!e.target.closest('[data-menu-toggle]') && !e.target.closest('.card-menu')) {
-      closeAllCardMenus();
-    }
-  }, { signal: sig });
 }
 
 $id('back-to-groups').addEventListener('click', () => {
-  // Clean up group-detail event listeners
-  if (window.__groupDetailAbort) {
-    window.__groupDetailAbort.abort();
-    window.__groupDetailAbort = null;
-  }
   $id('group-detail').style.display = 'none';
   $id('groups-main').style.display  = '';
   $id('group-detail-content').innerHTML = '';
@@ -1673,9 +1864,9 @@ $id('reset-all-jobs-btn').addEventListener('click', async () => {
   );
   if (!confirmed) return;
   const btn = $id('reset-all-jobs-btn');
-  btn.disabled = true; btn.textContent = '🔄 Setze zurück…';
+  btn.disabled = true; btn.innerHTML = withIcon('refresh', 'Setze zurück…');
   const r = await api('/api/jobs/reset-all', { method: 'POST' });
-  btn.disabled = false; btn.textContent = '🔄 Alle zurücksetzen';
+  btn.disabled = false; btn.innerHTML = withIcon('refresh', 'Alle zurücksetzen');
   if (r.success) {
     toast(r.message || `✓ ${r.jobCount} Suchagenten zurückgesetzt`);
     setTimeout(() => loadJobs(), 3000);
@@ -1689,7 +1880,7 @@ function buildJobCard(job) {
   div.className = 'job-card' + (job.active ? '' : ' paused');
   const status = job.last_error ? 'error' : job.active ? 'active' : 'paused';
   const statusLabel = { error:'Fehler', active:'Aktiv', paused:'Pausiert' }[status];
-  const visLabel = { global:'🌐 Alle', private:'🔒 Nur ich', group:'👥 Gruppe' }[job.visibility||'global'];
+  const visLabel = { global: withIcon('globe','Alle'), private: withIcon('lock','Nur ich'), group: withIcon('users','Gruppe') }[job.visibility||'global'];
   const lastRun = job.last_run
     ? new Date(job.last_run+'Z').toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})
     : 'noch nie';
@@ -1706,11 +1897,11 @@ function buildJobCard(job) {
         <div class="job-badges">
           <span class="job-badge platform-${esc(job.platform)}">${esc(job.platform)}</span>
           <span class="job-badge status-${status}">${statusLabel}</span>
-          <span class="job-badge" style="color:var(--text2)">${visLabel}</span>
+          <span class="job-badge job-badge-vis">${visLabel}</span>
         </div>
       </div>
     </div>
-    ${job.last_error ? `<div class="job-error">⚠ ${esc(job.last_error)}</div>` : ''}
+    ${job.last_error ? `<div class="job-error">${icon('alert', 'sm')}<span>${esc(job.last_error)}</span></div>` : ''}
     <div class="job-stats">
       <span><strong>${job.last_new??0}</strong> neue beim letzten Lauf</span>
       <span><strong>${job.total_found??0}</strong> gesamt gefunden</span>
@@ -1724,28 +1915,28 @@ function buildJobCard(job) {
       <button class="btn-ghost" style="padding:3px 8px;font-size:.72rem" data-save-iv>Speichern</button>
     </div>
     <div class="job-actions">
-      <button class="btn-run"           data-run>⟳ Jetzt abrufen</button>
-      <button class="btn-toggle ${job.active?'on':''}" data-toggle>${job.active?'⏸ Pausieren':'▶ Aktivieren'}</button>
-      <button class="btn-vis"           data-vis>🔒 Sichtbarkeit</button>
-      <button class="btn-listings"      data-listings-toggle>📋 Inserate anzeigen</button>
-      <button class="btn-reset"         data-reset>🔄 Zurücksetzen</button>
-      <button class="btn-del"           data-del>🗑 Löschen</button>
+      <button class="btn-run"           data-run>${withIcon('refresh', 'Jetzt abrufen')}</button>
+      <button class="btn-toggle ${job.active?'on':''}" data-toggle>${job.active ? withIcon('pause', 'Pausieren') : withIcon('play', 'Aktivieren')}</button>
+      <button class="btn-vis"           data-vis>${withIcon('lock', 'Sichtbarkeit')}</button>
+      <button class="btn-listings"      data-listings-toggle>${withIcon('list', 'Inserate anzeigen')}</button>
+      <button class="btn-reset"         data-reset>${withIcon('refresh', 'Zurücksetzen')}</button>
+      <button class="btn-del"           data-del>${withIcon('trash', 'Löschen')}</button>
     </div>
     <div class="job-listings-panel" style="display:none" data-listings-panel>
-      <div class="job-listings-grid listings-grid" data-listings-grid></div>
+      <div class="job-listings-grid listings-grid rc-grid" data-listings-grid></div>
     </div>
     <div class="vis-panel" style="display:none" data-vis-panel>
       <div class="vis-panel-inner">
         <span style="font-size:.78rem;color:var(--text2)">Wer sieht diese Inserate?</span>
         <div class="vis-options">
           <label class="vis-option ${(job.visibility||'global')==='global'?'active':''}">
-            <input type="radio" name="vis_${job.id}" value="global" ${(job.visibility||'global')==='global'?'checked':''} /> 🌐 Alle Nutzer
+            <input type="radio" name="vis_${job.id}" value="global" ${(job.visibility||'global')==='global'?'checked':''} /> ${withIcon('globe', 'Alle Nutzer')}
           </label>
           <label class="vis-option ${job.visibility==='private'?'active':''}">
-            <input type="radio" name="vis_${job.id}" value="private" ${job.visibility==='private'?'checked':''} /> 🔒 Nur ich
+            <input type="radio" name="vis_${job.id}" value="private" ${job.visibility==='private'?'checked':''} /> ${withIcon('lock', 'Nur ich')}
           </label>
           <label class="vis-option ${job.visibility==='group'?'active':''}">
-            <input type="radio" name="vis_${job.id}" value="group" ${job.visibility==='group'?'checked':''} /> 👥 Gruppe
+            <input type="radio" name="vis_${job.id}" value="group" ${job.visibility==='group'?'checked':''} /> ${withIcon('users', 'Gruppe')}
           </label>
         </div>
         <select class="vis-group-sel" style="${job.visibility==='group'?'':'display:none'}">
@@ -1764,9 +1955,9 @@ function buildJobCard(job) {
     if (isOpen) { panel.style.display = 'none'; return; }
 
     panel.style.display = '';
-    btn.textContent = '⏳ Lädt…';
+    btn.innerHTML = withIcon('refresh', 'Lädt…');
     const d = await api(`/api/jobs/${job.id}/listings`);
-    btn.textContent = '📋 Inserate anzeigen';
+    btn.innerHTML = withIcon('list', 'Inserate anzeigen');
     grid.innerHTML = '';
     const listings = d.listings || [];
     if (!listings.length) {
@@ -1778,10 +1969,10 @@ function buildJobCard(job) {
 
   div.querySelector('[data-run]').addEventListener('click', async () => {
     const btn = div.querySelector('[data-run]');
-    btn.disabled = true; btn.textContent = '⟳ Lädt…';
+    btn.disabled = true; btn.innerHTML = withIcon('refresh', 'Lädt…');
     const r = await api(`/api/jobs/${job.id}/run`, { method:'POST' });
-    toast(r.message || '⟳ Job gestartet');
-    btn.disabled = false; btn.textContent = '⟳ Jetzt abrufen';
+    toast(r.message || 'Job gestartet');
+    btn.disabled = false; btn.innerHTML = withIcon('refresh', 'Jetzt abrufen');
     setTimeout(() => loadJobs(), 3000);
   });
   div.querySelector('[data-reset]').addEventListener('click', async () => {
@@ -1790,14 +1981,14 @@ function buildJobCard(job) {
     );
     if (!confirmed) return;
     const btn = div.querySelector('[data-reset]');
-    btn.disabled = true; btn.textContent = '🔄 Setze zurück…';
+    btn.disabled = true; btn.innerHTML = withIcon('refresh', 'Setze zurück…');
     const r = await api(`/api/jobs/${job.id}/reset`, { method:'POST' });
     if (r.success) {
       toast(r.message || `✓ ${r.removed} Inserate entfernt, wird neu gescannt…`);
       setTimeout(() => loadJobs(), 3000);
     } else {
       toast('❌ ' + (r.error || 'Fehler'));
-      btn.disabled = false; btn.textContent = '🔄 Zurücksetzen';
+      btn.disabled = false; btn.innerHTML = withIcon('refresh', 'Zurücksetzen');
     }
   });
   div.querySelector('[data-toggle]').addEventListener('click', async () => {
@@ -1953,7 +2144,7 @@ $id('save-username-btn').addEventListener('click', async () => {
   clr('settings-username-error','settings-username-ok');
   const d = await api('/api/user/username', { method:'PUT', body:{ username:$id('settings-username').value.trim() } });
   if (d.error) return setErr('settings-username-error', d.error);
-  $id('nav-username').textContent = d.username;
+  setNavUser(d.username);
   $id('settings-display-name').textContent = d.username;
   $id('settings-avatar').textContent = d.username.charAt(0).toUpperCase();
   setOk('settings-username-ok','✓ Gespeichert'); toast('✅ Username geändert');
@@ -2048,7 +2239,7 @@ async function updatePushButtonState() {
   const reg = await navigator.serviceWorker.getRegistration().catch(()=>null);
   const sub = reg ? await reg.pushManager.getSubscription().catch(()=>null) : null;
   if (sub) {
-    txt.textContent = '✓ Aktiviert'; btn.textContent = 'Deaktivieren';
+    txt.textContent = 'Aktiviert'; btn.textContent = 'Deaktivieren';
   } else {
     txt.textContent = 'Nicht aktiviert'; btn.textContent = 'Aktivieren';
   }
@@ -2163,8 +2354,8 @@ $id('admin-users-btn')?.addEventListener('click', async () => {
       </div>
       <div class="admin-user-actions">
         ${!u.is_admin
-          ? `<button class="btn-ghost" style="font-size:.75rem;padding:4px 10px" data-promote="${u.id}">↑ Admin machen</button>`
-          : `<button class="btn-ghost" style="font-size:.75rem;padding:4px 10px;color:var(--dislike)" data-demote="${u.id}">↓ Entfernen</button>`}
+          ? `<button class="btn-ghost" style="font-size:.75rem;padding:4px 10px" data-promote="${u.id}">Admin machen</button>`
+          : `<button class="btn-ghost" style="font-size:.75rem;padding:4px 10px;color:var(--dislike)" data-demote="${u.id}">Admin-Rechte entfernen</button>`}
       </div>`;
 
     row.querySelector('[data-promote]')?.addEventListener('click', async () => {
@@ -2203,6 +2394,8 @@ async function openSharedListingFromUrl() {
   detailView.open(d.listing, { fromSwipe: true });
 }
 
+// Applicant profile page, message generator and group profile tab live in profile.js
+
 // ══════════════════════════════════════════════════════════
 //  INIT
 // ══════════════════════════════════════════════════════════
@@ -2210,7 +2403,7 @@ async function openSharedListingFromUrl() {
   const me = await api('/api/auth/me');
   if (me.loggedIn) {
     state.user = { userId: me.id, username: me.username };
-    $id('nav-username').textContent = me.username;
+    setNavUser(me.username);
     showScreen('app-screen');
     await loadGroups();
     loadSwipeQueue();

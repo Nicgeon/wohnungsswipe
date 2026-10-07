@@ -4,12 +4,47 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>WohnungsSwipe</title>
+  <meta name="theme-color" content="#0f0f11" id="meta-theme-color" />
+  <link rel="icon" type="image/svg+xml" href="/brand/favicon.svg" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/brand/favicon-32.png" />
+  <link rel="icon" href="/favicon.ico" sizes="48x48" />
+  <link rel="apple-touch-icon" href="/brand/apple-touch-icon.png" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <script>
+    // Apply the saved theme before first paint (no dark→light flash). 'auto' follows the OS.
+    (function () {
+      try {
+        var m = localStorage.getItem('ws-theme') || 'dark';
+        var sysDark = window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches;
+        var t = m === 'auto' ? (sysDark ? 'dark' : 'light') : m;
+        document.documentElement.dataset.theme = t;
+        document.getElementById('meta-theme-color').setAttribute('content', t === 'light' ? '#f6f2ea' : '#0f0f11');
+      } catch (e) {}
+    })();
+  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,700&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/css/style.css" />
+  <link rel="stylesheet" href="/css/profile.css" />
 </head>
 <body>
+
+<!-- Logo mark (house-shaped swipe card with a heart cut-out); colour via currentColor -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs>
+    <symbol id="ws-mark" viewBox="0 0 64 64">
+      <mask id="ws-mark-cut" maskUnits="userSpaceOnUse" x="-4" y="-4" width="72" height="72">
+        <rect x="-4" y="-4" width="72" height="72" fill="#fff"/>
+        <path d="M32 50.5 s-11-6.6-11-14.4 a6.2 6.2 0 0 1 11-3.7 a6.2 6.2 0 0 1 11 3.7 C43 43.9 32 50.5 32 50.5 z" fill="#000"/>
+      </mask>
+      <g mask="url(#ws-mark-cut)" fill="currentColor" stroke="currentColor" stroke-width="3" stroke-linejoin="round">
+        <path d="M32 5 L55.5 22 V54 a5 5 0 0 1 -5 5 H13.5 a5 5 0 0 1 -5 -5 V22 Z" transform="rotate(-8 32 36) translate(-5 0)" fill-opacity=".38" stroke-opacity=".38"/>
+        <path d="M32 5 L55.5 22 V54 a5 5 0 0 1 -5 5 H13.5 a5 5 0 0 1 -5 -5 V22 Z"/>
+      </g>
+    </symbol>
+  </defs>
+</svg>
 
 <!-- ══ AUTH ═══════════════════════════════════════════════ -->
 <div id="auth-screen" class="screen active">
@@ -20,8 +55,8 @@
   </div>
   <div class="auth-container">
     <div class="auth-logo">
-      <span class="logo-icon">🏠</span>
-      <h1 class="logo-text">WohnungsSwipe</h1>
+      <svg class="logo-mark logo-icon" viewBox="0 0 64 64" role="img" aria-label="WohnungsSwipe"><use href="#ws-mark"/></svg>
+      <h1 class="logo-text">Wohnungs<b>Swipe</b></h1>
       <p class="logo-sub">Wohnungssuche, neu gedacht.</p>
     </div>
     <div class="auth-tabs">
@@ -65,7 +100,7 @@
         <input type="email" id="forgot-email" placeholder="deine@email.de" />
       </div>
       <button class="btn-primary" id="forgot-submit">Reset-Link senden</button>
-      <button class="btn-link" id="hide-forgot">← Zurück zum Login</button>
+      <button class="btn-link" id="hide-forgot">Zurück zum Login</button>
       <p class="form-success" id="forgot-ok"></p>
       <p class="form-error" id="forgot-error"></p>
     </div>
@@ -75,38 +110,66 @@
 <!-- ══ APP ════════════════════════════════════════════════ -->
 <div id="app-screen" class="screen">
   <nav class="app-nav">
-    <div class="nav-logo">🏠 <span>WohnungsSwipe</span></div>
+    <div class="nav-logo"><svg class="logo-mark" viewBox="0 0 64 64" aria-hidden="true"><use href="#ws-mark"/></svg><span>Wohnungs<b>Swipe</b></span></div>
     <div class="nav-actions">
-      <span id="nav-username" class="nav-user"></span>
-      <button id="logout-btn" class="btn-ghost">Logout</button>
+      <span class="swipe-counter" id="swipe-counter"><span id="remaining-count">0</span> übrig</span>
+      <button id="account-btn" class="nav-avatar" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="account-menu" aria-label="Konto-Menü"><span id="nav-avatar">?</span></button>
+    </div>
+    <div id="account-menu" class="account-menu" role="menu" hidden>
+      <div class="acct-head"><span class="acct-av" id="acct-av">?</span><span class="acct-who"><span class="acct-name" id="nav-username"></span><span class="acct-mail" id="nav-email"></span></span></div>
+      <button type="button" role="menuitem" class="dd-item" data-acct-goto="profile"><span class="dd-tile i" data-icon="profile"></span><span class="dd-text"><b>Bewerber-Profil</b><span id="acct-profile-sub">Angaben für Nachrichten an Vermieter</span></span></button>
+      <button type="button" role="menuitem" class="dd-item" data-acct-goto="settings"><span class="dd-tile i" data-icon="sliders"></span><span class="dd-text"><b>Konto &amp; Einstellungen</b><span>Benachrichtigungen, Passwort</span></span></button>
+      <div class="acct-theme">
+        <span class="acct-label">Darstellung</span>
+        <div class="theme-seg" role="group" aria-label="Darstellung">
+          <button type="button" data-theme-mode="auto"  aria-pressed="false"><span class="i" data-icon="auto"></span>Auto</button>
+          <button type="button" data-theme-mode="light" aria-pressed="false"><span class="i" data-icon="sun"></span>Hell</button>
+          <button type="button" data-theme-mode="dark"  aria-pressed="false"><span class="i" data-icon="moon"></span>Dunkel</button>
+        </div>
+      </div>
+      <button type="button" role="menuitem" class="dd-item danger" id="logout-btn"><span class="dd-tile i" data-icon="logout"></span><span class="dd-text"><b>Ausloggen</b></span></button>
     </div>
   </nav>
 
-  <div class="tab-bar">
-    <button class="tab-nav active" data-view="swipe">   <span class="tab-icon">🃏</span><span>Swipen</span></button>
-    <button class="tab-nav"        data-view="rated">   <span class="tab-icon">💚</span><span>Bewertet</span></button>
-    <button class="tab-nav"        data-view="groups">  <span class="tab-icon">👥</span><span>Gruppen</span></button>
-    <button class="tab-nav"        data-view="more">    <span class="tab-icon">⋯</span><span>Mehr</span></button>
+  <div class="tab-bar" role="navigation" aria-label="Hauptnavigation">
+    <button class="tab-nav active" data-view="swipe">   <span class="tab-icon i" data-icon="cards"></span><span>Swipen</span></button>
+    <button class="tab-nav"        data-view="rated">   <span class="tab-icon i" data-icon="bookmark"></span><span>Bewertet</span></button>
+    <button class="tab-nav"        data-view="groups">  <span class="tab-icon i" data-icon="users"></span><span>Gruppen</span></button>
+    <span class="nav-menu" id="nav-inserate-wrap">
+      <button class="tab-nav" id="nav-inserate" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="inserate-menu"><span class="tab-icon i" data-icon="agent"></span><span>Inserate</span><span class="i sm nav-car" data-icon="chevdown"></span></button>
+      <div class="nav-dd" id="inserate-menu" role="menu" hidden>
+        <button type="button" role="menuitem" class="dd-item" data-goto="add"><span class="dd-tile i" data-icon="addbox"></span><span class="dd-text"><b>Inserat hinzufügen</b><span>Link einfügen und direkt bewerten</span></span></button>
+        <button type="button" role="menuitem" class="dd-item" data-goto="jobs"><span class="dd-tile i" data-icon="agent"></span><span class="dd-text"><b>Suchagenten</b><span>Suchen automatisch neue Inserate</span></span><span class="dd-pill ok" data-meta="agents" hidden></span></button>
+        <button type="button" role="menuitem" class="dd-item" data-goto="archive"><span class="dd-tile i" data-icon="archive"></span><span class="dd-text"><b>Archiv</b><span>Inserate, die offline gegangen sind</span></span><span class="dd-pill" data-meta="archive" hidden></span></button>
+      </div>
+    </span>
+    <button class="tab-nav"        data-view="more">    <span class="tab-icon i" data-icon="grid"></span><span>Mehr</span></button>
   </div>
 
   <!-- ── SWIPE ─────────────────────────────────────── -->
   <div id="view-swipe" class="view active">
-    <div class="swipe-header">
-      <div class="swipe-counter"><span id="remaining-count">0</span> übrig</div>
-    </div>
-    <div class="card-stack" id="card-stack">
-      <div class="empty-state" id="empty-swipe">
-        <div class="empty-icon">🏘️</div>
-        <p>Keine Inserate mehr.</p>
-        <p class="empty-sub">Füge welche hinzu oder richte einen Suchagenten ein.</p>
+    <div class="swipe-layout">
+      <div class="swipe-main">
+        <div class="card-stack" id="card-stack">
+          <div class="empty-state" id="empty-swipe">
+            <div class="empty-icon i" data-icon="cards"></div>
+            <p>Keine Inserate mehr.</p>
+            <p class="empty-sub">Füge welche hinzu oder richte einen Suchagenten ein.</p>
+          </div>
+        </div>
+        <div class="swipe-actions" id="swipe-actions" style="display:none">
+          <button class="action-btn-mini undo"  id="btn-undo"     title="Letzte Aktion zurücknehmen" aria-label="Rückgängig" disabled><span class="i" data-icon="undo"></span></button>
+          <button class="action-btn dislike"    id="btn-dislike"  title="Nein (←)" aria-label="Nein"><span class="i lg" data-icon="x"></span></button>
+          <button class="action-btn superlike"  id="btn-superlike" title="Super! (↑)" aria-label="Super-Like"><span class="i lg" data-icon="star"></span></button>
+          <button class="action-btn like"       id="btn-like"     title="Ja! (→)" aria-label="Ja"><span class="i lg" data-icon="heart"></span></button>
+          <button class="action-btn-mini skip"  id="btn-skip"     title="Überspringen – später nochmal anzeigen" aria-label="Überspringen"><span class="i" data-icon="skip"></span></button>
+        </div>
+        <div class="swipe-kbd" id="swipe-kbd" aria-hidden="true">
+          <span><kbd>←</kbd>Nein</span><span><kbd>↑</kbd>Super</span><span><kbd>→</kbd>Ja</span><span><kbd>↓</kbd>Später</span><span><kbd>Z</kbd>Rückgängig</span>
+        </div>
       </div>
-    </div>
-    <div class="swipe-actions" id="swipe-actions" style="display:none">
-      <button class="action-btn-mini undo"  id="btn-undo"     title="Letzte Aktion zurücknehmen" disabled>↩</button>
-      <button class="action-btn dislike"    id="btn-dislike"  title="Nein (←)">✕</button>
-      <button class="action-btn superlike"  id="btn-superlike" title="Super! (↑)">⭐</button>
-      <button class="action-btn like"       id="btn-like"     title="Ja! (→)">♥</button>
-      <button class="action-btn-mini skip"  id="btn-skip"     title="Überspringen – später nochmal anzeigen">⏭</button>
+      <!-- Desktop only: quick view of the top listing (filled by renderQuickView) -->
+      <aside class="swipe-quick" id="swipe-quick" aria-label="Schnellansicht"></aside>
     </div>
   </div>
 
@@ -123,9 +186,9 @@
         <div class="field-group">
           <label>Sichtbarkeit</label>
           <select id="add-visibility">
-            <option value="global">🌐 Alle Nutzer sehen dieses Inserat</option>
-            <option value="private">🔒 Nur ich (privat)</option>
-            <option value="group">👥 Bestimmte Gruppe</option>
+            <option value="global">Alle Nutzer sehen dieses Inserat</option>
+            <option value="private">Nur ich (privat)</option>
+            <option value="group">Bestimmte Gruppe</option>
           </select>
         </div>
         <div id="add-visibility-group-row" class="field-group" style="display:none">
@@ -160,9 +223,9 @@
           <p class="section-label" style="margin-bottom:0">Meine hinzugefügten Inserate</p>
         </div>
       </div>
-      <div id="my-added-list" class="listings-grid"></div>
+      <div id="my-added-list" class="listings-grid rc-grid"></div>
       <div id="my-added-empty" class="empty-state" style="display:none">
-        <div class="empty-icon">➕</div>
+        <div class="empty-icon i" data-icon="addbox"></div>
         <p>Du hast noch keine Inserate manuell hinzugefügt.</p>
       </div>
     </div>
@@ -171,20 +234,44 @@
   <!-- ── RATED ─────────────────────────────────────── -->
   <div id="view-rated" class="view">
     <div class="view-content">
-      <div class="rated-header">
-        <h2 class="view-title">Meine Bewertungen</h2>
-        <div class="rated-filter" id="rated-filter">
-          <button class="filter-btn active" data-filter="all">Alle</button>
-          <button class="filter-btn" data-filter="like">♥ Likes</button>
-          <button class="filter-btn" data-filter="superlike">⭐ Super</button>
-          <button class="filter-btn" data-filter="dislike">✕ Nein</button>
+      <div class="rated-head">
+        <div class="rated-titles">
+          <h2 class="view-title">Meine Bewertungen</h2>
+          <p class="rated-sub" id="rated-sub">&nbsp;</p>
+        </div>
+        <div class="rated-ctl">
+          <div class="rated-seg" id="rated-filter" role="group" aria-label="Filter">
+            <button class="filter-btn active" data-filter="all" type="button">Alle <span class="rf-n" data-count="all">0</span></button>
+            <button class="filter-btn" data-filter="like" type="button" aria-label="Likes"><span class="i rf-like" data-icon="heart"></span><span class="rf-label">Likes</span> <span class="rf-n" data-count="like">0</span></button>
+            <button class="filter-btn" data-filter="superlike" type="button" aria-label="Super-Likes"><span class="i rf-super" data-icon="star"></span><span class="rf-label">Super</span> <span class="rf-n" data-count="superlike">0</span></button>
+            <button class="filter-btn" data-filter="dislike" type="button" aria-label="Nein"><span class="i rf-no" data-icon="x"></span><span class="rf-label">Nein</span> <span class="rf-n" data-count="dislike">0</span></button>
+          </div>
+          <div class="rated-tools">
+            <label class="rated-sort"><span class="i sm" data-icon="sort"></span>
+              <select id="rated-sort" aria-label="Sortierung">
+                <option value="recent">Zuletzt bewertet</option>
+                <option value="oldest">Älteste zuerst</option>
+                <option value="price-asc">Preis aufsteigend</option>
+                <option value="price-desc">Preis absteigend</option>
+              </select>
+            </label>
+            <button class="rated-tool" id="rated-select-toggle" type="button"><span class="i sm" data-icon="check"></span>Auswählen</button>
+          </div>
         </div>
       </div>
-      <div id="rated-list" class="listings-grid"></div>
+      <div id="rated-list" class="listings-grid rc-grid"></div>
       <div id="rated-empty" class="empty-state" style="display:none">
-        <div class="empty-icon">💔</div><p>Keine Bewertungen.</p>
+        <div class="empty-icon i" data-icon="bookmark"></div><p>Keine Bewertungen.</p>
       </div>
     </div>
+  </div>
+
+  <!-- Bulk bar for "Auswählen" mode in Meine Bewertungen -->
+  <div class="rated-bulk" id="rated-bulk-bar" hidden>
+    <div class="rb-info"><strong id="rated-bulk-count">0 ausgewählt</strong><span>Inserate bleiben bestehen und erscheinen wieder beim Swipen</span></div>
+    <button class="rb-btn" id="rated-select-all-btn" type="button">Alle auswählen</button>
+    <button class="rb-btn danger" id="rated-delete-selected-btn" type="button" disabled><span class="i sm" data-icon="trash"></span><span id="rated-delete-label">Entfernen</span></button>
+    <button class="rb-btn primary" id="rated-select-done" type="button">Fertig</button>
   </div>
 
   <!-- ── GROUPS ────────────────────────────────────── -->
@@ -200,7 +287,7 @@
         <div id="groups-list" class="groups-grid"></div>
       </div>
       <div id="group-detail" style="display:none">
-        <button class="btn-ghost back-btn" id="back-to-groups">← Zurück</button>
+        <button class="btn-ghost back-btn" id="back-to-groups"><span class="i sm" data-icon="back"></span>Zurück</button>
         <div id="group-detail-content"></div>
       </div>
     </div>
@@ -210,40 +297,98 @@
   <div id="view-more" class="view">
     <div class="view-content">
       <h2 class="view-title">Mehr</h2>
-      <p class="view-subtitle">Weitere Bereiche der App.</p>
-      <div class="more-menu">
-        <button class="more-menu-row" data-goto="add">
-          <span class="more-menu-icon">➕</span>
-          <span class="more-menu-text">
-            <span class="more-menu-title">Inserat hinzufügen</span>
-            <span class="more-menu-sub">Link direkt einfügen und bewerten</span>
-          </span>
-          <span class="more-menu-arrow">›</span>
+      <p class="view-subtitle">Dein Profil und deine Suche an einem Ort.</p>
+
+      <div class="mh-group">Ich</div>
+      <div class="mh-list">
+        <button class="mh-row" data-goto="profile">
+          <span class="mh-tile i" data-icon="profile"></span>
+          <span class="mh-text"><b>Bewerber-Profil</b><span id="mh-profile-sub">Angaben für Nachrichten an Vermieter</span>
+            <span class="mh-bar" id="mh-profile-bar" hidden><i></i></span></span>
+          <span class="mh-chev i sm" data-icon="next"></span>
         </button>
-        <button class="more-menu-row" data-goto="jobs">
-          <span class="more-menu-icon">📡</span>
-          <span class="more-menu-text">
-            <span class="more-menu-title">Suchagenten</span>
-            <span class="more-menu-sub">Automatisch neue Inserate finden</span>
-          </span>
-          <span class="more-menu-arrow">›</span>
+        <button class="mh-row" data-goto="settings">
+          <span class="mh-tile i" data-icon="sliders"></span>
+          <span class="mh-text"><b>Konto &amp; Einstellungen</b><span>Benachrichtigungen, Statistiken, Passwort</span></span>
+          <span class="mh-chev i sm" data-icon="next"></span>
         </button>
-        <button class="more-menu-row" data-goto="archive">
-          <span class="more-menu-icon">🗃️</span>
-          <span class="more-menu-text">
-            <span class="more-menu-title">Archiv</span>
-            <span class="more-menu-sub">Offline gegangene Inserate</span>
-          </span>
-          <span class="more-menu-arrow">›</span>
+      </div>
+
+      <div class="mh-group">Wohnungssuche</div>
+      <div class="mh-list">
+        <button class="mh-row" data-goto="add">
+          <span class="mh-tile i" data-icon="addbox"></span>
+          <span class="mh-text"><b>Inserat hinzufügen</b><span>Link einfügen und direkt bewerten</span></span>
+          <span class="mh-chev i sm" data-icon="next"></span>
         </button>
-        <button class="more-menu-row" data-goto="settings">
-          <span class="more-menu-icon">⚙️</span>
-          <span class="more-menu-text">
-            <span class="more-menu-title">Profil</span>
-            <span class="more-menu-sub">Account, Statistiken, Benachrichtigungen</span>
-          </span>
-          <span class="more-menu-arrow">›</span>
+        <button class="mh-row" data-goto="jobs">
+          <span class="mh-tile i" data-icon="agent"></span>
+          <span class="mh-text"><b>Suchagenten</b><span>Suchen automatisch neue Inserate</span></span>
+          <span class="dd-pill ok" data-meta="agents" hidden></span>
+          <span class="mh-chev i sm" data-icon="next"></span>
         </button>
+        <button class="mh-row" data-goto="archive">
+          <span class="mh-tile i" data-icon="archive"></span>
+          <span class="mh-text"><b>Archiv</b><span>Inserate, die offline gegangen sind</span></span>
+          <span class="dd-pill" data-meta="archive" hidden></span>
+          <span class="mh-chev i sm" data-icon="next"></span>
+        </button>
+      </div>
+
+      <div class="mh-group">Darstellung</div>
+      <div class="theme-seg theme-seg-lg" role="group" aria-label="Darstellung">
+        <button type="button" data-theme-mode="auto"  aria-pressed="false"><span class="i" data-icon="auto"></span>Auto</button>
+        <button type="button" data-theme-mode="light" aria-pressed="false"><span class="i" data-icon="sun"></span>Hell</button>
+        <button type="button" data-theme-mode="dark"  aria-pressed="false"><span class="i" data-icon="moon"></span>Dunkel</button>
+      </div>
+
+      <button class="mh-logout" id="mh-logout-btn" type="button"><span class="i sm" data-icon="logout"></span>Ausloggen</button>
+    </div>
+  </div>
+
+  <!-- ── BEWERBER-PROFIL ───────────────────────────── -->
+  <div id="view-profile" class="view">
+    <div class="view-content pf-page">
+      <div class="pf-header">
+        <button class="pf-back" id="pf-back" type="button" aria-label="Zurück">‹</button>
+        <div class="pf-header-text">
+          <div class="pf-crumb">Ich › Bewerber-Profil</div>
+          <h2 class="view-title" id="pf-title">Bewerber-Profil</h2>
+          <div class="pf-status" id="pf-status" data-state="saved" role="status" aria-live="polite">
+            <span class="pf-status-dot"></span><span id="pf-status-text">Alle Änderungen gespeichert</span>
+          </div>
+        </div>
+        <div class="pf-switch" id="pf-switch" style="display:none"></div>
+      </div>
+
+      <div class="pf-layout" id="pf-layout" data-mode="hub">
+        <div class="pf-col-nav">
+          <div class="pf-hero" id="pf-hero"></div>
+          <nav class="pf-nav" id="pf-nav" aria-label="Profil-Abschnitte"></nav>
+        </div>
+        <div class="pf-col-editor">
+          <div class="pf-editor" id="pf-editor"></div>
+        </div>
+        <div class="pf-col-aside">
+          <div class="pf-card" id="pf-group-card" style="display:none">
+            <span class="pf-label">Aus deinem Profil</span>
+            <p class="pf-hint" style="margin:0 0 12px">Übernimm deine Angaben (Wohnform, Einzug, Haustiere, Unterlagen, Kontakt …) ins Gruppenprofil. Bereits ausgefüllte Felder bleiben unverändert.</p>
+            <button type="button" class="btn-secondary" id="pf-adopt">Aus meinem Profil übernehmen</button>
+            <button type="button" class="pf-link" id="pf-adopt-all">Alles überschreiben</button>
+          </div>
+          <div class="pf-card">
+            <div class="pf-label-row">
+              <span class="pf-label">So liest sich deine Nachricht</span>
+              <span class="pf-live">Live</span>
+            </div>
+            <div class="pf-preview" id="pf-preview">—</div>
+            <button type="button" class="btn-primary pf-try" id="pf-try">Nachricht ausprobieren</button>
+          </div>
+          <div class="pf-card" id="pf-missing-card" style="display:none">
+            <span class="pf-label">Noch offen</span>
+            <div class="pf-missing" id="pf-missing"></div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -251,7 +396,7 @@
   <!-- ── JOBS (Suchagenten) ─────────────────────────── -->
   <div id="view-jobs" class="view">
     <div class="view-content">
-      <button class="btn-ghost back-btn" data-back-to-more>← Mehr</button>
+      <button class="btn-ghost back-btn" data-back-to-more><span class="i sm" data-icon="back"></span>Zurück</button>
       <h2 class="view-title">Suchagenten</h2>
       <p class="view-subtitle">Suchergebnis-URL eintragen – neue Inserate werden automatisch geladen.</p>
       <div class="card-form">
@@ -270,9 +415,9 @@
         <div class="field-group">
           <label>Sichtbarkeit</label>
           <select id="job-visibility">
-            <option value="global">🌐 Alle Nutzer sehen diese Inserate</option>
-            <option value="private">🔒 Nur ich (privat)</option>
-            <option value="group">👥 Bestimmte Gruppe</option>
+            <option value="global">Alle Nutzer sehen diese Inserate</option>
+            <option value="private">Nur ich (privat)</option>
+            <option value="group">Bestimmte Gruppe</option>
           </select>
         </div>
         <div id="job-visibility-group-row" class="field-group" style="display:none">
@@ -301,11 +446,11 @@
 
       <div class="jobs-list-header" id="jobs-list-header" style="display:none">
         <p class="section-label" style="margin-bottom:0">Meine Suchagenten</p>
-        <button class="btn-ghost" id="reset-all-jobs-btn" style="font-size:.78rem;padding:6px 12px">🔄 Alle zurücksetzen</button>
+        <button class="btn-ghost" id="reset-all-jobs-btn" style="font-size:.78rem;padding:6px 12px"><span class="i sm" data-icon="refresh"></span>Alle zurücksetzen</button>
       </div>
       <div id="jobs-list"></div>
       <div id="jobs-empty" class="empty-state" style="display:none">
-        <div class="empty-icon">📡</div>
+        <div class="empty-icon i" data-icon="agent"></div>
         <p>Noch keine Suchagenten.</p>
         <p class="empty-sub">Trage oben eine Suchergebnis-URL ein.</p>
       </div>
@@ -316,7 +461,7 @@
   <!-- ── ARCHIVE ──────────────────────────────────────── -->
   <div id="view-archive" class="view">
     <div class="view-content">
-      <button class="btn-ghost back-btn" data-back-to-more>← Mehr</button>
+      <button class="btn-ghost back-btn" data-back-to-more><span class="i sm" data-icon="back"></span>Zurück</button>
       <div class="rated-header">
         <div>
           <h2 class="view-title">Archiv</h2>
@@ -324,15 +469,15 @@
         </div>
         <div class="rated-filter" id="archive-filter">
           <button class="filter-btn active" data-filter="all">Alle</button>
-          <button class="filter-btn" data-filter="like">♥ Likes</button>
-          <button class="filter-btn" data-filter="superlike">⭐ Super</button>
-          <button class="filter-btn" data-filter="dislike">✕ Nein</button>
-          <button class="filter-btn" data-filter="contacted">📬 Angeschrieben</button>
+          <button class="filter-btn" data-filter="like"><span class="i sm" data-icon="heart"></span>Likes</button>
+          <button class="filter-btn" data-filter="superlike"><span class="i sm" data-icon="star"></span>Super</button>
+          <button class="filter-btn" data-filter="dislike"><span class="i sm" data-icon="x"></span>Nein</button>
+          <button class="filter-btn" data-filter="contacted"><span class="i sm" data-icon="mail"></span>Angeschrieben</button>
         </div>
       </div>
-      <div id="archive-list" class="listings-grid"></div>
+      <div id="archive-list" class="listings-grid rc-grid"></div>
       <div id="archive-empty" class="empty-state" style="display:none">
-        <div class="empty-icon">🗃️</div>
+        <div class="empty-icon i" data-icon="archive"></div>
         <p>Noch nichts im Archiv.</p>
         <p class="empty-sub">Offline gegangene Inserate landen hier automatisch.</p>
       </div>
@@ -342,8 +487,8 @@
   <!-- ── SETTINGS ──────────────────────────────────── -->
   <div id="view-settings" class="view">
     <div class="view-content">
-      <button class="btn-ghost back-btn" data-back-to-more>← Mehr</button>
-      <h2 class="view-title">Profil</h2>
+      <button class="btn-ghost back-btn" data-back-to-more><span class="i sm" data-icon="back"></span>Zurück</button>
+      <h2 class="view-title">Konto &amp; Einstellungen</h2>
 
       <!-- Account card -->
       <div class="settings-card">
@@ -356,6 +501,10 @@
           </div>
         </div>
       </div>
+
+      <!-- ══ Kategorie: Konto ══ -->
+      <details class="settings-cat">
+        <summary><span class="i " data-icon="user"></span>Konto &amp; Statistiken</summary>
 
       <!-- Stats -->
       <div class="settings-section">
@@ -415,13 +564,19 @@
       </div>
 
       <!-- Notifications -->
+      </details>
+
+      <!-- ══ Kategorie: Benachrichtigungen ══ -->
+      <details class="settings-cat">
+        <summary><span class="i " data-icon="bell"></span>Benachrichtigungen</summary>
+
       <div class="settings-section">
         <div class="section-label">Benachrichtigungen – Kanäle</div>
 
         <!-- Browser Push -->
         <div class="notify-row">
           <div class="notify-info">
-            <span class="notify-label">🔔 Browser-Push</span>
+            <span class="notify-label"><span class="i sm" data-icon="bell"></span>Browser-Push</span>
             <span class="notify-sub" id="push-status-text">Nicht aktiviert</span>
           </div>
           <button class="btn-secondary compact" id="push-toggle-btn">Aktivieren</button>
@@ -430,7 +585,7 @@
         <!-- ntfy -->
         <div class="notify-row" style="align-items:flex-start;flex-direction:column;gap:8px">
           <div class="notify-info">
-            <span class="notify-label">📲 ntfy (Mobile Push)</span>
+            <span class="notify-label"><span class="i sm" data-icon="phone"></span>ntfy (Mobile Push)</span>
             <span class="notify-sub">Topic aus der ntfy-App eintragen</span>
           </div>
           <div class="inline-row" style="width:100%">
@@ -453,13 +608,13 @@
         <!-- Email -->
         <div class="toggle-list" style="margin-top:4px">
           <label class="toggle-row">
-            <span>📧 E-Mail-Versand grundsätzlich aktiv</span>
+            <span class="notify-label"><span class="i sm" data-icon="mail"></span>E-Mail-Versand grundsätzlich aktiv</span>
             <input type="checkbox" id="notify-email" class="toggle-cb" />
             <span class="toggle-switch"></span>
           </label>
         </div>
         <p class="notify-hint" id="email-config-hint" style="display:none">
-          ⚠️ E-Mail-Versand ist nicht konfiguriert. Setze die SMTP_* Umgebungsvariablen im Docker-Container.
+          <span class="i sm" data-icon="alert"></span>E-Mail-Versand ist nicht konfiguriert. Setze die SMTP_* Umgebungsvariablen im Docker-Container.
         </p>
       </div>
 
@@ -469,30 +624,30 @@
         <div class="notify-matrix" id="notify-matrix">
           <div class="notify-matrix-header">
             <span></span>
-            <span title="E-Mail">📧</span>
-            <span title="Browser-Push">🔔</span>
-            <span title="ntfy">📲</span>
+            <span title="E-Mail"><span class="i sm" data-icon="mail"></span></span>
+            <span title="Browser-Push"><span class="i sm" data-icon="bell"></span></span>
+            <span title="ntfy"><span class="i sm" data-icon="phone"></span></span>
           </div>
           <div class="notify-matrix-row" data-type="match">
-            <span class="notify-matrix-label">🎉 Match in Gruppe</span>
+            <span class="notify-matrix-label">Match in Gruppe</span>
             <input type="checkbox" data-channel="email" />
             <input type="checkbox" data-channel="push" />
             <input type="checkbox" data-channel="ntfy" />
           </div>
           <div class="notify-matrix-row" data-type="new">
-            <span class="notify-matrix-label">📡 Neue Inserate</span>
+            <span class="notify-matrix-label">Neue Inserate</span>
             <input type="checkbox" data-channel="email" />
             <input type="checkbox" data-channel="push" />
             <input type="checkbox" data-channel="ntfy" />
           </div>
           <div class="notify-matrix-row" data-type="nudge">
-            <span class="notify-matrix-label">👋 Anstupsen</span>
+            <span class="notify-matrix-label">Anstupsen</span>
             <input type="checkbox" data-channel="email" />
             <input type="checkbox" data-channel="push" />
             <input type="checkbox" data-channel="ntfy" />
           </div>
           <div class="notify-matrix-row" data-type="change">
-            <span class="notify-matrix-label">🔄 Inserat-Änderungen</span>
+            <span class="notify-matrix-label">Inserat-Änderungen</span>
             <input type="checkbox" data-channel="email" />
             <input type="checkbox" data-channel="push" />
             <input type="checkbox" data-channel="ntfy" />
@@ -509,7 +664,7 @@
 
         <!-- Digest interval -->
         <div class="digest-row" id="digest-row">
-          <span class="notify-label">⏱ Sammelbenachrichtigung (Digest)</span>
+          <span class="notify-label">Sammelbenachrichtigung (Digest)</span>
           <span class="notify-sub">Mehrere Treffer werden gesammelt und zusammen verschickt</span>
           <div class="digest-options" id="digest-options">
             <button class="digest-btn active" data-interval="instant">Sofort</button>
@@ -520,7 +675,7 @@
           </div>
         </div>
         <div class="threshold-row" style="margin-top:10px">
-          <span class="notify-label">🔢 Schwellenwert</span>
+          <span class="notify-label">Schwellenwert</span>
           <span class="notify-sub">Benachrichtige mich erst ab dieser Anzahl neuer Inserate</span>
           <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
             <input type="number" id="notify-threshold" min="1" max="100" value="1"
@@ -531,11 +686,13 @@
         <p class="form-success" id="notify-ok"></p>
       </div>
 
+      </details>
+
       <!-- Admin section (only visible for admins) -->
       <div class="settings-section" id="admin-section" style="display:none">
-        <div class="section-label">⚙️ Administration</div>
+        <div class="section-label">Administration</div>
         <p style="font-size:var(--fs-small);color:var(--text2);margin-bottom:10px">Du bist Administrator. Du siehst alle Suchagenten und kannst Nutzerrechte verwalten.</p>
-        <button class="btn-secondary" id="admin-users-btn" style="width:100%;margin-bottom:8px">👥 Nutzerverwaltung</button>
+        <button class="btn-secondary" id="admin-users-btn" style="width:100%;margin-bottom:8px"><span class="i sm" data-icon="users"></span>Nutzerverwaltung</button>
         <div id="admin-users-panel" style="display:none">
           <div id="admin-users-list"></div>
         </div>
@@ -549,9 +706,9 @@
 
 <!-- ══ LIGHTBOX ═══════════════════════════════════════════ -->
 <div id="lightbox" class="lightbox" style="display:none">
-  <button class="lb-close" id="lb-close">✕</button>
-  <button class="lb-arrow lb-prev" id="lb-prev">‹</button>
-  <button class="lb-arrow lb-next" id="lb-next">›</button>
+  <button class="lb-close" id="lb-close" aria-label="Schließen"><span class="i" data-icon="x"></span></button>
+  <button class="lb-arrow lb-prev" id="lb-prev" aria-label="Zurück"><span class="i" data-icon="back"></span></button>
+  <button class="lb-arrow lb-next" id="lb-next" aria-label="Weiter"><span class="i" data-icon="next"></span></button>
   <div class="lb-img-wrap"><img id="lb-img" src="" alt="" /></div>
   <div class="lb-counter" id="lb-counter"></div>
   <div class="lb-thumbnails" id="lb-thumbnails"></div>
@@ -563,60 +720,122 @@
      becomes the exception rather than the default habit. -->
 <div id="detail-view" class="detail-view" style="display:none">
   <div class="detail-view-inner">
-    <a class="detail-quick-original" id="detail-quick-original" href="#" target="_blank" rel="noopener" title="Original-Inserat öffnen">🔗</a>
-    <button class="detail-quick-share" id="detail-quick-share" title="Inserat teilen">📤</button>
-    <button class="detail-close" id="detail-close">✕</button>
-
-    <div class="detail-gallery" id="detail-gallery">
-      <img class="detail-gallery-img" id="detail-gallery-img" src="" alt="" />
-      <div class="detail-gallery-placeholder" id="detail-gallery-placeholder" style="display:none">🏠</div>
-      <button class="detail-gallery-arrow detail-gallery-prev" id="detail-gallery-prev">‹</button>
-      <button class="detail-gallery-arrow detail-gallery-next" id="detail-gallery-next">›</button>
-      <div class="detail-gallery-counter" id="detail-gallery-counter"></div>
-      <div class="detail-gallery-thumbs" id="detail-gallery-thumbs"></div>
-      <div class="detail-status-badge" id="detail-status-badge" style="display:none"></div>
+    <!-- Floating top bar: stays at the top edge of the photo/screen while the content scrolls. -->
+    <div class="detail-topbar">
+      <button class="dt-btn" id="detail-close" type="button" aria-label="Zurück"><span class="i" data-icon="back"></span></button>
+      <span class="dt-spacer"></span>
+      <button class="dt-btn" id="detail-quick-share" type="button" aria-label="Inserat teilen" title="Inserat teilen"><span class="i" data-icon="share"></span></button>
+      <a class="dt-btn" id="detail-quick-original" href="#" target="_blank" rel="noopener" aria-label="Original-Inserat öffnen" title="Original-Inserat öffnen"><span class="i" data-icon="external"></span></a>
     </div>
 
-    <div class="detail-body">
-      <span class="detail-platform" id="detail-platform"></span>
-      <h2 class="detail-title" id="detail-title"></h2>
-      <div class="detail-price" id="detail-price"></div>
-      <div class="detail-meta" id="detail-meta"></div>
+    <div class="detail-scroll" id="detail-scroll">
+      <div class="detail-gallery" id="detail-gallery">
+        <img class="detail-gallery-img" id="detail-gallery-img" src="" alt="" />
+        <div class="detail-gallery-placeholder" id="detail-gallery-placeholder" style="display:none"><span class="i lg" data-icon="image"></span></div>
+        <button class="detail-gallery-arrow detail-gallery-prev" id="detail-gallery-prev" type="button" aria-label="Vorheriges Foto"><span class="i" data-icon="back"></span></button>
+        <button class="detail-gallery-arrow detail-gallery-next" id="detail-gallery-next" type="button" aria-label="Nächstes Foto"><span class="i" data-icon="next"></span></button>
+        <button class="photo-expand" id="detail-gallery-expand" type="button" aria-label="Foto im Vollbild ansehen"><span class="i sm" data-icon="expand"></span>Vollbild</button>
+        <div class="detail-gallery-counter" id="detail-gallery-counter"></div>
+        <div class="detail-gallery-dots" id="detail-gallery-dots"></div>
+        <div class="detail-gallery-thumbs" id="detail-gallery-thumbs"></div>
+        <div class="detail-status-badge" id="detail-status-badge" style="display:none"></div>
+      </div>
 
-      <div class="detail-costs" id="detail-costs" style="display:none"></div>
+      <div class="detail-body">
+        <span class="detail-platform" id="detail-platform"></span>
+        <h2 class="detail-title" id="detail-title"></h2>
+        <div class="detail-loc" id="detail-loc"></div>
+        <div class="detail-price" id="detail-price"></div>
+        <div class="detail-meta" id="detail-meta"></div>
 
-      <div class="detail-changes" id="detail-changes" style="display:none"></div>
+        <div class="detail-costs" id="detail-costs" style="display:none"></div>
 
-      <div class="detail-tags" id="detail-tags"></div>
+        <div class="detail-changes" id="detail-changes" style="display:none"></div>
 
-      <div class="detail-section-label">Beschreibung</div>
-      <div class="detail-description" id="detail-description"></div>
+        <div class="detail-section-label" id="detail-tags-label">Ausstattung</div>
+        <div class="detail-tags" id="detail-tags"></div>
 
-      <div class="detail-section-label" id="detail-map-label" style="display:none">Lage</div>
-      <div class="detail-map-embed" id="detail-map-embed" style="display:none"></div>
+        <div class="detail-section-label">Beschreibung</div>
+        <div class="detail-description" id="detail-description"></div>
 
-      <div class="detail-action-row">
-        <button class="detail-map-btn" id="detail-map-btn" style="display:none">📍 In Karten-App öffnen</button>
-        <a class="detail-original-link" id="detail-original-link" href="#" target="_blank" rel="noopener">
-          🔗 Original-Inserat öffnen
-        </a>
-        <button class="detail-report-btn" id="detail-report-btn">🚫 Als offline melden</button>
+        <div class="detail-section-label" id="detail-map-label" style="display:none">Lage</div>
+        <div class="detail-map-embed" id="detail-map-embed" style="display:none"></div>
+
+        <div class="detail-action-row">
+          <div id="detail-contact" class="detail-contact"></div>
+          <button class="detail-msg-btn" id="detail-msg-btn" type="button"><span class="i sm" data-icon="chat"></span>Nachricht vorbereiten</button>
+          <button class="detail-map-btn" id="detail-map-btn" type="button" style="display:none"><span class="i sm" data-icon="pin"></span>In Karten-App öffnen</button>
+          <a class="detail-original-link" id="detail-original-link" href="#" target="_blank" rel="noopener"><span class="i sm" data-icon="external"></span>Original-Inserat öffnen</a>
+          <button class="detail-report-btn" id="detail-report-btn" type="button"><span class="i sm" data-icon="flag"></span>Als offline melden</button>
+        </div>
       </div>
     </div>
 
     <!-- Only shown when the detail view was opened from the Swipe page,
          so a user can act on the listing without leaving the detail view. -->
     <div class="detail-swipe-actions" id="detail-swipe-actions" style="display:none">
-      <button class="action-btn-mini undo"  id="detail-btn-undo"      title="Letzte Aktion zurücknehmen" disabled>↩</button>
-      <button class="action-btn dislike"    id="detail-btn-dislike"   title="Nein">✕</button>
-      <button class="action-btn superlike"  id="detail-btn-superlike" title="Super!">⭐</button>
-      <button class="action-btn like"       id="detail-btn-like"      title="Ja!">♥</button>
-      <button class="action-btn-mini skip"  id="detail-btn-skip"      title="Überspringen – später nochmal anzeigen">⏭</button>
+      <button class="action-btn-mini undo"  id="detail-btn-undo"      title="Letzte Aktion zurücknehmen" aria-label="Rückgängig" disabled><span class="i" data-icon="undo"></span></button>
+      <button class="action-btn dislike"    id="detail-btn-dislike"   title="Nein" aria-label="Nein"><span class="i lg" data-icon="x"></span></button>
+      <button class="action-btn superlike"  id="detail-btn-superlike" title="Super!" aria-label="Super-Like"><span class="i lg" data-icon="star"></span></button>
+      <button class="action-btn like"       id="detail-btn-like"      title="Ja!" aria-label="Ja"><span class="i lg" data-icon="heart"></span></button>
+      <button class="action-btn-mini skip"  id="detail-btn-skip"      title="Überspringen – später nochmal anzeigen" aria-label="Überspringen"><span class="i" data-icon="skip"></span></button>
+      <span class="detail-kbd" aria-hidden="true"><span><kbd>←</kbd>Nein</span><span><kbd>↑</kbd>Super</span><span><kbd>→</kbd>Ja</span><span><kbd>Esc</kbd>Schließen</span></span>
     </div>
   </div>
 </div>
 
 <!-- Modals -->
+<div id="message-modal" class="modal" style="display:none">
+  <div class="modal-card msg-card" role="dialog" aria-modal="true" aria-labelledby="message-title">
+    <div class="msg-head">
+      <div>
+        <h3 id="message-title">Nachricht vorbereiten</h3>
+        <p class="notify-sub" id="message-context"></p>
+      </div>
+      <a class="msg-open-link" id="message-open-link" href="#" target="_blank" rel="noopener">Inserat öffnen<span class="i sm" data-icon="external"></span></a>
+    </div>
+    <div class="msg-layout">
+      <div class="msg-controls">
+        <div class="msg-block">
+          <span class="msg-label">Tonfall</span>
+          <div class="msg-mode-tabs" id="msg-mode-tabs">
+            <button class="msg-mode-tab active" data-msgmode="formal">Förmlich (Sie)</button>
+            <button class="msg-mode-tab" data-msgmode="informal">Locker (Du)</button>
+            <button class="msg-mode-tab" data-msgmode="template">Eigene Vorlage</button>
+            <button class="msg-mode-tab" data-msgmode="ai" id="msg-mode-ai" style="display:none"><span class="i sm" data-icon="sparkle"></span>KI</button>
+          </div>
+        </div>
+        <div class="msg-block" id="message-members-block" style="display:none">
+          <span class="msg-label">Nachricht für</span>
+          <div class="msg-members" id="message-members"></div>
+        </div>
+        <details class="msg-block msg-details" id="message-blocks-block" style="display:none">
+          <summary class="msg-label">Bausteine <span class="msg-count" id="message-blocks-count"></span></summary>
+          <div class="msg-blocks" id="message-blocks"></div>
+          <p class="notify-sub msg-blocks-hint" id="message-blocks-hint"></p>
+        </details>
+      </div>
+      <div class="msg-main">
+        <div class="msg-listing" id="message-listing"></div>
+        <div class="msg-warnings" id="message-warn" style="display:none"></div>
+        <div class="msg-text-head">
+          <span class="msg-label">Vorschau – direkt bearbeitbar</span>
+          <span class="msg-words" id="message-words"></span>
+        </div>
+        <textarea id="message-text" class="msg-textarea" rows="12" aria-label="Nachrichtentext"></textarea>
+        <p class="form-error" id="message-error"></p>
+        <div id="message-contact" class="msg-contact"></div>
+        <div class="msg-actions">
+          <button class="btn-secondary" id="message-regen"><span class="i sm" data-icon="refresh"></span>Neu erzeugen</button>
+          <button class="btn-primary" id="message-copy"><span class="i sm" data-icon="copy"></span>Kopieren</button>
+          <button class="btn-ghost" id="message-close">Schließen</button>
+        </div>
+        <p class="notify-sub msg-footnote">Prüfe den Text, passe ihn an und sende ihn selbst bei der jeweiligen Plattform.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div id="create-group-modal" class="modal" style="display:none">
   <div class="modal-card">
     <h3>Gruppe erstellen</h3>
@@ -641,6 +860,8 @@
 </div>
 
 <div id="toast"></div>
+<script src="/js/theme.js"></script>
 <script src="/js/app.js"></script>
+<script src="/js/profile.js"></script>
 </body>
 </html>

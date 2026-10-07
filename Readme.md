@@ -1,4 +1,11 @@
-# 🏠 Flatswipe
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="public/brand/logo-dark.png">
+    <img src="public/brand/logo-light.png" alt="WohnungsSwipe" width="420">
+  </picture>
+</p>
+
+# Flatswipe
 _also known as Wohnungsswipe_
 
 **This app is completley vibe coded...**
@@ -51,6 +58,13 @@ volumes:
 ### What you should change:
 - SESSION_SECRET 
     - would reccomend changing it to something long and funny
+
+## Credits
+Parts of this project were taken over from the fork
+[Cuzimgamer2/wohnungsswipe_cuzi](https://github.com/Cuzimgamer2/wohnungsswipe_cuzi)
+by **Noah Koning ([@Cuzimgamer2](https://github.com/Cuzimgamer2))** – thanks!
+- Improved **Immowelt scraper** (cleaner titles, address, full photo gallery from the embedded page data, search-result URL detection)
+- **Bulk removal of your own ratings** in the "Bewertet" view
 
 # WohnungsSwipe Admin CLI
 

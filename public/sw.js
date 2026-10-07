@@ -2,8 +2,8 @@ self.addEventListener('push', e => {
   const data = e.data?.json() || {};
   e.waitUntil(self.registration.showNotification(data.title || 'WohnungsSwipe', {
     body:    data.body  || '',
-    icon:    data.icon  || '/icon-192.png',
-    badge:   '/icon-192.png',
+    icon:    data.icon  || '/brand/icon-192.png',
+    badge:   '/brand/icon-192.png',
     data:    { url: data.url || '/' },
     vibrate: [200, 100, 200],
   }));

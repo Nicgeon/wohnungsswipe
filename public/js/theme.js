@@ -1,0 +1,167 @@
+/* ══════════════════════════════════════════════════════════
+   Shared UI helpers: line icons, theme (auto / light / dark), account menu.
+   Loaded before app.js.
+══════════════════════════════════════════════════════════ */
+
+// ── Line icons (24×24, stroke currentColor) ───────────────
+const ICONS = {
+  x:        'M6 6l12 12M18 6L6 18',
+  heart:    'M12 20s-7.5-4.6-7.5-10A4.3 4.3 0 0 1 12 7.4 4.3 4.3 0 0 1 19.5 10c0 5.4-7.5 10-7.5 10z',
+  star:     'M12 3.5l2.6 5.4 5.9.8-4.3 4.1 1 5.9L12 16.9l-5.2 2.8 1-5.9-4.3-4.1 5.9-.8z',
+  undo:     'M9 14L4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3',
+  skip:     'M5 5l7 7-7 7M13 5l7 7-7 7',
+  cards:    'M5 9.5A2.5 2.5 0 0 1 7.5 7h9A2.5 2.5 0 0 1 19 9.5v8a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 5 17.5zM8.5 4h7',
+  bookmark: 'M7 4h10a1 1 0 0 1 1 1v15l-6-4-6 4V5a1 1 0 0 1 1-1z',
+  users:    'M9 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6M16 4.3a3.5 3.5 0 0 1 0 6.4M18 14.3c2.2.7 3.5 2.7 3.5 5.7',
+  grid:     'M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z',
+  area:     'M4 4h16v16H4zM4 9h3M4 14h3M9 4v3M14 4v3',
+  door:     'M6 20V5a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v15M4 20h16M13.5 12h.01',
+  pin:      'M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11zM12 12.2a2.2 2.2 0 1 0 0-4.4 2.2 2.2 0 0 0 0 4.4z',
+  back:     'M15 5l-7 7 7 7',
+  next:     'M9 5l7 7-7 7',
+  external: 'M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5',
+  share:    'M12 15V4M8 8l4-4 4 4M5 12v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6',
+  image:    'M4 5h16v14H4zM4 16l5-5 4 4 3-3 4 4M9 9.5h.01',
+  sun:      'M12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM12 2.5V5M12 19v2.5M2.5 12H5M19 12h2.5M5.3 5.3l1.8 1.8M16.9 16.9l1.8 1.8M5.3 18.7l1.8-1.8M16.9 7.1l1.8-1.8',
+  moon:     'M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z',
+  auto:     'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 3v18M12 3a9 9 0 0 1 0 18',
+  user:     'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4.5 20c0-3.6 3.4-6 7.5-6s7.5 2.4 7.5 6',
+  file:     'M7 3h7l5 5v12a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM14 3v5h5M9 13h6M9 17h6',
+  logout:   'M10 4H6a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h4M15 8l4 4-4 4M19 12H9',
+  chat:     'M5 5h14a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1h-8l-4 4v-4H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z',
+  flag:     'M6 21V4M6 5h11l-2 4 2 4H6',
+  check:    'M5 12l4 4 10-10',
+  mail:     'M4 6h16v12H4zM4 7l8 6 8-6',
+  dots:     'M12 6h.01M12 12h.01M12 18h.01',
+  sort:     'M4 7h10M4 12h7M4 17h4M17 7v10M17 17l-3-3M17 17l3-3',
+  trash:    'M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12',
+  profile:  'M6 3h9l4 4v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM15 3v4h4M9.5 13a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM7 18c.5-2 2-3 3.5-3s3 1 3.5 3',
+  sliders:  'M4 7h9M17 7h3M4 17h3M11 17h9M15 4v6M9 14v6',
+  addbox:   'M6 3h12a3 3 0 0 1 3 3v12a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3zM12 8v8M8 12h8',
+  agent:    'M10.5 17a6.5 6.5 0 1 0 0-13 6.5 6.5 0 0 0 0 13zM15.5 15.5L20 20M10.5 7.5v3l2 1.5',
+  archive:  'M4 5h16v4H4zM5 9v9a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9M10 13h4',
+  expand:   'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5',
+  chevdown: 'M6 9l6 6 6-6',
+  lock:     'M6 11h12v9H6zM8.5 11V8a3.5 3.5 0 0 1 7 0v3',
+  globe:    'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM3 12h18M12 3c2.5 2.6 3.5 5.6 3.5 9s-1 6.4-3.5 9c-2.5-2.6-3.5-5.6-3.5-9S9.5 5.6 12 3z',
+  bell:     'M6 16v-5a6 6 0 0 1 12 0v5l1.5 2h-15zM10 20.5a2 2 0 0 0 4 0',
+  refresh:  'M20 11a8 8 0 0 0-14-4.5L4 9M4 4v5h5M4 13a8 8 0 0 0 14 4.5L20 15M20 20v-5h-5',
+  play:     'M8 5l11 7-11 7z',
+  pause:    'M8 5v14M16 5v14',
+  list:     'M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01',
+  copy:     'M9 9h11v11H9zM5 15V4h11',
+  alert:    'M12 4l9 16H3zM12 10v4M12 17h.01',
+  send:     'M4 12l16-8-6 16-3-7z',
+  phone:    'M7 3h10a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM11 18h2',
+  shield:   'M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z',
+  camera:   'M4 8h3l2-3h6l2 3h3v11H4zM12 17a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z',
+  split:    'M12 3v18M6 8l-3 4 3 4M18 8l3 4-3 4',
+  link:     'M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1-1',
+  home:     'M4 11l8-7 8 7M6 10v10h12V10M10 20v-6h4v6',
+  sparkle:  'M12 4l1.8 4.7L18.5 10.5l-4.7 1.8L12 17l-1.8-4.7L5.5 10.5l4.7-1.8zM18 16l.8 2.2L21 19l-2.2.8L18 22l-.8-2.2L15 19l2.2-.8z',
+};
+function icon(name, cls = '') {
+  return `<svg class="ic ${cls}" viewBox="0 0 24 24" aria-hidden="true"><path d="${ICONS[name] || ''}"/></svg>`;
+}
+function hydrateIcons(root = document) {
+  root.querySelectorAll('[data-icon]').forEach(el => {
+    if (el.dataset.iconDone) return;
+    const cls = el.classList.contains('lg') ? 'lg' : el.classList.contains('sm') ? 'sm' : '';
+    el.insertAdjacentHTML('afterbegin', icon(el.dataset.icon, cls));
+    el.dataset.iconDone = '1';
+  });
+}
+
+// ── Theme: 'auto' | 'light' | 'dark' ──────────────────────
+const theme = (() => {
+  const KEY = 'ws-theme';
+  const mq = window.matchMedia ? matchMedia('(prefers-color-scheme: dark)') : null;
+  const read = () => { try { return localStorage.getItem(KEY) || 'dark'; } catch { return 'dark'; } };
+  const resolve = m => m === 'auto' ? (mq && mq.matches ? 'dark' : 'light') : m;
+  function apply() {
+    const m = read(), t = resolve(m);
+    document.documentElement.dataset.theme = t;
+    document.getElementById('meta-theme-color')?.setAttribute('content', t === 'light' ? '#f6f2ea' : '#0f0f11');
+    document.querySelectorAll('[data-theme-mode]').forEach(b =>
+      b.setAttribute('aria-pressed', String(b.dataset.themeMode === m)));
+  }
+  function set(m) {
+    try { localStorage.setItem(KEY, m); } catch (_) {}
+    apply();
+  }
+  mq?.addEventListener?.('change', () => { if (read() === 'auto') apply(); });
+  document.addEventListener('click', e => {
+    const b = e.target.closest('[data-theme-mode]');
+    if (b) set(b.dataset.themeMode);
+  });
+  return { apply, set, read };
+})();
+
+// ── Account menu (avatar in the top bar) ──────────────────
+function setNavUser(name) {
+  const n = name || '';
+  const el = document.getElementById('nav-username');
+  if (el) el.textContent = n;
+  const letter = (n.trim().charAt(0) || '?').toUpperCase();
+  const av = document.getElementById('nav-avatar'); if (av) av.textContent = letter;
+  const av2 = document.getElementById('acct-av'); if (av2) av2.textContent = letter;
+}
+
+// ── Header dropdowns: avatar menu + "Inserate" (desktop) ──
+function initDropdown(btn, menu, onOpen) {
+  if (!btn || !menu) return { close() {} };
+  const close = () => { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); };
+  const open = () => {
+    document.dispatchEvent(new CustomEvent('ws-close-dropdowns', { detail: menu.id }));
+    menu.hidden = false; btn.setAttribute('aria-expanded', 'true'); onOpen?.();
+    menu.querySelector('[role="menuitem"]')?.focus();
+  };
+  btn.addEventListener('click', e => { e.stopPropagation(); menu.hidden ? open() : close(); });
+  document.addEventListener('click', e => { if (!menu.hidden && !menu.contains(e.target)) close(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !menu.hidden) { close(); btn.focus(); } });
+  document.addEventListener('ws-close-dropdowns', e => { if (e.detail !== menu.id) close(); });
+  menu.addEventListener('click', e => { if (e.target.closest('[role="menuitem"]')) close(); });
+  return { close };
+}
+
+// Small facts shown in the menus and on the "Mehr" page (profile completeness, agents, archive); cached briefly.
+let _acctMeta = null, _acctMetaAt = 0;
+async function loadAccountMeta(force = false) {
+  if (!force && _acctMeta && Date.now() - _acctMetaAt < 20000) return _acctMeta;
+  const get = async u => { try { return await (await fetch(u)).json(); } catch (_) { return {}; } };
+  const [me, prof, jobs, arch] = await Promise.all([get('/api/auth/me'), get('/api/profile'), get('/api/jobs'), get('/api/archive')]);
+  _acctMeta = {
+    email: me.email || '',
+    pct: prof.completeness ? prof.completeness.percent : null,
+    missing: prof.completeness ? (prof.completeness.missing || []).length : 0,
+    agents: (jobs.jobs || []).filter(j => j.active).length,
+    archive: (arch.listings || []).length,
+  };
+  _acctMetaAt = Date.now();
+  return _acctMeta;
+}
+async function renderAccountMeta(force = false) {
+  const m = await loadAccountMeta(force);
+  const em = document.getElementById('nav-email'); if (em) em.textContent = m.email;
+  const profText = m.pct == null ? 'Angaben für Nachrichten an Vermieter'
+    : m.pct >= 100 ? 'Vollständig' : `${m.pct} % vollständig` + (m.missing ? ` · ${m.missing} Angabe${m.missing === 1 ? '' : 'n'} fehlen` : '');
+  const a = document.getElementById('acct-profile-sub'); if (a) a.textContent = m.pct == null ? profText : `${m.pct} % vollständig`;
+  const b = document.getElementById('mh-profile-sub'); if (b) b.textContent = profText;
+  const bar = document.getElementById('mh-profile-bar');
+  if (bar && m.pct != null) { bar.hidden = false; bar.firstElementChild.style.width = Math.min(100, m.pct) + '%'; }
+  document.querySelectorAll('[data-meta="agents"]').forEach(el => { el.hidden = !m.agents; el.textContent = `${m.agents} aktiv`; });
+  document.querySelectorAll('[data-meta="archive"]').forEach(el => { el.hidden = !m.archive; el.textContent = m.archive; });
+}
+
+(function initMenus() {
+  initDropdown(document.getElementById('account-btn'), document.getElementById('account-menu'), () => renderAccountMeta(true));
+  initDropdown(document.getElementById('nav-inserate'), document.getElementById('inserate-menu'), () => renderAccountMeta());
+  document.getElementById('account-menu')?.addEventListener('click', e => {
+    const go = e.target.closest('[data-acct-goto]');
+    if (go) window.showView?.(go.dataset.acctGoto, true);
+  });
+  document.getElementById('mh-logout-btn')?.addEventListener('click', () => document.getElementById('logout-btn')?.click());
+})();
+
+hydrateIcons();
+theme.apply();

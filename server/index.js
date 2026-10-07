@@ -10,6 +10,7 @@ const MemoryStore = require('memorystore')(session);
 const webpush    = require('web-push');
 const { pollSearchJob, checkExistingListings, detectPlatform, scrapeListing } = require('./poller');
 const mailer     = require('./mailer');
+const P          = require('./profile');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -181,6 +182,55 @@ async function initDb() {
       new_value  TEXT,
       changed_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS applicant_profiles (
+      user_id        INTEGER PRIMARY KEY,
+      display_name   TEXT DEFAULT '',
+      occupation     TEXT DEFAULT '',
+      household_size TEXT DEFAULT '',
+      move_in_date   TEXT DEFAULT '',
+      move_in_type   TEXT DEFAULT 'date',
+      smoker         INTEGER DEFAULT 0,
+      pets           TEXT DEFAULT '',
+      income_note    TEXT DEFAULT '',
+      about_text     TEXT DEFAULT '',
+      formal         INTEGER DEFAULT 1,
+      custom_template TEXT DEFAULT '',
+      updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS group_settings (
+      group_id     INTEGER PRIMARY KEY,
+      move_in_type TEXT DEFAULT '',
+      move_in_date TEXT DEFAULT '',
+      updated_by   INTEGER,
+      updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS group_profiles (
+      group_id       INTEGER PRIMARY KEY,
+      household_type TEXT DEFAULT '',
+      persons        INTEGER DEFAULT 0,
+      children       INTEGER DEFAULT 0,
+      move_in_type   TEXT DEFAULT '',
+      move_in_date   TEXT DEFAULT '',
+      lease_duration TEXT DEFAULT '',
+      smoker         INTEGER DEFAULT 0,
+      pets           TEXT DEFAULT '',
+      income_range   TEXT DEFAULT '',
+      documents_json TEXT DEFAULT '[]',
+      about_text     TEXT DEFAULT '',
+      phone          TEXT DEFAULT '',
+      availability   TEXT DEFAULT '',
+      share_json     TEXT DEFAULT '{}',
+      updated_by     INTEGER,
+      updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS group_templates (
+      user_id    INTEGER NOT NULL,
+      group_id   INTEGER NOT NULL,
+      template   TEXT DEFAULT '',
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id, group_id)
+    );
+    CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT);
   `);
 
   // Migrations
@@ -212,8 +262,42 @@ async function initDb() {
   migrate("ALTER TABLE listings    ADD COLUMN property_type   TEXT");
   migrate("ALTER TABLE listings    ADD COLUMN latitude        REAL");
   migrate("ALTER TABLE listings    ADD COLUMN longitude       REAL");
+  migrate("ALTER TABLE applicant_profiles ADD COLUMN move_in_type TEXT DEFAULT 'date'");
+  migrate("ALTER TABLE applicant_profiles ADD COLUMN documents_json TEXT DEFAULT '[]'");
+  migrate("ALTER TABLE applicant_profiles ADD COLUMN household_type TEXT DEFAULT ''");
+  migrate("ALTER TABLE applicant_profiles ADD COLUMN persons INTEGER DEFAULT 0");
+  migrate("ALTER TABLE applicant_profiles ADD COLUMN children INTEGER DEFAULT 0");
+  migrate("ALTER TABLE applicant_profiles ADD COLUMN lease_duration TEXT DEFAULT ''");
+  migrate("ALTER TABLE applicant_profiles ADD COLUMN employment TEXT DEFAULT ''");
+  migrate("ALTER TABLE applicant_profiles ADD COLUMN employment_permanent INTEGER DEFAULT 0");
+  migrate("ALTER TABLE applicant_profiles ADD COLUMN income_range TEXT DEFAULT ''");
+  migrate("ALTER TABLE applicant_profiles ADD COLUMN phone TEXT DEFAULT ''");
+  migrate("ALTER TABLE applicant_profiles ADD COLUMN availability TEXT DEFAULT ''");
+  migrate("ALTER TABLE applicant_profiles ADD COLUMN share_json TEXT DEFAULT '{}'");
+  migrate("ALTER TABLE group_settings ADD COLUMN persons INTEGER DEFAULT 0");
+  migrate("ALTER TABLE group_settings ADD COLUMN children INTEGER DEFAULT 0");
+  migrate("ALTER TABLE group_settings ADD COLUMN household_type TEXT DEFAULT ''");
+  // The group's household/move-in used to live in group_settings; carry it over
+  // into the full group profile once (INSERT OR IGNORE keeps later edits).
+  migrate(`INSERT OR IGNORE INTO group_profiles (group_id, household_type, persons, children, move_in_type, move_in_date, updated_by)
+           SELECT group_id, household_type, persons, children, move_in_type, move_in_date, updated_by FROM group_settings`);
   migrate("ALTER TABLE search_jobs ADD COLUMN visibility_id INTEGER");
   migrate("ALTER TABLE users       ADD COLUMN notify_matrix   TEXT");
+
+  // One-time repair: an over-eager text heuristic flagged live Kleinanzeigen ads
+  // as offline (already when they were first scraped, so there is no archive
+  // note for most of them). Put every Kleinanzeigen ad back to active except
+  // the ones a user reported by hand; the next status check re-evaluates them
+  // with the fixed detection.
+  try {
+    if (!dbGet("SELECT 1 AS x FROM app_meta WHERE key='ka_offline_repair3'")) {
+      dbRun(`UPDATE listings SET status='active'
+             WHERE platform='kleinanzeigen' AND status='offline'
+               AND id NOT IN (SELECT listing_id FROM archive_notes WHERE reason='reported')`);
+      dbRun("DELETE FROM archive_notes WHERE reason='offline' AND listing_id IN (SELECT id FROM listings WHERE status='active')");
+      dbRun("INSERT OR IGNORE INTO app_meta (key,value) VALUES ('ka_offline_repair3','1')");
+    }
+  } catch (e) { console.warn('[Migration] Kleinanzeigen-Reparatur fehlgeschlagen:', e.message); }
 
   // One-time seed: build each user's new per-type/per-channel matrix from
   // their old blanket toggles, so nobody's existing preferences silently
@@ -508,6 +592,427 @@ app.put('/api/user/notifications', requireAuth, (req, res) => {
   ]);
   saveDb();
   res.json({ success: true, notify_matrix: getNotifyMatrix({ notify_matrix: matrixToSave }) });
+});
+
+// ══════════════════════════════════════════════════════════
+//  APPLICANT PROFILE & MESSAGE GENERATION
+//  (field rules, privacy, completeness and message building live in
+//   ./profile.js; this section holds the routes and the DB access)
+// ══════════════════════════════════════════════════════════
+
+const SAMPLE_LISTING = {
+  id: 0,
+  title: 'Helle 2-Zimmer-Wohnung mit Balkon',
+  price: '850 €', price_cold: '700 €',
+  size: '58 m²', rooms: '2', location: 'Bremen Neustadt',
+};
+
+const EMPTY_PROFILE = {
+  display_name:'', occupation:'', household_size:'', household_type:'', persons:0, children:0,
+  move_in_type:'', move_in_date:'', lease_duration:'', smoker:0, pets:'',
+  employment:'', employment_permanent:0, income_range:'', documents_json:'[]',
+  about_text:'', phone:'', availability:'', formal:1, custom_template:'', share_json:'{}',
+};
+
+function getProfile(userId) {
+  const row = dbGet('SELECT * FROM applicant_profiles WHERE user_id=?', [userId]);
+  if (row) return row;
+  return { user_id: userId, _empty: true, ...EMPTY_PROFILE };
+}
+
+function profileResponse(userId) {
+  const profile = getProfile(userId);
+  return {
+    profile: { ...profile, share: P.parseShare(profile) },
+    completeness: P.completeness(profile),
+    options: P.OPTIONS,
+    shareKeys: P.SHARE_KEYS.map(({ key, label }) => ({ key, label })),
+  };
+}
+
+app.get('/api/profile', requireAuth, (req, res) => {
+  res.json(profileResponse(req.session.userId));
+});
+
+app.put('/api/profile', requireAuth, (req, res) => {
+  const uid  = req.session.userId;
+  const vals = P.normalizeInput(req.body, getProfile(uid));
+  const cols = Object.keys(vals);
+  if (dbGet('SELECT 1 FROM applicant_profiles WHERE user_id=?', [uid])) {
+    dbRun(`UPDATE applicant_profiles SET ${cols.map(c => `${c}=?`).join(',')},updated_at=CURRENT_TIMESTAMP WHERE user_id=?`,
+      [...cols.map(c => vals[c]), uid]);
+  } else {
+    dbRun(`INSERT INTO applicant_profiles (${cols.join(',')},user_id) VALUES (${cols.map(() => '?').join(',')},?)`,
+      [...cols.map(c => vals[c]), uid]);
+  }
+  saveDb();
+  res.json({ success: true, ...profileResponse(uid) });
+});
+
+// Per-user, per-group custom template. Each group member can set their own
+// template for a given group (distinct from their personal default), so a
+// WG application can read differently than a solo one. Falls back to the
+// personal custom_template, then to the guided builder, when empty.
+function getGroupTemplate(userId, groupId) {
+  const row = dbGet('SELECT template FROM group_templates WHERE user_id=? AND group_id=?', [userId, groupId]);
+  return row ? row.template : '';
+}
+
+const isGroupMember = (groupId, userId) =>
+  !!dbGet('SELECT 1 FROM group_members WHERE group_id=? AND user_id=?', [groupId, userId]);
+
+app.get('/api/groups/:id/template', requireAuth, (req, res) => {
+  const gid = req.params.id;
+  if (!isGroupMember(gid, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff' });
+  res.json({ template: getGroupTemplate(req.session.userId, gid) });
+});
+
+app.put('/api/groups/:id/template', requireAuth, (req, res) => {
+  const gid = req.params.id;
+  if (!isGroupMember(gid, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff' });
+  const tpl = (typeof req.body?.template === 'string' ? req.body.template : '').trim().substring(0, 4000);
+  const existing = dbGet('SELECT 1 FROM group_templates WHERE user_id=? AND group_id=?', [req.session.userId, gid]);
+  if (existing) {
+    dbRun('UPDATE group_templates SET template=?, updated_at=CURRENT_TIMESTAMP WHERE user_id=? AND group_id=?',
+      [tpl, req.session.userId, gid]);
+  } else {
+    dbRun('INSERT INTO group_templates (user_id, group_id, template) VALUES (?,?,?)',
+      [req.session.userId, gid, tpl]);
+  }
+  saveDb();
+  res.json({ success: true });
+});
+
+// ── Group profile ──────────────────────────────────────────
+// A group searches as "we": one shared profile holds household, move-in, pets,
+// documents, contact … Names and occupations are NOT stored here — the
+// generator takes them from the members' personal profiles.
+const GROUP_PROFILE_DEFAULTS = {
+  household_type:'', persons:0, children:0, move_in_type:'', move_in_date:'', lease_duration:'', smoker:0,
+  pets:'', income_range:'', documents_json:'[]', about_text:'', phone:'', availability:'', share_json:'{}',
+};
+
+function getGroupProfile(groupId) {
+  const row = dbGet('SELECT * FROM group_profiles WHERE group_id=?', [groupId]);
+  return row ? row : { group_id: Number(groupId), ...GROUP_PROFILE_DEFAULTS };
+}
+
+function groupMembers(groupId) {
+  return dbAll(`SELECT u.id, u.username FROM group_members gm JOIN users u ON u.id=gm.user_id
+                WHERE gm.group_id=? ORDER BY gm.joined_at`, [groupId]);
+}
+
+// The group profile has no personal blocks (name, occupation, employment come from the members).
+const groupShare = gp => { const sh = P.parseShare(gp); P.MEMBER_FED_KEYS.forEach(k => delete sh[k]); return sh; };
+
+function groupProfileResponse(groupId, userId) {
+  const gp = getGroupProfile(groupId);
+  const members = groupMembers(groupId);
+  const status = P.groupMembersStatus(members.map(m => ({ user: m, profile: getProfile(m.id) })));
+  const autoPersons = Math.max(members.length, 1);          // "automatic" = one person per group member
+  return {
+    profile: { ...gp, share: groupShare(gp) },
+    completeness: P.completenessGroup(gp),
+    options: P.OPTIONS,
+    shareKeys: P.SHARE_KEYS.filter(k => !P.MEMBER_FED_KEYS.includes(k.key)).map(({ key, label }) => ({ key, label })),
+    members: status, autoPersons, me: userId,
+  };
+}
+
+function saveGroupProfile(groupId, userId, vals) {
+  const cols = Object.keys(vals);
+  if (dbGet('SELECT 1 FROM group_profiles WHERE group_id=?', [groupId])) {
+    dbRun(`UPDATE group_profiles SET ${cols.map(c => `${c}=?`).join(',')},updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE group_id=?`,
+      [...cols.map(c => vals[c]), userId, groupId]);
+  } else {
+    dbRun(`INSERT INTO group_profiles (${cols.join(',')},group_id,updated_by) VALUES (${cols.map(() => '?').join(',')},?,?)`,
+      [...cols.map(c => vals[c]), groupId, userId]);
+  }
+  saveDb();
+}
+
+app.get('/api/groups/:id/profile', requireAuth, (req, res) => {
+  if (!isGroupMember(req.params.id, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff' });
+  res.json(groupProfileResponse(req.params.id, req.session.userId));
+});
+
+// Any member may edit the shared group profile (the group is a trusted circle).
+app.put('/api/groups/:id/profile', requireAuth, (req, res) => {
+  const gid = req.params.id;
+  if (!isGroupMember(gid, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff' });
+  saveGroupProfile(gid, req.session.userId, P.normalizeGroupProfile(req.body, getGroupProfile(gid)));
+  res.json({ success: true, ...groupProfileResponse(gid, req.session.userId) });
+});
+
+// "Aus meinem Profil übernehmen": copies the caller's personal answers into the group profile.
+// By default only EMPTY group fields are filled; overwrite=true replaces everything it can.
+app.post('/api/groups/:id/profile/adopt', requireAuth, (req, res) => {
+  const gid = req.params.id;
+  if (!isGroupMember(gid, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff' });
+  const me = getProfile(req.session.userId);
+  if (!P.isFilled(me)) return res.status(400).json({ error: 'Dein persönliches Profil ist noch leer' });
+  const gp = getGroupProfile(gid);
+  const overwrite = !!req.body?.overwrite;
+  const take = {
+    household_type: me.household_type, persons: me.persons, children: me.children,
+    move_in_type: me.move_in_type, move_in_date: me.move_in_date, lease_duration: me.lease_duration,
+    pets: me.pets, income_range: me.income_range,
+    documents_json: me.documents_json, about_text: me.about_text, phone: me.phone, availability: me.availability,
+  };
+  const isEmpty = (k, v) => v === '' || v === 0 || v === null || v === undefined || (k === 'documents_json' && v === '[]');
+  const patch = {};
+  for (const [k, v] of Object.entries(take)) {
+    if (isEmpty(k, v)) continue;                        // nothing to take
+    if (overwrite || isEmpty(k, gp[k])) patch[k] = k === 'documents_json' ? JSON.parse(v) : v;
+  }
+  if (patch.documents_json) { patch.documents = patch.documents_json; delete patch.documents_json; }
+  if (overwrite || !gp.household_type) patch.smoker = me.smoker ? 1 : 0;
+  saveGroupProfile(gid, req.session.userId, P.normalizeGroupProfile(patch, gp));
+  res.json({ success: true, adopted: Object.keys(patch).length, ...groupProfileResponse(gid, req.session.userId) });
+});
+
+// Collects the profiles to use for a group message. `onlyIds` (optional)
+// restricts it to a chosen subset of members; members without a filled
+// profile are skipped and reported in `missing` (usernames).
+function collectGroupProfiles(groupId, onlyIds = null) {
+  let members = dbAll(`SELECT u.id, u.username FROM group_members gm JOIN users u ON u.id=gm.user_id
+                       WHERE gm.group_id=? ORDER BY gm.joined_at`, [groupId]);
+  if (Array.isArray(onlyIds) && onlyIds.length) {
+    const set = new Set(onlyIds.map(Number));
+    members = members.filter(m => set.has(m.id));
+  }
+  const profiles = [], missing = [];
+  for (const m of members) {
+    const pr = { ...getProfile(m.id), _username: m.username };       // fallback name when display_name is empty
+    if (P.isFilled(pr)) profiles.push(pr); else missing.push(m.username);
+  }
+  return { profiles, missing };
+}
+
+// The generator's per-message Bausteine: { household: false, … } switches a
+// block off for this message. Unknown keys / non-booleans are ignored.
+function cleanBlocks(raw) {
+  const out = {};
+  if (raw && typeof raw === 'object') {
+    for (const key of P.SHARE_KEY_NAMES) if (typeof raw[key] === 'boolean') out[key] = raw[key];
+  }
+  return out;
+}
+
+// "Erinnern": nudge a group member who hasn't filled in a profile yet.
+// Rate-limited per (sender, target, group) so it can't be used to spam.
+const _profileReminders = new Map();
+const PROFILE_REMINDER_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+
+app.post('/api/groups/:id/remind-profile/:userId', requireAuth, async (req, res) => {
+  const gid    = req.params.id;
+  const target = parseInt(req.params.userId);
+  const sender = dbGet('SELECT * FROM users WHERE id=?', [req.session.userId]);
+
+  if (!isGroupMember(gid, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff' });
+  if (!isGroupMember(gid, target)) return res.status(404).json({ error: 'Nutzer nicht in dieser Gruppe' });
+  if (target === req.session.userId) return res.status(400).json({ error: 'Du kannst dich nicht selbst erinnern' });
+  if (P.isFilled(getProfile(target))) return res.status(400).json({ error: 'Dieses Mitglied hat bereits ein Profil' });
+
+  const key  = `${req.session.userId}:${target}:${gid}`;
+  const last = _profileReminders.get(key) || 0;
+  if (Date.now() - last < PROFILE_REMINDER_COOLDOWN_MS)
+    return res.status(429).json({ error: 'Du hast schon vor Kurzem erinnert – bitte später nochmal' });
+
+  const group      = dbGet('SELECT * FROM groups_table WHERE id=?', [gid]);
+  const targetUser = dbGet('SELECT * FROM users WHERE id=?', [target]);
+  if (!targetUser || !group) return res.status(404).json({ error: 'Nicht gefunden' });
+  _profileReminders.set(key, Date.now());
+
+  const title = `${sender?.username || 'Jemand'} bittet dich um dein Bewerber-Profil`;
+  const body  = `Gruppe: ${group.name} – damit eure gemeinsamen Anfragen vollständig sind.`;
+  if (shouldNotify(targetUser, 'nudge', 'push'))  await sendPushToUser(target, { title, body, url: '/?view=settings', icon: '/icon-192.png' });
+  if (shouldNotify(targetUser, 'nudge', 'ntfy'))  await sendNtfy(targetUser, title, body, 'settings');
+  if (shouldNotify(targetUser, 'nudge', 'email')) {
+    await mailer.sendProfileReminderMail(targetUser.email, targetUser.username, sender?.username || 'Jemand', group.name, targetUser.unsubscribe_token || '');
+  }
+  console.log(`[Profil-Erinnerung] ${sender?.username} → ${targetUser.username} in "${group.name}"`);
+  res.json({ success: true });
+});
+
+// Everything the generator needs for a group search: the group profile (as "we"),
+// the members that supply names/occupations, and who is missing.
+function groupSearchContext(groupId, onlyIds, blocks = {}) {
+  const col = collectGroupProfiles(groupId, onlyIds);
+  // head count = ALL members (also those not named below), so the message keeps its "we" voice
+  const gp = P.groupAsProfile(getGroupProfile(groupId), groupMembers(groupId).length);
+  return {
+    profiles: [P.visibleProfile(gp, { blocks })],
+    members:  col.profiles.map(pr => P.visibleProfile(pr, { blocks })),
+    missing:  col.missing,
+  };
+}
+
+// Live preview for the group profile page: renders the group profile exactly as posted
+// (unsaved edits) — guided, or with the given template — against a sample listing.
+app.post('/api/groups/:id/profile/preview', requireAuth, (req, res) => {
+  const gid = req.params.id;
+  if (!isGroupMember(gid, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff' });
+  const b = req.body || {};
+  const requester = getProfile(req.session.userId);
+  const col = collectGroupProfiles(gid);
+  const gp = P.groupAsProfile({ ...GROUP_PROFILE_DEFAULTS, ...P.normalizeGroupProfile(b, GROUP_PROFILE_DEFAULTS) }, groupMembers(gid).length);
+  const blocks = cleanBlocks(b.blocks);
+  const vis = [P.visibleProfile(gp, { blocks })];
+  const members = col.profiles.map(pr => P.visibleProfile(pr, { blocks }));
+  const tpl = (typeof b.template === 'string' ? b.template : '').substring(0, 4000);
+  if (b.mode === 'template' && tpl.trim()) {
+    const { text, unknown } = P.applyTemplate(tpl, P.buildPlaceholders(SAMPLE_LISTING, vis[0], vis, members, { formal: !!requester.formal }));
+    return res.json({ message: text, missingProfiles: col.missing, unknownPlaceholders: unknown,
+                      completeness: P.completenessGroup({ ...gp, documents_json: gp.documents_json }) });
+  }
+  res.json({ message: P.buildGuidedMessage(SAMPLE_LISTING, vis, requester.formal ? 1 : 0, members),
+             missingProfiles: col.missing, unknownPlaceholders: [], completeness: P.completenessGroup(gp) });
+});
+
+app.post('/api/message/generate', requireAuth, async (req, res) => {
+  const { listingId, groupId, mode, tone } = req.body || {};
+  const listing = dbGet('SELECT * FROM listings WHERE id=?', [listingId]);
+  if (!listing) return res.status(404).json({ error: 'Inserat nicht gefunden' });
+
+  // Solo search: the requester's own profile. Group search: the shared group profile
+  // ("we") plus the members' personal profiles, which only supply names and occupations;
+  // members without a profile are left out and reported in `missingProfiles`.
+  // Privacy: "In Nachricht" settings plus this message's Bausteine decide which fields
+  // reach the text (guided, template and AI).
+  const requester = getProfile(req.session.userId);
+  const blocks = cleanBlocks(req.body.blocks);
+  let profiles, members = null, missingProfiles = [];
+  if (groupId) {
+    if (!isGroupMember(groupId, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff auf diese Gruppe' });
+    const ctx = groupSearchContext(groupId, req.body.memberIds, blocks);
+    profiles = ctx.profiles; members = ctx.members; missingProfiles = ctx.missing;
+  } else {
+    profiles = [P.visibleProfile(requester, { blocks })];
+  }
+  const formal   = tone === 'formal' ? 1 : tone === 'informal' ? 0 : (requester.formal ? 1 : 0);
+
+  // ── Variant B: AI generation (only if server-side LLM creds exist) ──
+  if (mode === 'ai') {
+    if (!process.env.LLM_API_URL || !process.env.LLM_API_KEY) {
+      return res.status(400).json({ error: 'KI-Modus ist auf diesem Server nicht konfiguriert' });
+    }
+    try {
+      const profileSummary = P.summarizeForAi(profiles, members);
+
+      const prompt = `Schreibe eine höfliche, authentische deutsche Nachricht an einen Vermieter als Antwort auf eine Wohnungsanzeige. ${formal ? 'Nutze die förmliche Sie-Anrede.' : 'Nutze eine freundliche, lockere Du/Hallo-Anrede.'} Halte sie knapp (max. 150 Wörter), ehrlich und ohne übertriebene Floskeln. Verwende ausschließlich die unten genannten Angaben und erfinde nichts dazu.
+
+Anzeige:
+Titel: ${listing.title || ''}
+Kaltmiete: ${listing.price_cold || listing.price || ''}
+Größe: ${listing.size || ''}
+Zimmer: ${listing.rooms || ''}
+Lage: ${listing.location || ''}
+
+Bewerber:
+${profileSummary}
+
+Gib NUR den Nachrichtentext zurück, ohne Betreff, ohne Erklärungen.`;
+
+      const aiRes = await fetch(process.env.LLM_API_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${process.env.LLM_API_KEY}`,
+          ...(process.env.LLM_API_KEY_HEADER === 'x-api-key' ? { 'x-api-key': process.env.LLM_API_KEY } : {}),
+        },
+        body: JSON.stringify({
+          model: process.env.LLM_MODEL || 'gpt-4o-mini',
+          messages: [{ role: 'user', content: prompt }],
+          max_tokens: 400,
+        }),
+        timeout: 25000,
+      });
+      if (!aiRes.ok) {
+        const errTxt = await aiRes.text().catch(() => '');
+        console.warn(`[Message] KI-Fehler HTTP ${aiRes.status}: ${errTxt.substring(0, 200)}`);
+        return res.status(502).json({ error: 'KI-Dienst nicht erreichbar – nutze stattdessen die Vorlage' });
+      }
+      const data = await aiRes.json();
+      // Support both OpenAI-style and Anthropic-style response shapes
+      const text = data.choices?.[0]?.message?.content
+                || data.content?.[0]?.text
+                || data.message?.content
+                || '';
+      if (!text.trim()) return res.status(502).json({ error: 'KI lieferte keine Antwort' });
+      return res.json({ message: text.trim(), mode: 'ai', missingProfiles });
+    } catch (e) {
+      console.warn(`[Message] KI-Ausnahme: ${e.message}`);
+      return res.status(502).json({ error: 'KI-Dienst-Fehler – nutze stattdessen die Vorlage' });
+    }
+  }
+
+  // ── Variant A2: custom template with placeholders ──
+  // In a group context, a group-specific template (if the user set one)
+  // takes precedence over their personal default template.
+  if (mode === 'template') {
+    const groupTpl = groupId ? getGroupTemplate(req.session.userId, groupId) : '';
+    const tpl = (groupTpl && groupTpl.trim()) ? groupTpl : requester.custom_template;
+    if (tpl && tpl.trim()) {
+      const { text, unknown } = P.applyTemplate(tpl, P.buildPlaceholders(listing, profiles[0], profiles, members, { formal }));
+      return res.json({ message: text, mode: 'template', missingProfiles, unknownPlaceholders: unknown,
+                        templateSource: (groupTpl && groupTpl.trim()) ? 'group' : 'personal' });
+    }
+    return res.json({ message: P.buildGuidedMessage(listing, profiles, formal, members), mode: 'guided', missingProfiles,
+                      info: 'Noch keine eigene Vorlage hinterlegt – es wird die geführte Nachricht angezeigt.' });
+  }
+
+  // ── Variant A1: guided template (default) ──
+  return res.json({ message: P.buildGuidedMessage(listing, profiles, formal, members), mode: 'guided', missingProfiles });
+});
+
+// Lets the frontend know whether the AI option should be shown at all,
+// without ever exposing the key itself — plus what the generator needs to
+// render its controls: group members (with profile state), the Bausteine
+// (which blocks have data / are shared) and whether the own profile is empty.
+app.get('/api/message/capabilities', requireAuth, (req, res) => {
+  const gid = parseInt(req.query.groupId);
+  const isMember = !!gid && isGroupMember(gid, req.session.userId);
+  const hasGroupTemplate = isMember && !!getGroupTemplate(req.session.userId, gid).trim();
+  let members = null, groupProfileEmpty = false;
+  let blocks;
+  if (isMember) {
+    members = groupMembers(gid).map(m => ({ id: m.id, username: m.username, hasProfile: P.isFilled(getProfile(m.id)) }));
+    const filled = collectGroupProfiles(gid).profiles;
+    const gp = P.groupAsProfile(getGroupProfile(gid), members.length);
+    groupProfileEmpty = !P.isFilled(gp);
+    blocks = P.blockStatus([gp], filled);                 // "Vorstellung" is fed by the members' profiles
+  } else {
+    blocks = P.blockStatus([getProfile(req.session.userId)]);
+  }
+  res.json({
+    ai: !!(process.env.LLM_API_URL && process.env.LLM_API_KEY),
+    hasGroupTemplate,
+    members,
+    blocks,
+    ownProfileEmpty: !P.isFilled(getProfile(req.session.userId)),
+    groupProfileEmpty,
+  });
+});
+
+// Live preview for the settings page: renders the guided OR custom-template
+// message against a fixed SAMPLE listing, using the profile data posted in
+// the request body (so the user sees the effect of unsaved edits instantly,
+// without having to save first and open a real listing).
+app.post('/api/message/preview', requireAuth, (req, res) => {
+  const b = req.body || {};
+  const vals = P.normalizeInput(b, EMPTY_PROFILE);
+  const profile = { ...vals, display_name: vals.display_name || 'Max Mustermann' };
+  const vis = P.visibleProfile(profile, { blocks: cleanBlocks(b.blocks) });
+  let message;
+  let unknown = [];
+  if (b.mode === 'template' && profile.custom_template.trim()) {
+    const r = P.applyTemplate(profile.custom_template, P.buildPlaceholders(SAMPLE_LISTING, vis, [vis], null, { formal: !!profile.formal }));
+    message = r.text; unknown = r.unknown;
+  } else {
+    message = P.buildGuidedMessage(SAMPLE_LISTING, [vis], profile.formal);
+  }
+  res.json({ message, unknownPlaceholders: unknown, completeness: P.completeness(profile) });
 });
 
 // ── Web Push ───────────────────────────────────────────────
@@ -852,6 +1357,26 @@ app.delete('/api/listings/swipe/:id', requireAuth, (req, res) => {
   dbRun('DELETE FROM swipes WHERE user_id=? AND listing_id=?', [req.session.userId, req.params.id]);
   saveDb();
   res.json({ success: true });
+});
+
+// Bulk-remove the current user's own ratings. Only the caller's swipes are
+// touched — the listings themselves and other users' ratings stay as they
+// are. Removed listings show up in the swipe queue again (same as the
+// single-delete route above).
+app.delete('/api/listings/rated', requireAuth, (req, res) => {
+  const ids = Array.isArray(req.body?.listingIds)
+    ? [...new Set(req.body.listingIds.map(Number).filter(Number.isInteger))].slice(0, 500)
+    : [];
+  if (!ids.length) return res.status(400).json({ error: 'Keine Inserate ausgewählt' });
+
+  const ph = ids.map(() => '?').join(',');
+  const { c = 0 } = dbGet(
+    `SELECT COUNT(*) AS c FROM swipes WHERE user_id=? AND listing_id IN (${ph})`,
+    [req.session.userId, ...ids]
+  ) || {};
+  dbRun(`DELETE FROM swipes WHERE user_id=? AND listing_id IN (${ph})`, [req.session.userId, ...ids]);
+  saveDb();
+  res.json({ success: true, deleted: c });
 });
 
 // User-reported offline: lets anyone flag a listing they notice is dead
@@ -1325,7 +1850,13 @@ app.post('/api/jobs/reset-all', requireAuth, async (req, res) => {
 });
 
 // ── Job runner ─────────────────────────────────────────────
+// A run takes minutes (every listing is fetched with a pause) while the
+// scheduler ticks every 60s and last_run is only written at the end, so
+// without this guard the same job ran several times in parallel.
+const runningJobs = new Set();
 async function runJob(job) {
+  if (runningJobs.has(job.id)) return;
+  runningJobs.add(job.id);
   console.log(`[Poller] Job: ${job.label}`);
   try {
     const { newCount, totalFound } = await pollSearchJob(
@@ -1375,6 +1906,8 @@ async function runJob(job) {
     console.error(`[Poller] Fehler bei ${job.label}: ${err.message}`);
     dbRun(`UPDATE search_jobs SET last_run=datetime('now'),last_error=? WHERE id=?`, [err.message, job.id]);
     saveDb();
+  } finally {
+    runningJobs.delete(job.id);
   }
 }
 

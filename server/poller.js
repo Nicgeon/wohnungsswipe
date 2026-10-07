@@ -19,6 +19,17 @@ const HEADERS = {
   'Cache-Control':   'no-cache',
 };
 
+// Immowelt only serializes the complete photo gallery (gallery.images) in its
+// mobile webview variant of the expose page; the desktop HTML often contains
+// just the first photo. scrapeListing() fetches this variant additionally.
+const IMMOWELT_MOBILE_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
+  'Accept': 'text/html,application/xhtml+xml,*/*',
+  'Accept-Language': 'de-DE,de;q=0.9',
+  'Cache-Control': 'no-cache',
+  'Cookie': 'aviv_client=ios',
+};
+
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ── Platform detection ─────────────────────────────────────
@@ -40,8 +51,8 @@ async function fetchPage(url, timeoutMs = 18000, allowedFailCodes = []) {
 // callers can detect when a listing URL silently redirected somewhere else
 // (Kleinanzeigen bounces expired ads to a category/search page with HTTP
 // 200 instead of returning a 404, which would otherwise look "alive").
-async function fetchPageRaw(url, timeoutMs = 18000, allowedFailCodes = []) {
-  const res = await fetch(url, { headers: HEADERS, timeout: timeoutMs });
+async function fetchPageRaw(url, timeoutMs = 18000, allowedFailCodes = [], requestHeaders = HEADERS) {
+  const res = await fetch(url, { headers: requestHeaders, timeout: timeoutMs });
   if (!res.ok && !allowedFailCodes.includes(res.status)) {
     throw new Error(`HTTP ${res.status}`);
   }
@@ -72,8 +83,18 @@ function extractListingUrls(html, searchUrl) {
     $('a[href*="/expose/"]').each((_, el) => {
       let href = $(el).attr('href') || '';
       if (href.startsWith('/')) href = 'https://www.immowelt.de' + href;
-      if (href.startsWith('http')) urls.add(href.split('?')[0]);
+      if (href.startsWith('http') && /immowelt\.de\/expose\//i.test(href)) urls.add(href.split('?')[0]);
     });
+    // Current Immowelt search pages can embed the result URLs in script/JSON
+    // state without rendering <a> elements. Only used as a fallback so that
+    // "similar listings" teasers embedded in the page state never get mixed
+    // in when the regular result links are present.
+    if (!urls.size) {
+      const raw = html.replace(/\\u002F/gi, '/').replace(/\\\//g, '/');
+      const re = /https?:\/\/(?:www\.)?immowelt\.de\/expose\/[a-z0-9-]+/gi;
+      let m;
+      while ((m = re.exec(raw))) urls.add(m[0].replace(/\\/g, '').split('?')[0]);
+    }
   } else if (platform === 'rentola') {
     $('a[href*="/listings/"]').each((_, el) => {
       let href = $(el).attr('href') || '';
@@ -209,6 +230,128 @@ function collectImages($, selectors) {
         set.add(src);
     });
   });
+  return [...set];
+}
+
+// Immowelt-specific image collector. Immowelt's CDN URLs often carry no
+// .jpg/.png extension and use srcset/data-imgsrc, which the generic
+// collectImages() filter drops. Restricted to immowelt.de hosts so
+// tracking pixels / third-party images can't leak into the gallery.
+function collectImmoweltPageImages($, selectors) {
+  const set = new Set();
+  const add = src => {
+    if (!src) return;
+    src = String(src).trim().replace(/\\u0026/g, '&').replace(/\\\\\//g, '/');
+    if (!/^https?:\/\/[a-z0-9.-]*immowelt\.de\//i.test(src)) return;
+    if (/logo|icon|avatar|favicon|sprite/i.test(src)) return;
+    set.add(src);
+  };
+  selectors.forEach(sel => {
+    $(sel).each((_, el) => {
+      const srcset = ($(el).attr('srcset') || $(el).attr('data-srcset') || '')
+        .split(',').map(x => x.trim().split(/\s+/)[0]).filter(Boolean);
+      [$(el).attr('src'), $(el).attr('data-src'), $(el).attr('data-lazy-src'),
+       $(el).attr('data-imgsrc'), $(el).attr('content'), ...srcset].forEach(add);
+    });
+  });
+  return [...set];
+}
+
+// Extract image URLs from serialized page state. Immowelt exposes its gallery
+// as an array of image objects in embedded application JSON; relying only on
+// rendered <img> tags can therefore miss lazy-loaded photos.
+function collectImmoweltEmbeddedImages($, html) {
+  const set = new Set();
+
+  const add = src => {
+    if (!src) return;
+    src = String(src).trim()
+      .replace(/\\u0026/g, '&')
+      .replace(/\\u002F/gi, '/')
+      .replace(/\\\//g, '/')
+      .replace(/\\\\/g, '/');
+    if (/^https?:\/\/mms\.immowelt\.de\//i.test(src)) set.add(src);
+  };
+
+  const walk = value => {
+    if (!value || typeof value !== 'object') return;
+
+    if (Array.isArray(value)) {
+      value.forEach(walk);
+      return;
+    }
+
+    for (const [key, val] of Object.entries(value)) {
+      const keyLower = key.toLowerCase();
+
+      if (keyLower === 'gallery' && val && typeof val === 'object') {
+        const images = val.images;
+        if (Array.isArray(images)) {
+          images.forEach(img => {
+            if (typeof img === 'string') add(img);
+            else if (img && typeof img === 'object') {
+              add(img.url);
+              add(img.src);
+            }
+          });
+        }
+      }
+
+      if (keyLower === 'imageurls' || keyLower === 'image_urls') {
+        if (Array.isArray(val)) val.forEach(add);
+      }
+
+      if (keyLower === 'images' && Array.isArray(val)) {
+        val.forEach(img => {
+          if (typeof img === 'string') add(img);
+          else if (img && typeof img === 'object') add(img.url);
+        });
+      }
+
+      walk(val);
+    }
+  };
+
+  const raw = String(html || '')
+    .replace(/\\u002F/gi, '/')
+    .replace(/\\\//g, '/');
+
+  // Normal JSON script tags, including __NEXT_DATA__.
+  $('script').each((_, el) => {
+    const text = $(el).html() || '';
+    try {
+      walk(JSON.parse(text.trim()));
+    } catch (_) {}
+  });
+
+  // Immowelt's detail payload is usually a JavaScript assignment containing
+  // a DOUBLE-ENCODED JSON string. It is not a normal JSON script tag:
+  // window["__UFRN_LIFECYCLE_SERVERREQUEST__"] = JSON.parse("...");
+  const lifecycleRe =
+    /window\s*\[\s*["']__UFRN_LIFECYCLE_SERVERREQUEST__["']\s*\]\s*=\s*JSON\.parse\("((?:\\.|[^"\\])*)"\)/g;
+
+  let match;
+  while ((match = lifecycleRe.exec(raw))) {
+    try {
+      const decodedJson = JSON.parse('"' + match[1] + '"');
+      walk(JSON.parse(decodedJson));
+    } catch (e) {
+      console.warn('[Immowelt] UFRN-Detaildaten konnten nicht geparst werden:', e.message);
+    }
+  }
+
+  // Fallback for serialized gallery objects not wrapped in the lifecycle
+  // assignment.
+  const galleryBlock =
+    /["']gallery["']\s*:\s*\{[\s\S]*?["']images["']\s*:\s*\[([\s\S]*?)\]/gi;
+
+  while ((match = galleryBlock.exec(raw))) {
+    const chunk = match[1];
+    const imageUrls =
+      chunk.match(/https?:\/\/mms\.immowelt\.de\/[^"'\s<>\\]+/gi) || [];
+    imageUrls.forEach(add);
+  }
+
   return [...set];
 }
 
@@ -400,7 +543,40 @@ function extractTextWithParagraphs($, el) {
 }
 
 // ── Check if listing is offline or reserved ───────────────
-function checkListingStatus($, platform) {
+// Kleinanzeigen is decided by its own structural signals only. The generic
+// body-text patterns below ("anzeige … nicht … vorhanden", "vergeben", …) use
+// `.*` across the whole page text and match footer/sidebar/description
+// wording on perfectly active ads, which flagged every ad as offline.
+// Unknown (e.g. a bot-check page without the ad markup) counts as active:
+// a wrong "offline" archives a live ad for everyone, a missed one is
+// corrected on the next check by the site's own signals.
+function checkKleinanzeigenStatus($, why = {}) {
+  const title = $('title').text().toLowerCase();
+  // The h1 carries data-soldlabel on EVERY ad ("Nicht mehr verfügbar" on
+  // offers, "Gefunden" on wanted ads) — it is only the label text Kleinanzeigen
+  // would show, not a status. The real signal is the visible status prefix
+  // inside the h1 ("Gelöscht • …", "Reserviert • …"), which only exists on
+  // deleted/reserved/sold ads.
+  const $h1 = $('h1#viewad-title');
+  const STATUS_WORD = /^(gelöscht|reserviert|verkauft|vergeben|gefunden|nicht mehr verfügbar|abgelaufen)\b/i;
+  let prefix = ($h1.find('.text-onSurfaceNonessential').first().text() || '').replace(/[•·\s]+$/g, '').trim();
+  if (!STATUS_WORD.test(prefix)) {
+    const m = $h1.text().trim().match(/^(gelöscht|reserviert|verkauft|vergeben|gefunden|nicht mehr verfügbar|abgelaufen)\s*[•·]/i);
+    prefix = m ? m[1] : '';
+  }
+  if (prefix) { why.reason = `Status-Präfix im Titel: "${prefix}"`; return /reserv/i.test(prefix) ? 'reserved' : 'offline'; }
+  // The page's own JS config states it explicitly: `adExpired:false` on live ads.
+  const expiredFlag = $('script').toArray().some(el => /adExpired\s*:\s*true/.test($(el).html() || ''));
+  if (expiredFlag) { why.reason = 'adExpired:true im Seiten-Skript'; return 'offline'; }
+  if ($('.adexpired, [data-testid="adexpired"]').length) { why.reason = 'adexpired-Marker'; return 'offline'; }
+  if ($('[data-testid="reserved-badge"], .reserved-badge').length) { why.reason = 'reserved-Badge'; return 'reserved'; }
+  if ($('h1#viewad-title').length) return 'active';
+  if (/404|not found|seite nicht gefunden|anzeige.*(nicht mehr|gelöscht|nicht vorhanden)/i.test(title)) { why.reason = `Seitentitel "${title.slice(0, 80)}"`; return 'offline'; }
+  return 'active';
+}
+
+function checkListingStatus($, platform, why = {}) {
+  if (platform === 'kleinanzeigen') return checkKleinanzeigenStatus($, why);
   const bodyText = getVisibleText($, 'body').toLowerCase();
   const title    = $('title').text().toLowerCase();
 
@@ -431,13 +607,6 @@ function checkListingStatus($, platform) {
   }
 
   // Platform-specific
-  if (platform === 'kleinanzeigen') {
-    if ($('.adexpired, [data-testid="adexpired"], .banner--warning').length) return 'offline';
-    if ($('[data-testid="reserved-badge"], .reserved-badge').length) return 'reserved';
-    // Only flag as offline if there's NO title AND the page is very small
-    // (avoids false positives on JS-heavy pages that just haven't loaded yet)
-    if (!$('h1#viewad-title, h1.headline').length && bodyText.length < 3000) return 'offline';
-  }
   if (platform === 'immoscout') {
     if ($('[data-qa="expose-offline"], .expose--inactive').length) return 'offline';
   }
@@ -477,7 +646,9 @@ async function geocodeLocation(locationText) {
 }
 
 // ── Scrape a single listing ───────────────────────────────
-async function scrapeListing(url) {
+// opts.lite: skip the extra Immowelt mobile request (used by the periodic
+// status re-check, which only needs status/price/title — not the full gallery).
+async function scrapeListing(url, opts = {}) {
   const platform = detectPlatform(url);
   const d = {
     url, platform,
@@ -498,10 +669,13 @@ async function scrapeListing(url) {
     finalUrl = raw.finalUrl;
   }
   catch (e) {
-    // HTTP 404 / 410 = definitely offline; 403 for non-SPA = likely offline
-    if (e.message.includes('404') || e.message.includes('410') || e.message.includes('403')) {
-      d.status = 'offline';
-    }
+    // HTTP 404 / 410 = definitely offline; 403 for non-SPA = likely offline.
+    // Kleinanzeigen answers bot traffic with 403/429 on live ads too, so there
+    // only 404/410 count.
+    const gone = e.message.includes('404') || e.message.includes('410');
+    const blocked = e.message.includes('403') && platform !== 'kleinanzeigen';
+    if (gone || blocked) d.status = 'offline';
+    d.fetchFailed = true;
     d.title = 'Inserat (nicht ladbar)';
     d.description = `Fehler: ${e.message}`;
     return d;
@@ -516,11 +690,17 @@ async function scrapeListing(url) {
     const startedOnListing = /\/s-anzeige\//.test(url);
     const idMatch = url.match(/(\d{6,})-\d+-\d+/);
     const startId = idMatch ? idMatch[1] : null;
-    const stillOnListing = /\/s-anzeige\//.test(finalUrl);
+    let finalPath = finalUrl;
+    try { finalPath = new URL(finalUrl).pathname; } catch (_) {}
+    // Only a redirect to a category/search page or the start page means the ad
+    // is gone; a redirect to e.g. a consent or bot-check page says nothing.
+    const wentToSearch = /^\/s-(?!anzeige\/)/.test(finalPath) || finalPath === '/';
     const finalIdMatch = finalUrl.match(/(\d{6,})-\d+-\d+/);
     const finalId = finalIdMatch ? finalIdMatch[1] : null;
-    if (startedOnListing && (!stillOnListing || (startId && finalId && startId !== finalId))) {
+    const otherAd = /\/s-anzeige\//.test(finalPath) && startId && finalId && startId !== finalId;
+    if (startedOnListing && (wentToSearch || otherAd)) {
       d.status = 'offline';
+      console.log(`[Status] ${url} → offline (Weiterleitung auf ${finalUrl})`);
       d.title = d.title || 'Inserat nicht mehr verfügbar';
       d.description = `Anzeige nicht mehr verfügbar (weitergeleitet zu ${finalUrl})`;
       return d;
@@ -528,6 +708,25 @@ async function scrapeListing(url) {
   }
 
   const $ = cheerio.load(html);
+
+  // Immowelt: additionally load the mobile webview variant of the expose,
+  // which contains the complete serialized gallery (see IMMOWELT_MOBILE_HEADERS).
+  // Best-effort: a failure here just means we fall back to the desktop HTML.
+  let immoweltMobileHtml = '';
+  let immoweltMobile$ = null;
+  if (platform === 'immowelt' && !opts.lite) {
+    try {
+      const mobileUrl = new URL(url);
+      mobileUrl.searchParams.set('app', '1');
+      const mobileRaw = await fetchPageRaw(mobileUrl.toString(), 22000, [403], IMMOWELT_MOBILE_HEADERS);
+      if (mobileRaw.text && mobileRaw.text.length > 1000) {
+        immoweltMobileHtml = mobileRaw.text;
+        immoweltMobile$ = cheerio.load(immoweltMobileHtml);
+      }
+    } catch (e) {
+      console.warn(`[Immowelt] Mobile-Detail fehlgeschlagen für ${url}: ${e.message}`);
+    }
+  }
 
   // Remove any content belonging to OTHER listings (e.g. the "Das könnte
   // dich auch interessieren" carousel) before extracting anything at all,
@@ -537,7 +736,11 @@ async function scrapeListing(url) {
     stripOtherListingsContent($, url);
     stripSellerPreviewImages($);
   }
-  d.status = checkListingStatus($, platform);
+  const why = {};
+  d.status = checkListingStatus($, platform, why);
+  if (platform === 'kleinanzeigen' && d.status !== 'active') {
+    console.log(`[Status] ${url} → ${d.status} (${why.reason || 'unbekannt'})`);
+  }
 
   if (platform === 'kleinanzeigen') {
     // Extra at-a-glance facts (Schlafzimmer/Badezimmer/Etage) that don't
@@ -545,7 +748,14 @@ async function scrapeListing(url) {
     // below, merged into the final tag list further down.
     var extraFactTags = [];
 
-    d.title = $('h1#viewad-title').text().trim() || $('h1').first().text().trim();
+    // Exclude the "Gelöscht • " / "Reserviert • " status-prefix span from the
+    // title text — it's the same signal already captured in d.status above
+    // (via data-soldlabel), so baking it into the title too would just
+    // duplicate it there as ugly, redundant text ("Gelöscht • 3 Zimmer...").
+    const $titleEl = $('h1#viewad-title').length ? $('h1#viewad-title') : $('h1').first();
+    const $titleClone = $titleEl.clone();
+    $titleClone.find('.text-onSurfaceNonessential').remove();
+    d.title = $titleClone.text().trim();
 
     // Location: take only the FIRST match. Kleinanzeigen frequently renders
     // a duplicate (mobile+desktop) copy of the same location text elsewhere
@@ -661,19 +871,82 @@ async function scrapeListing(url) {
     d.image_url   = imgs[0] || $('meta[property="og:image"]').attr('content') || '';
   }
   else if (platform === 'immowelt') {
-    d.title = $('h1').first().text().trim();
+    // Immowelt's current HTML contains a lot of repeated/hidden metadata in
+    // the H1 subtree. Prefer the actual short heading and clean any metadata
+    // that accidentally got concatenated into it.
+    const rawH1    = $('h1').first().text().replace(/\s+/g, ' ').trim();
+    const ogTitle  = $('meta[property="og:title"]').attr('content') || '';
+    const pageTitle = $('title').text().replace(/\s+/g, ' ').trim();
+
+    let cleanTitle = rawH1 || ogTitle || pageTitle || 'Wohnung zur Miete';
+    // If the selected heading contains the price/metadata block, keep only
+    // the actual property headline before the first euro amount.
+    cleanTitle = cleanTitle.split(/\d[\d.,]*\s*€/)[0].trim();
+    cleanTitle = cleanTitle
+      .replace(/\s*(?:SCHUFA-Bonitätscheck|geschätzte Warmmiete|Kaltmiete|Warmmiete).*$/i, '')
+      .trim();
+    d.title = cleanTitle || 'Wohnung zur Miete';
+
     d.price = extractPrice($('[class*="AdvertPrice"]').text() || $('.price').first().text());
     $('[data-test*="fact"], [class*="FactItem"]').each((_, el) => {
       const lbl = $(el).text().toLowerCase();
       const val = $(el).find('[class*="value"], strong, b').text().trim() || $(el).text().trim();
-      if (/zimmer/.test(lbl))    d.rooms      = extractRooms(lbl) || val;
-      if (/fläche/.test(lbl))    d.size       = extractSize(lbl)  || val;
+      if (/zimmer/.test(lbl))    d.rooms      = extractRooms(lbl) || extractRooms(val) || val;
+      if (/fläche/.test(lbl))    d.size       = extractSize(lbl)  || extractSize(val) || val;
       if (/kaltmiete/.test(lbl)) d.price_cold = extractPrice(val) || val;
     });
-    if (!d.price_cold) d.price_cold = findKaltmiete($, getVisibleText($, 'body').substring(0, 3000));
-    const imgs = collectImages($, ['[class*="Gallery"] img', '[class*="gallery"] img', '[class*="Slider"] img']);
-    d.images_json = JSON.stringify(imgs);
-    d.image_url   = imgs[0] || $('meta[property="og:image"]').attr('content') || '';
+
+    // Address/location appears as a dedicated address block on current
+    // Immowelt exposes. Keep it separate from the noisy title metadata.
+    d.location = $('[data-test*="address"], [data-testid*="address"], [class*="Address"], [class*="address"], [class*="Location"], [class*="location"]')
+      .first().text().replace(/\s+/g, ' ').trim();
+
+    const bodyText = getVisibleText($, 'body').replace(/\s+/g, ' ');
+    if (!d.rooms) d.rooms = extractRooms(bodyText);
+    if (!d.size)  d.size  = extractSize(bodyText);
+
+    if (!d.price_cold) d.price_cold = findKaltmiete($, bodyText.substring(0, 5000));
+    if (!d.price) d.price = extractPrice($('[class*="Warmmiete"], [class*="warmmiete"]').text()) || d.price_cold;
+
+    // Make the title useful in the app without copying Immowelt's complete
+    // metadata string into it.
+    const titleParts = [];
+    if (d.rooms) titleParts.push(d.rooms + ' Zimmer');
+    if (d.size)  titleParts.push(d.size);
+    if (titleParts.length) d.title += ' – ' + titleParts.join(' · ');
+
+    const immoweltSelectors = [
+      '[class*="Gallery"] img',
+      '[class*="gallery"] img',
+      '[class*="Slider"] img',
+      '[class*="slider"] img',
+      'img[src*="mms.immowelt.de"]',
+      'img[data-src*="mms.immowelt.de"]',
+      'img[data-lazy-src*="mms.immowelt.de"]'
+    ];
+
+    const imageCandidates = [
+      ...collectImmoweltPageImages($, immoweltSelectors),
+      ...collectImmoweltEmbeddedImages($, html),
+    ];
+
+    // Merge the complete gallery from the direct listing page's mobile
+    // representation as well. Immowelt exposes the image objects under
+    // gallery.images in this variant even when desktop HTML contains only
+    // the first visible photo.
+    if (immoweltMobile$) {
+      imageCandidates.push(
+        ...collectImmoweltPageImages(immoweltMobile$, immoweltSelectors),
+        ...collectImmoweltEmbeddedImages(immoweltMobile$, immoweltMobileHtml)
+      );
+    }
+
+    const og = $('meta[property="og:image"]').attr('content') || '';
+    if (og && /mms\.immowelt\.de/i.test(og)) imageCandidates.unshift(og);
+
+    const uniqueImgs = [...new Set(imageCandidates)];
+    d.images_json = JSON.stringify(uniqueImgs);
+    d.image_url   = uniqueImgs[0] || og;
   }
   else if (platform === 'rentola') {
     // Rentola is a Next.js SPA – most content is client-rendered.
@@ -812,14 +1085,14 @@ async function checkExistingListings(listings, onStatusChange, onFieldChange) {
 
   for (const listing of listings) {
     try {
-      const fresh = await scrapeListing(listing.url);
+      const fresh = await scrapeListing(listing.url, { lite: true });
 
       if (fresh.status && fresh.status !== 'active') {
         onStatusChange(listing.id, fresh.status);
         results[fresh.status] = (results[fresh.status] || 0) + 1;
       }
 
-      if (onFieldChange) {
+      if (onFieldChange && !fresh.fetchFailed) {
         const changes = [];
         for (const field of TRACKED_FIELDS) {
           const oldVal = (listing[field] || '').trim();
@@ -869,4 +1142,4 @@ async function pollSearchJob(job, exists, insert) {
   return { newCount, totalFound: urls.length };
 }
 
-module.exports = { pollSearchJob, checkExistingListings, detectPlatform, scrapeListing };
+module.exports = { pollSearchJob, checkExistingListings, detectPlatform, scrapeListing, fetchPageRaw, checkListingStatus };
