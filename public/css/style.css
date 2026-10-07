@@ -1107,12 +1107,12 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline:2px solid
 ══════════════════════════════════════════════════════════ */
 @media (min-width: 900px) {
   #app-screen { position:relative; }
-  .app-nav { height:64px; padding:0 32px; }
-  .nav-logo { font-size:1.4rem; }
-  .nav-avatar { width:40px; height:40px; }
+  .app-nav { height:68px; padding:0 32px; }
+  .nav-logo { font-size:1.45rem; }
+  .nav-avatar { width:42px; height:42px; }
   .swipe-counter { height:28px; font-size:.82rem; }
-  .tab-bar { position:absolute; top:0; left:276px; height:64px; z-index:21; background:transparent; border:0; align-items:center; gap:4px; padding:0; }
-  .tab-nav { flex:none; flex-direction:row; gap:8px; height:40px; padding:0 16px; border-radius:12px; font-size:.9rem; font-weight:500; }
+  .tab-bar { position:absolute; top:0; left:276px; height:68px; z-index:21; background:transparent; border:0; align-items:center; gap:6px; padding:0; }
+  .tab-nav { flex:none; flex-direction:row; gap:10px; height:44px; padding:0 20px; border-radius:14px; font-size:.95rem; font-weight:500; }
   .tab-nav:hover { background:var(--hover-bg); }
   .tab-nav.active { background:var(--bg3); font-weight:600; }
   .tab-nav.active::after { display:none; }
@@ -1125,6 +1125,20 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline:2px solid
   .detail-gallery-img { background:var(--bg3); }
 }
 kbd { display:inline-flex; align-items:center; justify-content:center; min-width:24px; height:24px; padding:0 6px; border-radius:6px; border:1px solid var(--border-strong); background:var(--bg2); color:var(--text); font:600 .72rem 'DM Sans',sans-serif; }
+
+@media (min-width: 900px) and (max-width: 1099px) {
+  .tab-bar { left:244px; gap:2px; }
+  .tab-nav { height:40px; padding:0 13px; gap:7px; font-size:.88rem; }
+  .tab-nav .ic { width:19px; height:19px; }
+  .swipe-counter { display:none !important; }
+}
+/* Wide screens: header uses its full width – logo left, navigation centered, account right */
+@media (min-width: 1200px) {
+  .app-nav { padding:0 40px; }
+  .tab-bar { left:50%; transform:translateX(-50%); gap:10px; }
+  .tab-nav { padding:0 28px; gap:12px; font-size:1rem; }
+  .tab-nav .ic { width:22px; height:22px; }
+}
 
 @media (min-width: 1100px) {
   .swipe-layout { justify-content:center; gap:40px; padding:24px 40px 20px; max-width:1400px; width:100%; margin:0 auto; }
