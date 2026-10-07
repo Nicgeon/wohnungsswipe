@@ -4,6 +4,19 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>WohnungsSwipe</title>
+  <meta name="theme-color" content="#0f0f11" id="meta-theme-color" />
+  <script>
+    // Apply the saved theme before first paint (no dark→light flash). 'auto' follows the OS.
+    (function () {
+      try {
+        var m = localStorage.getItem('ws-theme') || 'dark';
+        var sysDark = window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches;
+        var t = m === 'auto' ? (sysDark ? 'dark' : 'light') : m;
+        document.documentElement.dataset.theme = t;
+        document.getElementById('meta-theme-color').setAttribute('content', t === 'light' ? '#f6f2ea' : '#0f0f11');
+      } catch (e) {}
+    })();
+  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,700&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
@@ -76,25 +89,36 @@
 <!-- ══ APP ════════════════════════════════════════════════ -->
 <div id="app-screen" class="screen">
   <nav class="app-nav">
-    <div class="nav-logo">🏠 <span>WohnungsSwipe</span></div>
+    <div class="nav-logo"><span>WohnungsSwipe</span></div>
     <div class="nav-actions">
-      <span id="nav-username" class="nav-user"></span>
-      <button id="logout-btn" class="btn-ghost">Logout</button>
+      <span class="swipe-counter" id="swipe-counter"><span id="remaining-count">0</span> übrig</span>
+      <button id="account-btn" class="nav-avatar" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="account-menu" aria-label="Konto-Menü"><span id="nav-avatar">?</span></button>
+    </div>
+    <div id="account-menu" class="account-menu" role="menu" hidden>
+      <div class="acct-head"><span class="acct-label">Angemeldet als</span><span class="acct-name" id="nav-username"></span></div>
+      <button type="button" role="menuitem" class="acct-item" data-acct-goto="settings"><span class="i" data-icon="user"></span>Profil &amp; Einstellungen</button>
+      <button type="button" role="menuitem" class="acct-item" data-acct-goto="profile"><span class="i" data-icon="file"></span>Bewerber-Profil</button>
+      <div class="acct-theme">
+        <span class="acct-label">Darstellung</span>
+        <div class="theme-seg" role="group" aria-label="Darstellung">
+          <button type="button" data-theme-mode="auto"  aria-pressed="false"><span class="i" data-icon="auto"></span>Auto</button>
+          <button type="button" data-theme-mode="light" aria-pressed="false"><span class="i" data-icon="sun"></span>Hell</button>
+          <button type="button" data-theme-mode="dark"  aria-pressed="false"><span class="i" data-icon="moon"></span>Dunkel</button>
+        </div>
+      </div>
+      <button type="button" role="menuitem" class="acct-item danger" id="logout-btn"><span class="i" data-icon="logout"></span>Ausloggen</button>
     </div>
   </nav>
 
-  <div class="tab-bar">
-    <button class="tab-nav active" data-view="swipe">   <span class="tab-icon">🃏</span><span>Swipen</span></button>
-    <button class="tab-nav"        data-view="rated">   <span class="tab-icon">💚</span><span>Bewertet</span></button>
-    <button class="tab-nav"        data-view="groups">  <span class="tab-icon">👥</span><span>Gruppen</span></button>
-    <button class="tab-nav"        data-view="more">    <span class="tab-icon">⋯</span><span>Mehr</span></button>
+  <div class="tab-bar" role="navigation" aria-label="Hauptnavigation">
+    <button class="tab-nav active" data-view="swipe">   <span class="tab-icon i" data-icon="cards"></span><span>Swipen</span></button>
+    <button class="tab-nav"        data-view="rated">   <span class="tab-icon i" data-icon="bookmark"></span><span>Bewertet</span></button>
+    <button class="tab-nav"        data-view="groups">  <span class="tab-icon i" data-icon="users"></span><span>Gruppen</span></button>
+    <button class="tab-nav"        data-view="more">    <span class="tab-icon i" data-icon="grid"></span><span>Mehr</span></button>
   </div>
 
   <!-- ── SWIPE ─────────────────────────────────────── -->
   <div id="view-swipe" class="view active">
-    <div class="swipe-header">
-      <div class="swipe-counter"><span id="remaining-count">0</span> übrig</div>
-    </div>
     <div class="card-stack" id="card-stack">
       <div class="empty-state" id="empty-swipe">
         <div class="empty-icon">🏘️</div>
@@ -103,11 +127,11 @@
       </div>
     </div>
     <div class="swipe-actions" id="swipe-actions" style="display:none">
-      <button class="action-btn-mini undo"  id="btn-undo"     title="Letzte Aktion zurücknehmen" disabled>↩</button>
-      <button class="action-btn dislike"    id="btn-dislike"  title="Nein (←)">✕</button>
-      <button class="action-btn superlike"  id="btn-superlike" title="Super! (↑)">⭐</button>
-      <button class="action-btn like"       id="btn-like"     title="Ja! (→)">♥</button>
-      <button class="action-btn-mini skip"  id="btn-skip"     title="Überspringen – später nochmal anzeigen">⏭</button>
+      <button class="action-btn-mini undo"  id="btn-undo"     title="Letzte Aktion zurücknehmen" aria-label="Rückgängig" disabled><span class="i" data-icon="undo"></span></button>
+      <button class="action-btn dislike"    id="btn-dislike"  title="Nein (←)" aria-label="Nein"><span class="i lg" data-icon="x"></span></button>
+      <button class="action-btn superlike"  id="btn-superlike" title="Super! (↑)" aria-label="Super-Like"><span class="i lg" data-icon="star"></span></button>
+      <button class="action-btn like"       id="btn-like"     title="Ja! (→)" aria-label="Ja"><span class="i lg" data-icon="heart"></span></button>
+      <button class="action-btn-mini skip"  id="btn-skip"     title="Überspringen – später nochmal anzeigen" aria-label="Überspringen"><span class="i" data-icon="skip"></span></button>
     </div>
   </div>
 
@@ -419,6 +443,17 @@
         </div>
       </div>
 
+      <!-- Appearance -->
+      <div class="settings-card theme-card">
+        <div class="section-label">Darstellung</div>
+        <div class="theme-seg theme-seg-lg" role="group" aria-label="Darstellung">
+          <button type="button" data-theme-mode="auto"  aria-pressed="false"><span class="i" data-icon="auto"></span>Automatisch</button>
+          <button type="button" data-theme-mode="light" aria-pressed="false"><span class="i" data-icon="sun"></span>Hell</button>
+          <button type="button" data-theme-mode="dark"  aria-pressed="false"><span class="i" data-icon="moon"></span>Dunkel</button>
+        </div>
+        <p class="settings-hint">„Automatisch“ folgt der Einstellung deines Geräts.</p>
+      </div>
+
       <!-- ══ Kategorie: Konto ══ -->
       <details class="settings-cat">
         <summary>👤 Konto &amp; Statistiken</summary>
@@ -637,56 +672,63 @@
      becomes the exception rather than the default habit. -->
 <div id="detail-view" class="detail-view" style="display:none">
   <div class="detail-view-inner">
-    <a class="detail-quick-original" id="detail-quick-original" href="#" target="_blank" rel="noopener" title="Original-Inserat öffnen">🔗</a>
-    <button class="detail-quick-share" id="detail-quick-share" title="Inserat teilen">📤</button>
-    <button class="detail-close" id="detail-close">✕</button>
-
-    <div class="detail-gallery" id="detail-gallery">
-      <img class="detail-gallery-img" id="detail-gallery-img" src="" alt="" />
-      <div class="detail-gallery-placeholder" id="detail-gallery-placeholder" style="display:none">🏠</div>
-      <button class="detail-gallery-arrow detail-gallery-prev" id="detail-gallery-prev">‹</button>
-      <button class="detail-gallery-arrow detail-gallery-next" id="detail-gallery-next">›</button>
-      <div class="detail-gallery-counter" id="detail-gallery-counter"></div>
-      <div class="detail-gallery-thumbs" id="detail-gallery-thumbs"></div>
-      <div class="detail-status-badge" id="detail-status-badge" style="display:none"></div>
+    <!-- Floating top bar: stays at the top edge of the photo/screen while the content scrolls. -->
+    <div class="detail-topbar">
+      <button class="dt-btn" id="detail-close" type="button" aria-label="Zurück"><span class="i" data-icon="back"></span></button>
+      <span class="dt-spacer"></span>
+      <button class="dt-btn" id="detail-quick-share" type="button" aria-label="Inserat teilen" title="Inserat teilen"><span class="i" data-icon="share"></span></button>
+      <a class="dt-btn" id="detail-quick-original" href="#" target="_blank" rel="noopener" aria-label="Original-Inserat öffnen" title="Original-Inserat öffnen"><span class="i" data-icon="external"></span></a>
     </div>
 
-    <div class="detail-body">
-      <span class="detail-platform" id="detail-platform"></span>
-      <h2 class="detail-title" id="detail-title"></h2>
-      <div class="detail-price" id="detail-price"></div>
-      <div class="detail-meta" id="detail-meta"></div>
+    <div class="detail-scroll" id="detail-scroll">
+      <div class="detail-gallery" id="detail-gallery">
+        <img class="detail-gallery-img" id="detail-gallery-img" src="" alt="" />
+        <div class="detail-gallery-placeholder" id="detail-gallery-placeholder" style="display:none"><span class="i lg" data-icon="image"></span></div>
+        <button class="detail-gallery-arrow detail-gallery-prev" id="detail-gallery-prev" type="button" aria-label="Vorheriges Foto"><span class="i" data-icon="back"></span></button>
+        <button class="detail-gallery-arrow detail-gallery-next" id="detail-gallery-next" type="button" aria-label="Nächstes Foto"><span class="i" data-icon="next"></span></button>
+        <div class="detail-gallery-counter" id="detail-gallery-counter"></div>
+        <div class="detail-gallery-dots" id="detail-gallery-dots"></div>
+        <div class="detail-gallery-thumbs" id="detail-gallery-thumbs"></div>
+        <div class="detail-status-badge" id="detail-status-badge" style="display:none"></div>
+      </div>
 
-      <div class="detail-costs" id="detail-costs" style="display:none"></div>
+      <div class="detail-body">
+        <span class="detail-platform" id="detail-platform"></span>
+        <h2 class="detail-title" id="detail-title"></h2>
+        <div class="detail-loc" id="detail-loc"></div>
+        <div class="detail-price" id="detail-price"></div>
+        <div class="detail-meta" id="detail-meta"></div>
 
-      <div class="detail-changes" id="detail-changes" style="display:none"></div>
+        <div class="detail-costs" id="detail-costs" style="display:none"></div>
 
-      <div class="detail-tags" id="detail-tags"></div>
+        <div class="detail-changes" id="detail-changes" style="display:none"></div>
 
-      <div class="detail-section-label">Beschreibung</div>
-      <div class="detail-description" id="detail-description"></div>
+        <div class="detail-section-label" id="detail-tags-label">Ausstattung</div>
+        <div class="detail-tags" id="detail-tags"></div>
 
-      <div class="detail-section-label" id="detail-map-label" style="display:none">Lage</div>
-      <div class="detail-map-embed" id="detail-map-embed" style="display:none"></div>
+        <div class="detail-section-label">Beschreibung</div>
+        <div class="detail-description" id="detail-description"></div>
 
-      <div class="detail-action-row">
-        <button class="detail-msg-btn" id="detail-msg-btn">💬 Nachricht vorbereiten</button>
-        <button class="detail-map-btn" id="detail-map-btn" style="display:none">📍 In Karten-App öffnen</button>
-        <a class="detail-original-link" id="detail-original-link" href="#" target="_blank" rel="noopener">
-          🔗 Original-Inserat öffnen
-        </a>
-        <button class="detail-report-btn" id="detail-report-btn">🚫 Als offline melden</button>
+        <div class="detail-section-label" id="detail-map-label" style="display:none">Lage</div>
+        <div class="detail-map-embed" id="detail-map-embed" style="display:none"></div>
+
+        <div class="detail-action-row">
+          <button class="detail-msg-btn" id="detail-msg-btn" type="button"><span class="i sm" data-icon="chat"></span>Nachricht vorbereiten</button>
+          <button class="detail-map-btn" id="detail-map-btn" type="button" style="display:none"><span class="i sm" data-icon="pin"></span>In Karten-App öffnen</button>
+          <a class="detail-original-link" id="detail-original-link" href="#" target="_blank" rel="noopener"><span class="i sm" data-icon="external"></span>Original-Inserat öffnen</a>
+          <button class="detail-report-btn" id="detail-report-btn" type="button"><span class="i sm" data-icon="flag"></span>Als offline melden</button>
+        </div>
       </div>
     </div>
 
     <!-- Only shown when the detail view was opened from the Swipe page,
          so a user can act on the listing without leaving the detail view. -->
     <div class="detail-swipe-actions" id="detail-swipe-actions" style="display:none">
-      <button class="action-btn-mini undo"  id="detail-btn-undo"      title="Letzte Aktion zurücknehmen" disabled>↩</button>
-      <button class="action-btn dislike"    id="detail-btn-dislike"   title="Nein">✕</button>
-      <button class="action-btn superlike"  id="detail-btn-superlike" title="Super!">⭐</button>
-      <button class="action-btn like"       id="detail-btn-like"      title="Ja!">♥</button>
-      <button class="action-btn-mini skip"  id="detail-btn-skip"      title="Überspringen – später nochmal anzeigen">⏭</button>
+      <button class="action-btn-mini undo"  id="detail-btn-undo"      title="Letzte Aktion zurücknehmen" aria-label="Rückgängig" disabled><span class="i" data-icon="undo"></span></button>
+      <button class="action-btn dislike"    id="detail-btn-dislike"   title="Nein" aria-label="Nein"><span class="i lg" data-icon="x"></span></button>
+      <button class="action-btn superlike"  id="detail-btn-superlike" title="Super!" aria-label="Super-Like"><span class="i lg" data-icon="star"></span></button>
+      <button class="action-btn like"       id="detail-btn-like"      title="Ja!" aria-label="Ja"><span class="i lg" data-icon="heart"></span></button>
+      <button class="action-btn-mini skip"  id="detail-btn-skip"      title="Überspringen – später nochmal anzeigen" aria-label="Überspringen"><span class="i" data-icon="skip"></span></button>
     </div>
   </div>
 </div>
@@ -766,6 +808,7 @@
 </div>
 
 <div id="toast"></div>
+<script src="/js/theme.js"></script>
 <script src="/js/app.js"></script>
 <script src="/js/profile.js"></script>
 </body>

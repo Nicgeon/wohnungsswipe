@@ -77,6 +77,7 @@ function showView(name, isSubNav = false) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.querySelectorAll('.tab-nav').forEach(b => b.classList.remove('active'));
   $id(`view-${name}`).classList.add('active');
+  $id('swipe-counter').style.display = name === 'swipe' ? '' : 'none';
 
   // Sub-views (jobs/archive/settings) keep the "Mehr" tab highlighted
   const tabKey = SUB_VIEWS.has(name) ? 'more' : name;
@@ -156,7 +157,7 @@ $id('forgot-submit').addEventListener('click', async () => {
 
 function onLogin(data) {
   state.user = data;
-  $id('nav-username').textContent = data.username;
+  setNavUser(data.username);
   showScreen('app-screen');
   loadGroups().then(() => loadSwipeQueue());
   openSharedListingFromUrl();
@@ -243,32 +244,40 @@ const detailView = {
     const cold  = (listing.price_cold || '').trim();
     const total = (listing.price      || '').trim();
     $id('detail-price').innerHTML = cold
-      ? `${esc(cold)} <span class="detail-price-sub">kalt</span>${total && total !== cold ? ` &nbsp;·&nbsp; ${esc(total)} warm` : ''}`
-      : (total ? esc(total) : '<span class="detail-price-sub">Preis nicht angegeben</span>');
+      ? `<b>${esc(cold)}</b><span>kalt${total && total !== cold ? ` · ${esc(total)} warm` : ''}</span>`
+      : (total ? `<b>${esc(total)}</b>` : '<span>Preis nicht angegeben</span>');
+
+    const locEl = $id('detail-loc');
+    locEl.innerHTML = listing.location ? `${icon('pin', 'sm')}${esc(listing.location)}` : '';
+    locEl.style.display = listing.location ? '' : 'none';
 
     const metaParts = [];
-    if (listing.size)     metaParts.push(`📐 ${esc(listing.size)}`);
-    if (listing.rooms)    metaParts.push(`🚪 ${esc(listing.rooms)} Zimmer`);
-    if (listing.location) metaParts.push(`📍 ${esc(listing.location)}`);
+    if (listing.size)  metaParts.push(`${icon('area', 'sm')}${esc(listing.size)}`);
+    if (listing.rooms) metaParts.push(`${icon('door', 'sm')}${esc(listing.rooms)} Zi.`);
     $id('detail-meta').innerHTML = metaParts.map(m => `<span class="detail-meta-item">${m}</span>`).join('');
 
-    // Structured cost/meta breakdown (Nebenkosten, Heizkosten, Kaution,
-    // Wohnungstyp, Verfügbar ab) — only rendered when at least one field
-    // was actually scraped, so older listings without this data don't
-    // show an empty box.
+    // Cost list (Kosten) and a second list for the remaining facts (Details).
+    // Only rendered when at least one field was actually scraped, so older
+    // listings without this data don't show an empty box.
     const costRows = [
+      ['Kaltmiete',      cold],
       ['Nebenkosten',    listing.nebenkosten],
       ['Heizkosten',     listing.heizkosten],
       ['Kaution',        listing.kaution],
+    ].filter(([, v]) => v && v.trim());
+    if (cold && total && total !== cold) costRows.push(['Warmmiete', total, true]);
+    const factRows = [
       ['Wohnungstyp',    listing.property_type],
       ['Verfügbar ab',   listing.available_from],
     ].filter(([, v]) => v && v.trim());
+    const list = rows => `<ul class="detail-list">${rows.map(([l, v, total]) =>
+      `<li${total ? ' class="total"' : ''}><span>${esc(l)}</span><b>${esc(v)}</b></li>`).join('')}</ul>`;
     const costsEl = $id('detail-costs');
-    if (costRows.length) {
+    if (costRows.length || factRows.length) {
       costsEl.style.display = '';
-      costsEl.innerHTML = costRows.map(([label, val]) =>
-        `<div class="detail-cost-row"><span class="detail-cost-label">${esc(label)}</span><span class="detail-cost-value">${esc(val)}</span></div>`
-      ).join('');
+      costsEl.innerHTML =
+        (costRows.length ? `<div class="detail-section-label">Kosten</div>${list(costRows)}` : '') +
+        (factRows.length ? `<div class="detail-section-label">Details</div>${list(factRows)}` : '');
     } else {
       costsEl.style.display = 'none';
       costsEl.innerHTML = '';
@@ -278,6 +287,11 @@ const detailView = {
 
     const tags = parseTags(listing.tags_json);
     $id('detail-tags').innerHTML = tags.map(t => `<span class="detail-tag">${esc(t)}</span>`).join('');
+    $id('detail-tags').style.display = tags.length ? '' : 'none';
+    $id('detail-tags-label').style.display = tags.length ? '' : 'none';
+    $id('detail-scroll').scrollTop = 0;
+    document.querySelector('.detail-body').scrollTop = 0;
+    document.querySelector('.detail-topbar').classList.remove('scrolled');
 
     $id('detail-description').textContent = listing.description?.trim() || 'Keine Beschreibung verfügbar.';
 
@@ -360,6 +374,8 @@ const detailView = {
     }
 
     $id('detail-gallery-counter').textContent = this.imgs.length ? `${this.idx + 1} / ${this.imgs.length}` : '';
+    $id('detail-gallery-dots').innerHTML = this.imgs.length > 1 && this.imgs.length <= 12
+      ? this.imgs.map((_, i) => `<i class="${i === this.idx ? 'on' : ''}"></i>`).join('') : '';
     $id('detail-gallery-prev').style.display  = this.imgs.length > 1 ? '' : 'none';
     $id('detail-gallery-next').style.display  = this.imgs.length > 1 ? '' : 'none';
 
@@ -433,6 +449,24 @@ const detailView = {
 };
 
 $id('detail-close').onclick        = () => detailView.close();
+// The floating top bar gets a soft background once content scrolls underneath it.
+(() => {
+  const tb = document.querySelector('.detail-topbar');
+  const sync = e => tb.classList.toggle('scrolled', e.target.scrollTop > 140);
+  $id('detail-scroll').addEventListener('scroll', sync, { passive: true });
+  document.querySelector('.detail-body').addEventListener('scroll', sync, { passive: true });
+})();
+// Swipe the photo left/right on touch screens
+(() => {
+  const g = $id('detail-gallery'); let x0 = null, y0 = null;
+  g.addEventListener('touchstart', e => { x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; }, { passive: true });
+  g.addEventListener('touchend', e => {
+    if (x0 === null) return;
+    const dx = e.changedTouches[0].clientX - x0, dy = e.changedTouches[0].clientY - y0;
+    if (Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.5) detailView.galleryGo(dx < 0 ? 1 : -1);
+    x0 = null;
+  }, { passive: true });
+})();
 $id('detail-gallery-prev').onclick = () => detailView.galleryGo(-1);
 $id('detail-gallery-next').onclick = () => detailView.galleryGo(1);
 $id('detail-view').addEventListener('click', e => { if (e.target.id === 'detail-view') detailView.close(); });
@@ -510,29 +544,35 @@ function buildSwipeCard(listing) {
   const statusBadge = listing.status === 'reserved'
     ? `<div class="card-status-badge status-reserved">Reserviert</div>` : '';
 
+  const cold  = (listing.price_cold || '').trim();
+  const total = (listing.price      || '').trim();
+  const mainPrice = cold || total;
+  const priceSub  = cold ? `kalt${total && total !== cold ? ` · ${esc(total)} warm` : ''}` : '';
+  const facts = [
+    listing.size  ? `<span class="card-fact">${icon('area', 'sm')}${esc(listing.size)}</span>` : '',
+    listing.rooms ? `<span class="card-fact">${icon('door', 'sm')}${esc(listing.rooms)} Zi.</span>` : '',
+  ].join('');
+  const shownTags = tags.slice(0, 3);
+
   card.innerHTML = `
     <div class="card-img-area">
       ${hasImg
         ? `<img class="card-image" src="${esc(images[0])}" onerror="this.style.display='none'" />`
-        : `<div class="card-image-placeholder">🏠</div>`}
-      ${statusBadge}
-      ${images.length > 1 ? `<button class="card-photo-btn" data-gallery>📷 ${images.length}</button>` : ''}
-    </div>
-    <div class="card-overlay-badge badge-like">JA ♥</div>
-    <div class="card-overlay-badge badge-dislike">NEIN ✕</div>
-    <div class="card-overlay-badge badge-superlike">⭐ SUPER</div>
-    <div class="card-body">
+        : `<div class="card-image-placeholder">${icon('image', 'lg')}</div>`}
       <span class="card-platform">${esc(listing.platform || 'inserat')}</span>
+      ${statusBadge}
+      ${images.length > 1 ? `<button class="card-photo-btn" data-gallery type="button" aria-label="Alle ${images.length} Fotos ansehen">${icon('image', 'sm')}${images.length}</button>` : ''}
+      ${mainPrice ? `<div class="card-price-over"><b>${esc(mainPrice)}</b>${priceSub ? `<span>${priceSub}</span>` : ''}</div>` : ''}
+    </div>
+    <div class="card-overlay-badge badge-like">JA</div>
+    <div class="card-overlay-badge badge-dislike">NEIN</div>
+    <div class="card-overlay-badge badge-superlike">SUPER</div>
+    <div class="card-body">
       <div class="card-title">${esc(listing.title || 'Inserat')}</div>
-      ${priceHtml(listing, true)}
-      <div class="card-meta">
-        ${listing.size   ? `<span class="card-meta-item">📐 ${esc(listing.size)}</span>` : ''}
-        ${listing.rooms  ? `<span class="card-meta-item">🚪 ${esc(listing.rooms)} Zi.</span>` : ''}
-        ${listing.location ? `<span class="card-meta-item">📍 ${esc(listing.location)}</span>` : ''}
-      </div>
-      ${tags.length ? `<div class="card-tags">${tags.map(t=>`<span class="card-tag">${esc(t)}</span>`).join('')}</div>` : ''}
-      ${listing.description ? `<div class="card-desc">${esc(listing.description)}</div>` : ''}
-      <button class="card-link" data-open-detail type="button">Details ansehen →</button>
+      ${listing.location ? `<div class="card-loc">${icon('pin', 'sm')}<span>${esc(listing.location)}</span></div>` : ''}
+      ${facts ? `<div class="card-facts">${facts}</div>` : ''}
+      ${shownTags.length ? `<div class="card-tags">${shownTags.map(t=>`<span class="card-tag">${esc(t)}</span>`).join('')}</div>` : ''}
+      <button class="card-link" data-open-detail type="button">Details ${icon('next', 'sm')}</button>
     </div>`;
 
   card.querySelector('[data-gallery]')?.addEventListener('click', e => {
@@ -2056,7 +2096,7 @@ $id('save-username-btn').addEventListener('click', async () => {
   clr('settings-username-error','settings-username-ok');
   const d = await api('/api/user/username', { method:'PUT', body:{ username:$id('settings-username').value.trim() } });
   if (d.error) return setErr('settings-username-error', d.error);
-  $id('nav-username').textContent = d.username;
+  setNavUser(d.username);
   $id('settings-display-name').textContent = d.username;
   $id('settings-avatar').textContent = d.username.charAt(0).toUpperCase();
   setOk('settings-username-ok','✓ Gespeichert'); toast('✅ Username geändert');
@@ -2315,7 +2355,7 @@ async function openSharedListingFromUrl() {
   const me = await api('/api/auth/me');
   if (me.loggedIn) {
     state.user = { userId: me.id, username: me.username };
-    $id('nav-username').textContent = me.username;
+    setNavUser(me.username);
     showScreen('app-screen');
     await loadGroups();
     loadSwipeQueue();
