@@ -92,6 +92,7 @@ function showView(name, isSubNav = false) {
   if (name === 'profile')  window.loadProfilePage?.();
   if (name === 'archive')  loadArchive();
   if (name === 'add')      loadMyAddedListings();
+  syncDetailMount();
 }
 
 document.querySelectorAll('.tab-nav').forEach(btn =>
@@ -342,7 +343,24 @@ const detailView = {
   idx:       0,
   fromSwipe: false,
 
+  // Modal: the detail panel lives in the #detail-view overlay.
   open(listing, opts = {}) {
+    const inner = document.querySelector('.detail-view-inner');
+    if (inner.parentElement !== $id('detail-view')) $id('detail-view').appendChild(inner);
+    inner.classList.remove('embedded');
+    this.embedded = false;
+    this._populate(listing, opts);
+    $id('detail-view').style.display = 'flex';
+    document.addEventListener('keydown', detailView._key);
+  },
+
+  // Desktop swipe page: the same panel, docked next to the card stack (no overlay, no key handler).
+  embed(listing) {
+    this.embedded = true;
+    this._populate(listing, { fromSwipe: true, embedded: true });
+  },
+
+  _populate(listing, opts = {}) {
     this.listing   = listing;
     this.imgs      = parseImages(listing);
     this.idx       = 0;
@@ -438,18 +456,18 @@ const detailView = {
 
     // Swipe actions only make sense (and only stay in sync with the queue)
     // when opened from the swipe page itself.
-    $id('detail-swipe-actions').style.display = this.fromSwipe ? 'flex' : 'none';
+    $id('detail-swipe-actions').style.display = (this.fromSwipe && !opts.embedded) ? 'flex' : 'none';
 
     this._renderGallery();
-    $id('detail-view').style.display = 'flex';
-    document.addEventListener('keydown', detailView._key);
   },
 
   close() {
+    if (this.embedded) return;                       // the docked panel is not closable
     this._contact?.destroy(); this._contact = null;
     $id('detail-view').style.display = 'none';
     document.removeEventListener('keydown', detailView._key);
     this.listing = null;
+    syncDetailMount();                               // back to the docked panel on wide swipe pages
   },
 
   _renderGallery() {
@@ -1133,49 +1151,30 @@ function updateSwipeBadge(count) {
   }
 }
 
-// Desktop quick view: the top listing's essentials next to the card stack, so most
-// listings can be judged without opening the full detail view (hidden below 1100px by CSS).
-let _quickId = null;
-function renderQuickView(listing) {
-  const el = $id('swipe-quick');
-  if (!el) return;
-  if (!listing) { _quickId = null; el.innerHTML = ''; return; }
-  if (_quickId === listing.id) return;
-  _quickId = listing.id;
-  const images = parseImages(listing).filter(u => u && u.startsWith('http'));
-  const cold  = (listing.price_cold || '').trim();
-  const total = (listing.price      || '').trim();
-  const price = cold
-    ? `<b>${esc(cold)}</b><span>kalt${total && total !== cold ? ` · ${esc(total)} warm` : ''}</span>`
-    : (total ? `<b>${esc(total)}</b>` : '');
-  const { costsHtml, factsHtml } = listingLists(listing);
-  const thumbs = images.slice(0, 4).map((u, i) => `<button type="button" class="sq-thumb${i === 0 ? ' on' : ''}" data-sq-photo="${i}" aria-label="Foto ${i + 1} vergrößern"><img src="${esc(u)}" alt="" loading="lazy"></button>`).join('')
-    + (images.length > 4 ? `<button type="button" class="sq-thumb sq-more" data-sq-photo="4" aria-label="Alle Fotos ansehen">+${images.length - 4}</button>` : '');
-  const map = osmEmbedHtml(listing);
-  const desc = (listing.description || '').trim();
-  el.innerHTML = `
-    <div class="sq-head"><span class="sq-ov">Schnellansicht</span><span class="sq-ov">${esc(listing.platform || 'Inserat')}</span></div>
-    <h2 class="sq-title">${esc(listing.title || 'Inserat')}</h2>
-    ${price ? `<div class="sq-price">${price}</div>` : ''}
-    ${thumbs ? `<div class="sq-thumbs">${thumbs}</div>` : ''}
-    ${(costsHtml || factsHtml) ? `<div class="sq-cols"><div>${costsHtml}</div><div>${factsHtml}</div></div>` : ''}
-    ${desc ? `<div class="detail-section-label">Beschreibung</div><p class="sq-desc">${esc(desc)}</p>` : ''}
-    ${map ? `<div class="detail-section-label">Lage</div><div class="sq-map">${map}</div>` : ''}
-    <div class="sq-actions">
-      <button type="button" class="btn-primary sq-btn" data-sq="message">${icon('chat', 'sm')}Nachricht vorbereiten</button>
-      <button type="button" class="btn-secondary sq-btn" data-sq="details">${icon('external', 'sm')}Alle Details</button>
-    </div>`;
-  el.scrollTop = 0;
-  el._listing = listing; el._images = images;
+// Wide screens (≥1100px) on the swipe page: the detail panel is docked next to the card stack
+// and always shows the top card; everywhere else it is the modal in #detail-view.
+const DOCK_MIN_WIDTH = 1100;
+function syncDetailMount() {
+  const inner = document.querySelector('.detail-view-inner');
+  const host = $id('swipe-quick'), overlay = $id('detail-view');
+  if (!inner || !host) return;
+  const want = window.innerWidth >= DOCK_MIN_WIDTH && $id('view-swipe').classList.contains('active')
+               && overlay.style.display === 'none' && !!state.user;
+  if (want) {
+    if (inner.parentElement !== host) host.appendChild(inner);
+    inner.classList.add('embedded');
+    const top = state.swipeQueue[0];
+    host.classList.toggle('empty', !top);
+    if (top && !(detailView.embedded && detailView.listing?.id === top.id)) detailView.embed(top);
+    if (!top) { detailView._contact?.destroy(); detailView._contact = null; detailView.listing = null; }
+  } else if (inner.parentElement === host) {
+    detailView._contact?.destroy(); detailView._contact = null;
+    overlay.appendChild(inner); inner.classList.remove('embedded');
+    detailView.embedded = false; detailView.listing = null;
+  }
 }
-$id('swipe-quick')?.addEventListener('click', e => {
-  const el = $id('swipe-quick'); const l = el._listing; if (!l) return;
-  const ph = e.target.closest('[data-sq-photo]');
-  if (ph) { lb.open(el._images, Number(ph.dataset.sqPhoto) || 0); return; }
-  const act = e.target.closest('[data-sq]')?.dataset.sq;
-  if (act === 'details') detailView.open(l, { fromSwipe: true });
-  if (act === 'message') messageModal.open(l, {});
-});
+let _dockTimer = null;
+window.addEventListener('resize', () => { clearTimeout(_dockTimer); _dockTimer = setTimeout(syncDetailMount, 150); });
 
 function renderStack() {
   const stack   = $id('card-stack');
@@ -1185,9 +1184,9 @@ function renderStack() {
 
   if (!state.swipeQueue.length) {
     stack.querySelectorAll('.swipe-card').forEach(c => c.remove());
-    empty.style.display = ''; actions.style.display = 'none'; renderQuickView(null); return;
+    empty.style.display = ''; actions.style.display = 'none'; syncDetailMount(); return;
   }
-  renderQuickView(state.swipeQueue[0]);
+  syncDetailMount();
   empty.style.display = 'none'; actions.style.display = 'flex';
 
   const top3 = state.swipeQueue.slice(0, 3);
