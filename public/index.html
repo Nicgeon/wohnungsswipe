@@ -116,9 +116,9 @@
       <button id="account-btn" class="nav-avatar" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="account-menu" aria-label="Konto-Menü"><span id="nav-avatar">?</span></button>
     </div>
     <div id="account-menu" class="account-menu" role="menu" hidden>
-      <div class="acct-head"><span class="acct-label">Angemeldet als</span><span class="acct-name" id="nav-username"></span></div>
-      <button type="button" role="menuitem" class="acct-item" data-acct-goto="settings"><span class="i" data-icon="user"></span>Profil &amp; Einstellungen</button>
-      <button type="button" role="menuitem" class="acct-item" data-acct-goto="profile"><span class="i" data-icon="file"></span>Bewerber-Profil</button>
+      <div class="acct-head"><span class="acct-av" id="acct-av">?</span><span class="acct-who"><span class="acct-name" id="nav-username"></span><span class="acct-mail" id="nav-email"></span></span></div>
+      <button type="button" role="menuitem" class="dd-item" data-acct-goto="profile"><span class="dd-tile i" data-icon="profile"></span><span class="dd-text"><b>Bewerber-Profil</b><span id="acct-profile-sub">Angaben für Nachrichten an Vermieter</span></span></button>
+      <button type="button" role="menuitem" class="dd-item" data-acct-goto="settings"><span class="dd-tile i" data-icon="sliders"></span><span class="dd-text"><b>Konto &amp; Einstellungen</b><span>Benachrichtigungen, Passwort</span></span></button>
       <div class="acct-theme">
         <span class="acct-label">Darstellung</span>
         <div class="theme-seg" role="group" aria-label="Darstellung">
@@ -127,7 +127,7 @@
           <button type="button" data-theme-mode="dark"  aria-pressed="false"><span class="i" data-icon="moon"></span>Dunkel</button>
         </div>
       </div>
-      <button type="button" role="menuitem" class="acct-item danger" id="logout-btn"><span class="i" data-icon="logout"></span>Ausloggen</button>
+      <button type="button" role="menuitem" class="dd-item danger" id="logout-btn"><span class="dd-tile i" data-icon="logout"></span><span class="dd-text"><b>Ausloggen</b></span></button>
     </div>
   </nav>
 
@@ -135,6 +135,14 @@
     <button class="tab-nav active" data-view="swipe">   <span class="tab-icon i" data-icon="cards"></span><span>Swipen</span></button>
     <button class="tab-nav"        data-view="rated">   <span class="tab-icon i" data-icon="bookmark"></span><span>Bewertet</span></button>
     <button class="tab-nav"        data-view="groups">  <span class="tab-icon i" data-icon="users"></span><span>Gruppen</span></button>
+    <span class="nav-menu" id="nav-inserate-wrap">
+      <button class="tab-nav" id="nav-inserate" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="inserate-menu"><span class="tab-icon i" data-icon="agent"></span><span>Inserate</span><span class="i sm nav-car" data-icon="chevdown"></span></button>
+      <div class="nav-dd" id="inserate-menu" role="menu" hidden>
+        <button type="button" role="menuitem" class="dd-item" data-goto="add"><span class="dd-tile i" data-icon="addbox"></span><span class="dd-text"><b>Inserat hinzufügen</b><span>Link einfügen und direkt bewerten</span></span></button>
+        <button type="button" role="menuitem" class="dd-item" data-goto="jobs"><span class="dd-tile i" data-icon="agent"></span><span class="dd-text"><b>Suchagenten</b><span>Suchen automatisch neue Inserate</span></span><span class="dd-pill ok" data-meta="agents" hidden></span></button>
+        <button type="button" role="menuitem" class="dd-item" data-goto="archive"><span class="dd-tile i" data-icon="archive"></span><span class="dd-text"><b>Archiv</b><span>Inserate, die offline gegangen sind</span></span><span class="dd-pill" data-meta="archive" hidden></span></button>
+      </div>
+    </span>
     <button class="tab-nav"        data-view="more">    <span class="tab-icon i" data-icon="grid"></span><span>Mehr</span></button>
   </div>
 
@@ -289,49 +297,52 @@
   <div id="view-more" class="view">
     <div class="view-content">
       <h2 class="view-title">Mehr</h2>
-      <p class="view-subtitle">Weitere Bereiche der App.</p>
-      <div class="more-menu">
-        <button class="more-menu-row" data-goto="profile">
-          <span class="more-menu-icon">📝</span>
-          <span class="more-menu-text">
-            <span class="more-menu-title">Bewerber-Profil</span>
-            <span class="more-menu-sub">Angaben für Nachrichten an Vermieter</span>
-          </span>
-          <span class="more-menu-arrow">›</span>
+      <p class="view-subtitle">Dein Profil und deine Suche an einem Ort.</p>
+
+      <div class="mh-group">Ich</div>
+      <div class="mh-list">
+        <button class="mh-row" data-goto="profile">
+          <span class="mh-tile i" data-icon="profile"></span>
+          <span class="mh-text"><b>Bewerber-Profil</b><span id="mh-profile-sub">Angaben für Nachrichten an Vermieter</span>
+            <span class="mh-bar" id="mh-profile-bar" hidden><i></i></span></span>
+          <span class="mh-chev i sm" data-icon="next"></span>
         </button>
-        <button class="more-menu-row" data-goto="add">
-          <span class="more-menu-icon">➕</span>
-          <span class="more-menu-text">
-            <span class="more-menu-title">Inserat hinzufügen</span>
-            <span class="more-menu-sub">Link direkt einfügen und bewerten</span>
-          </span>
-          <span class="more-menu-arrow">›</span>
-        </button>
-        <button class="more-menu-row" data-goto="jobs">
-          <span class="more-menu-icon">📡</span>
-          <span class="more-menu-text">
-            <span class="more-menu-title">Suchagenten</span>
-            <span class="more-menu-sub">Automatisch neue Inserate finden</span>
-          </span>
-          <span class="more-menu-arrow">›</span>
-        </button>
-        <button class="more-menu-row" data-goto="archive">
-          <span class="more-menu-icon">🗃️</span>
-          <span class="more-menu-text">
-            <span class="more-menu-title">Archiv</span>
-            <span class="more-menu-sub">Offline gegangene Inserate</span>
-          </span>
-          <span class="more-menu-arrow">›</span>
-        </button>
-        <button class="more-menu-row" data-goto="settings">
-          <span class="more-menu-icon">⚙️</span>
-          <span class="more-menu-text">
-            <span class="more-menu-title">Konto &amp; Einstellungen</span>
-            <span class="more-menu-sub">Account, Statistiken, Benachrichtigungen</span>
-          </span>
-          <span class="more-menu-arrow">›</span>
+        <button class="mh-row" data-goto="settings">
+          <span class="mh-tile i" data-icon="sliders"></span>
+          <span class="mh-text"><b>Konto &amp; Einstellungen</b><span>Benachrichtigungen, Statistiken, Passwort</span></span>
+          <span class="mh-chev i sm" data-icon="next"></span>
         </button>
       </div>
+
+      <div class="mh-group">Wohnungssuche</div>
+      <div class="mh-list">
+        <button class="mh-row" data-goto="add">
+          <span class="mh-tile i" data-icon="addbox"></span>
+          <span class="mh-text"><b>Inserat hinzufügen</b><span>Link einfügen und direkt bewerten</span></span>
+          <span class="mh-chev i sm" data-icon="next"></span>
+        </button>
+        <button class="mh-row" data-goto="jobs">
+          <span class="mh-tile i" data-icon="agent"></span>
+          <span class="mh-text"><b>Suchagenten</b><span>Suchen automatisch neue Inserate</span></span>
+          <span class="dd-pill ok" data-meta="agents" hidden></span>
+          <span class="mh-chev i sm" data-icon="next"></span>
+        </button>
+        <button class="mh-row" data-goto="archive">
+          <span class="mh-tile i" data-icon="archive"></span>
+          <span class="mh-text"><b>Archiv</b><span>Inserate, die offline gegangen sind</span></span>
+          <span class="dd-pill" data-meta="archive" hidden></span>
+          <span class="mh-chev i sm" data-icon="next"></span>
+        </button>
+      </div>
+
+      <div class="mh-group">Darstellung</div>
+      <div class="theme-seg theme-seg-lg" role="group" aria-label="Darstellung">
+        <button type="button" data-theme-mode="auto"  aria-pressed="false"><span class="i" data-icon="auto"></span>Auto</button>
+        <button type="button" data-theme-mode="light" aria-pressed="false"><span class="i" data-icon="sun"></span>Hell</button>
+        <button type="button" data-theme-mode="dark"  aria-pressed="false"><span class="i" data-icon="moon"></span>Dunkel</button>
+      </div>
+
+      <button class="mh-logout" id="mh-logout-btn" type="button"><span class="i sm" data-icon="logout"></span>Ausloggen</button>
     </div>
   </div>
 
@@ -341,7 +352,7 @@
       <div class="pf-header">
         <button class="pf-back" id="pf-back" type="button" aria-label="Zurück">‹</button>
         <div class="pf-header-text">
-          <div class="pf-crumb">Mehr › Bewerber-Profil</div>
+          <div class="pf-crumb">Ich › Bewerber-Profil</div>
           <h2 class="view-title" id="pf-title">Bewerber-Profil</h2>
           <div class="pf-status" id="pf-status" data-state="saved" role="status" aria-live="polite">
             <span class="pf-status-dot"></span><span id="pf-status-text">Alle Änderungen gespeichert</span>
@@ -385,7 +396,7 @@
   <!-- ── JOBS (Suchagenten) ─────────────────────────── -->
   <div id="view-jobs" class="view">
     <div class="view-content">
-      <button class="btn-ghost back-btn" data-back-to-more>← Mehr</button>
+      <button class="btn-ghost back-btn" data-back-to-more>← Zurück</button>
       <h2 class="view-title">Suchagenten</h2>
       <p class="view-subtitle">Suchergebnis-URL eintragen – neue Inserate werden automatisch geladen.</p>
       <div class="card-form">
@@ -450,7 +461,7 @@
   <!-- ── ARCHIVE ──────────────────────────────────────── -->
   <div id="view-archive" class="view">
     <div class="view-content">
-      <button class="btn-ghost back-btn" data-back-to-more>← Mehr</button>
+      <button class="btn-ghost back-btn" data-back-to-more>← Zurück</button>
       <div class="rated-header">
         <div>
           <h2 class="view-title">Archiv</h2>
@@ -476,7 +487,7 @@
   <!-- ── SETTINGS ──────────────────────────────────── -->
   <div id="view-settings" class="view">
     <div class="view-content">
-      <button class="btn-ghost back-btn" data-back-to-more>← Mehr</button>
+      <button class="btn-ghost back-btn" data-back-to-more>← Zurück</button>
       <h2 class="view-title">Profil</h2>
 
       <!-- Account card -->

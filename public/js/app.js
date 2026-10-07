@@ -71,6 +71,9 @@ function showScreen(id) {
 
 const SUB_VIEWS = new Set(['add', 'jobs', 'archive', 'settings', 'profile']);
 
+const isDesktopNav = () => window.innerWidth >= 900;
+const backTarget = () => isDesktopNav() ? 'swipe' : 'more';
+
 function showView(name, isSubNav = false) {
   if (name !== 'rated' && state.ratedSelectMode) setRatedSelectMode(false);
   // The profile page autosaves; make sure nothing is lost when leaving it.
@@ -80,10 +83,17 @@ function showView(name, isSubNav = false) {
   $id(`view-${name}`).classList.add('active');
   $id('swipe-counter').style.display = name === 'swipe' ? '' : 'none';
 
-  // Sub-views (jobs/archive/settings) keep the "Mehr" tab highlighted
+  // Desktop has no "Mehr" page: it is split between the "Inserate" dropdown and the avatar menu.
+  if (name === 'more' && isDesktopNav()) { showView('swipe'); return; }
+  // Sub-views keep their entry point highlighted: "Inserate"/avatar on desktop, "Mehr" on phones
+  const huntView = name === 'add' || name === 'jobs' || name === 'archive';
+  const desktop = isDesktopNav();
+  $id('nav-inserate')?.classList.toggle('active', desktop && huntView);
+  $id('account-btn')?.classList.toggle('on', desktop && (name === 'settings' || name === 'profile'));
   const tabKey = SUB_VIEWS.has(name) ? 'more' : name;
-  document.querySelector(`.tab-nav[data-view="${tabKey}"]`)?.classList.add('active');
+  if (!(desktop && SUB_VIEWS.has(name))) document.querySelector(`.tab-nav[data-view="${tabKey}"]`)?.classList.add('active');
 
+  if (name === 'more')     window.renderAccountMeta?.();
   if (name === 'swipe')    loadSwipeQueue();
   if (name === 'rated')    loadRated();
   if (name === 'groups')   loadGroups();
@@ -95,16 +105,20 @@ function showView(name, isSubNav = false) {
   syncDetailMount();
 }
 
-document.querySelectorAll('.tab-nav').forEach(btn =>
+document.querySelectorAll('.tab-nav[data-view]').forEach(btn =>
   btn.addEventListener('click', () => showView(btn.dataset.view))
 );
+// Resizing from phone to desktop while on "Mehr" – that page doesn't exist there
+window.addEventListener('resize', () => {
+  if (isDesktopNav() && $id('view-more').classList.contains('active')) showView('swipe');
+});
 
 // "Mehr" sub-menu navigation
 document.querySelectorAll('[data-goto]').forEach(btn =>
   btn.addEventListener('click', () => showView(btn.dataset.goto, true))
 );
 document.querySelectorAll('[data-back-to-more]').forEach(btn =>
-  btn.addEventListener('click', () => showView('more', true))
+  btn.addEventListener('click', () => showView(backTarget(), true))
 );
 
 // ══════════════════════════════════════════════════════════

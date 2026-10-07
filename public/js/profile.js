@@ -625,7 +625,7 @@ function pfBindEditor() {
   $id('pf-nav').addEventListener('click', e => { const b = e.target.closest('[data-section]'); if (b) pfGoto(b.dataset.section); });
   $id('pf-missing').addEventListener('click', e => { const b = e.target.closest('[data-section]'); if (b) pfGoto(b.dataset.section, { fromMissing: true }); });
   $id('pf-back').addEventListener('click', () => {
-    if (!pfDesktop() && pf.mode === 'edit') { pf.mode = 'hub'; pfApplyMode(); } else showView('more', true);
+    if (!pfDesktop() && pf.mode === 'edit') { pf.mode = 'hub'; pfApplyMode(); } else showView(window.innerWidth >= 900 ? 'swipe' : 'more', true);
   });
   $id('pf-switch').addEventListener('click', e => { const b = e.target.closest('[data-target]'); if (b && String(b.dataset.target) !== String(pf.target)) pfSwitchTarget(b.dataset.target === 'me' ? 'me' : b.dataset.target); });
   $id('pf-switch').addEventListener('change', e => { if (e.target.tagName === 'SELECT' && e.target.value) pfSwitchTarget(e.target.value); });

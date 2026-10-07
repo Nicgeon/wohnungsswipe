@@ -35,6 +35,12 @@ const ICONS = {
   dots:     'M12 6h.01M12 12h.01M12 18h.01',
   sort:     'M4 7h10M4 12h7M4 17h4M17 7v10M17 17l-3-3M17 17l3-3',
   trash:    'M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12',
+  profile:  'M6 3h9l4 4v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM15 3v4h4M9.5 13a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM7 18c.5-2 2-3 3.5-3s3 1 3.5 3',
+  sliders:  'M4 7h9M17 7h3M4 17h3M11 17h9M15 4v6M9 14v6',
+  addbox:   'M6 3h12a3 3 0 0 1 3 3v12a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3zM12 8v8M8 12h8',
+  agent:    'M10.5 17a6.5 6.5 0 1 0 0-13 6.5 6.5 0 0 0 0 13zM15.5 15.5L20 20M10.5 7.5v3l2 1.5',
+  archive:  'M4 5h16v4H4zM5 9v9a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9M10 13h4',
+  chevdown: 'M6 9l6 6 6-6',
 };
 function icon(name, cls = '') {
   return `<svg class="ic ${cls}" viewBox="0 0 24 24" aria-hidden="true"><path d="${ICONS[name] || ''}"/></svg>`;
@@ -78,24 +84,65 @@ function setNavUser(name) {
   const n = name || '';
   const el = document.getElementById('nav-username');
   if (el) el.textContent = n;
-  const av = document.getElementById('nav-avatar');
-  if (av) av.textContent = (n.trim().charAt(0) || '?').toUpperCase();
+  const letter = (n.trim().charAt(0) || '?').toUpperCase();
+  const av = document.getElementById('nav-avatar'); if (av) av.textContent = letter;
+  const av2 = document.getElementById('acct-av'); if (av2) av2.textContent = letter;
 }
 
-(function initAccountMenu() {
-  const btn = document.getElementById('account-btn');
-  const menu = document.getElementById('account-menu');
-  if (!btn || !menu) return;
+// ── Header dropdowns: avatar menu + "Inserate" (desktop) ──
+function initDropdown(btn, menu, onOpen) {
+  if (!btn || !menu) return { close() {} };
   const close = () => { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); };
-  const open  = () => { menu.hidden = false; btn.setAttribute('aria-expanded', 'true'); menu.querySelector('.acct-item')?.focus(); };
+  const open = () => {
+    document.dispatchEvent(new CustomEvent('ws-close-dropdowns', { detail: menu.id }));
+    menu.hidden = false; btn.setAttribute('aria-expanded', 'true'); onOpen?.();
+    menu.querySelector('[role="menuitem"]')?.focus();
+  };
   btn.addEventListener('click', e => { e.stopPropagation(); menu.hidden ? open() : close(); });
   document.addEventListener('click', e => { if (!menu.hidden && !menu.contains(e.target)) close(); });
   document.addEventListener('keydown', e => { if (e.key === 'Escape' && !menu.hidden) { close(); btn.focus(); } });
-  menu.addEventListener('click', e => {
+  document.addEventListener('ws-close-dropdowns', e => { if (e.detail !== menu.id) close(); });
+  menu.addEventListener('click', e => { if (e.target.closest('[role="menuitem"]')) close(); });
+  return { close };
+}
+
+// Small facts shown in the menus and on the "Mehr" page (profile completeness, agents, archive); cached briefly.
+let _acctMeta = null, _acctMetaAt = 0;
+async function loadAccountMeta(force = false) {
+  if (!force && _acctMeta && Date.now() - _acctMetaAt < 20000) return _acctMeta;
+  const get = async u => { try { return await (await fetch(u)).json(); } catch (_) { return {}; } };
+  const [me, prof, jobs, arch] = await Promise.all([get('/api/auth/me'), get('/api/profile'), get('/api/jobs'), get('/api/archive')]);
+  _acctMeta = {
+    email: me.email || '',
+    pct: prof.completeness ? prof.completeness.percent : null,
+    missing: prof.completeness ? (prof.completeness.missing || []).length : 0,
+    agents: (jobs.jobs || []).filter(j => j.active).length,
+    archive: (arch.listings || []).length,
+  };
+  _acctMetaAt = Date.now();
+  return _acctMeta;
+}
+async function renderAccountMeta(force = false) {
+  const m = await loadAccountMeta(force);
+  const em = document.getElementById('nav-email'); if (em) em.textContent = m.email;
+  const profText = m.pct == null ? 'Angaben für Nachrichten an Vermieter'
+    : m.pct >= 100 ? 'Vollständig' : `${m.pct} % vollständig` + (m.missing ? ` · ${m.missing} Angabe${m.missing === 1 ? '' : 'n'} fehlen` : '');
+  const a = document.getElementById('acct-profile-sub'); if (a) a.textContent = m.pct == null ? profText : `${m.pct} % vollständig`;
+  const b = document.getElementById('mh-profile-sub'); if (b) b.textContent = profText;
+  const bar = document.getElementById('mh-profile-bar');
+  if (bar && m.pct != null) { bar.hidden = false; bar.firstElementChild.style.width = Math.min(100, m.pct) + '%'; }
+  document.querySelectorAll('[data-meta="agents"]').forEach(el => { el.hidden = !m.agents; el.textContent = `${m.agents} aktiv`; });
+  document.querySelectorAll('[data-meta="archive"]').forEach(el => { el.hidden = !m.archive; el.textContent = m.archive; });
+}
+
+(function initMenus() {
+  initDropdown(document.getElementById('account-btn'), document.getElementById('account-menu'), () => renderAccountMeta(true));
+  initDropdown(document.getElementById('nav-inserate'), document.getElementById('inserate-menu'), () => renderAccountMeta());
+  document.getElementById('account-menu')?.addEventListener('click', e => {
     const go = e.target.closest('[data-acct-goto]');
-    if (go) { close(); window.showView?.(go.dataset.acctGoto, true); return; }
-    if (e.target.closest('#logout-btn')) close();
+    if (go) window.showView?.(go.dataset.acctGoto, true);
   });
+  document.getElementById('mh-logout-btn')?.addEventListener('click', () => document.getElementById('logout-btn')?.click());
 })();
 
 hydrateIcons();
