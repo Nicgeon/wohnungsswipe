@@ -1,0 +1,67 @@
+name: Docker Hub
+
+# Baut das Image und veröffentlicht es als nicgeon/wohnungsswipe auf Docker Hub:
+#   - Push auf master  → :latest und :sha-<kurz>
+#   - Tag v1.2.3       → :1.2.3, :1.2 und :latest
+#   - manuell          → über "Run workflow" im Actions-Tab
+# Voraussetzung: Repository-Secrets DOCKERHUB_USERNAME und DOCKERHUB_TOKEN
+# (Docker Hub → Account Settings → Personal access tokens, Rechte "Read & Write").
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*.*.*']
+    paths-ignore:
+      - '**.md'
+      - '.gitignore'
+  workflow_dispatch:
+
+concurrency:
+  group: docker-publish-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: nicgeon/wohnungsswipe
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: QEMU (arm64 für Raspberry Pi / ARM-Server)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Tags und Labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-,format=short,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Build und Push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
