@@ -565,6 +565,9 @@ function checkKleinanzeigenStatus($, why = {}) {
     prefix = m ? m[1] : '';
   }
   if (prefix) { why.reason = `Status-Präfix im Titel: "${prefix}"`; return /reserv/i.test(prefix) ? 'reserved' : 'offline'; }
+  // The page's own JS config states it explicitly: `adExpired:false` on live ads.
+  const expiredFlag = $('script').toArray().some(el => /adExpired\s*:\s*true/.test($(el).html() || ''));
+  if (expiredFlag) { why.reason = 'adExpired:true im Seiten-Skript'; return 'offline'; }
   if ($('.adexpired, [data-testid="adexpired"]').length) { why.reason = 'adexpired-Marker'; return 'offline'; }
   if ($('[data-testid="reserved-badge"], .reserved-badge').length) { why.reason = 'reserved-Badge'; return 'reserved'; }
   if ($('h1#viewad-title').length) return 'active';
