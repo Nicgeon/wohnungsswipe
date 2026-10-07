@@ -5,6 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>WohnungsSwipe</title>
   <meta name="theme-color" content="#0f0f11" id="meta-theme-color" />
+  <link rel="icon" type="image/svg+xml" href="/brand/favicon.svg" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/brand/favicon-32.png" />
+  <link rel="icon" href="/favicon.ico" sizes="48x48" />
+  <link rel="apple-touch-icon" href="/brand/apple-touch-icon.png" />
+  <link rel="manifest" href="/manifest.webmanifest" />
   <script>
     // Apply the saved theme before first paint (no dark→light flash). 'auto' follows the OS.
     (function () {
@@ -25,6 +30,22 @@
 </head>
 <body>
 
+<!-- Logo mark (house-shaped swipe card with a heart cut-out); colour via currentColor -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs>
+    <symbol id="ws-mark" viewBox="0 0 64 64">
+      <mask id="ws-mark-cut" maskUnits="userSpaceOnUse" x="-4" y="-4" width="72" height="72">
+        <rect x="-4" y="-4" width="72" height="72" fill="#fff"/>
+        <path d="M32 50.5 s-11-6.6-11-14.4 a6.2 6.2 0 0 1 11-3.7 a6.2 6.2 0 0 1 11 3.7 C43 43.9 32 50.5 32 50.5 z" fill="#000"/>
+      </mask>
+      <g mask="url(#ws-mark-cut)" fill="currentColor" stroke="currentColor" stroke-width="3" stroke-linejoin="round">
+        <path d="M32 5 L55.5 22 V54 a5 5 0 0 1 -5 5 H13.5 a5 5 0 0 1 -5 -5 V22 Z" transform="rotate(-8 32 36) translate(-5 0)" fill-opacity=".38" stroke-opacity=".38"/>
+        <path d="M32 5 L55.5 22 V54 a5 5 0 0 1 -5 5 H13.5 a5 5 0 0 1 -5 -5 V22 Z"/>
+      </g>
+    </symbol>
+  </defs>
+</svg>
+
 <!-- ══ AUTH ═══════════════════════════════════════════════ -->
 <div id="auth-screen" class="screen active">
   <div class="auth-bg">
@@ -34,8 +55,8 @@
   </div>
   <div class="auth-container">
     <div class="auth-logo">
-      <span class="logo-icon">🏠</span>
-      <h1 class="logo-text">WohnungsSwipe</h1>
+      <svg class="logo-mark logo-icon" viewBox="0 0 64 64" role="img" aria-label="WohnungsSwipe"><use href="#ws-mark"/></svg>
+      <h1 class="logo-text">Wohnungs<b>Swipe</b></h1>
       <p class="logo-sub">Wohnungssuche, neu gedacht.</p>
     </div>
     <div class="auth-tabs">
@@ -89,7 +110,7 @@
 <!-- ══ APP ════════════════════════════════════════════════ -->
 <div id="app-screen" class="screen">
   <nav class="app-nav">
-    <div class="nav-logo"><span>WohnungsSwipe</span></div>
+    <div class="nav-logo"><svg class="logo-mark" viewBox="0 0 64 64" aria-hidden="true"><use href="#ws-mark"/></svg><span>Wohnungs<b>Swipe</b></span></div>
     <div class="nav-actions">
       <span class="swipe-counter" id="swipe-counter"><span id="remaining-count">0</span> übrig</span>
       <button id="account-btn" class="nav-avatar" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="account-menu" aria-label="Konto-Menü"><span id="nav-avatar">?</span></button>

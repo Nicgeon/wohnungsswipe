@@ -1,4 +1,11 @@
-# 🏠 Flatswipe
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="public/brand/logo-dark.png">
+    <img src="public/brand/logo-light.png" alt="WohnungsSwipe" width="420">
+  </picture>
+</p>
+
+# Flatswipe
 _also known as Wohnungsswipe_
 
 **This app is completley vibe coded...**
