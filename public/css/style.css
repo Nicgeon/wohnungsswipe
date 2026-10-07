@@ -151,8 +151,8 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline:2px solid
 .tab-nav.active { color:var(--accent-text); }
 .tab-nav.active::after { content:'';position:absolute;bottom:0;left:50%;transform:translateX(-50%);width:28px;height:3px;background:var(--accent);border-radius:3px 3px 0 0; }
 
-/* Mobile: the tab bar sits at the bottom, like a native app (desktop keeps it on top) */
-@media (max-width: 767px) {
+/* Phones and tablets: the tab bar sits at the bottom, like a native app */
+@media (max-width: 899px) {
   .tab-bar { order:99;border-bottom:0;border-top:1px solid var(--border);box-shadow:var(--shadow-dock);padding:4px 8px calc(4px + env(safe-area-inset-bottom, 0px)); }
   .tab-nav { padding:7px 0 5px; }
   .tab-nav.active::after { bottom:auto;top:-5px;border-radius:0 0 3px 3px; }
@@ -167,6 +167,9 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline:2px solid
 /* ── Swipe view ──────────────────────────────────────── */
 #view-swipe { background:var(--bg); }
 
+.swipe-layout { flex:1; display:flex; min-height:0; }
+.swipe-main { flex:1; min-width:0; display:flex; flex-direction:column; min-height:0; }
+.swipe-kbd, .swipe-quick { display:none; }
 .card-stack { flex:1;position:relative;display:flex;align-items:center;justify-content:center;padding:14px 18px 6px;overflow:hidden; }
 
 /* ── Swipe card ──────────────────────────────────────── */
@@ -1096,3 +1099,68 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline:2px solid
 :root[data-theme="light"] .job-badge.platform-immowelt      { color:#5b3fc4; }
 :root[data-theme="light"] .job-badge.platform-rentola       { color:#a2410f; }
 :root[data-theme="light"] .job-badge.platform-meinestadt    { color:#0b6b64; }
+
+.detail-kbd { display:none; }
+/* ══════════════════════════════════════════════════════════
+   DESKTOP (≥900px): one header bar with the navigation as pills,
+   centered content column; ≥1100px: swipe page with a quick view.
+══════════════════════════════════════════════════════════ */
+@media (min-width: 900px) {
+  #app-screen { position:relative; }
+  .app-nav { height:64px; padding:0 32px; }
+  .nav-logo { font-size:1.4rem; }
+  .nav-avatar { width:40px; height:40px; }
+  .swipe-counter { height:28px; font-size:.82rem; }
+  .tab-bar { position:absolute; top:0; left:276px; height:64px; z-index:21; background:transparent; border:0; align-items:center; gap:4px; padding:0; }
+  .tab-nav { flex:none; flex-direction:row; gap:8px; height:40px; padding:0 16px; border-radius:12px; font-size:.9rem; font-weight:500; }
+  .tab-nav:hover { background:var(--hover-bg); }
+  .tab-nav.active { background:var(--bg3); font-weight:600; }
+  .tab-nav.active::after { display:none; }
+  .tab-nav .ic { width:20px; height:20px; }
+  .tab-badge { top:-8px; right:-12px; }
+  .view-content { width:100%; max-width:1280px; margin:0 auto; padding:28px 32px 40px; }
+  .detail-kbd { display:flex; position:absolute; right:24px; gap:14px; color:var(--text2); font-size:.75rem; }
+  .detail-kbd span { display:inline-flex; align-items:center; gap:6px; }
+  .detail-swipe-actions { position:relative; }
+  .detail-gallery-img { background:var(--bg3); }
+}
+kbd { display:inline-flex; align-items:center; justify-content:center; min-width:24px; height:24px; padding:0 6px; border-radius:6px; border:1px solid var(--border-strong); background:var(--bg2); color:var(--text); font:600 .72rem 'DM Sans',sans-serif; }
+
+@media (min-width: 1100px) {
+  .swipe-layout { justify-content:center; gap:40px; padding:24px 40px 20px; max-width:1400px; width:100%; margin:0 auto; }
+  .swipe-main { flex:0 0 560px; align-items:center; }
+  .card-stack { width:100%; padding:10px 20px 6px; }
+  .swipe-card { max-width:480px; }
+  .card-img-area { height:clamp(220px, 34vh, 300px); }
+  .card-title { font-size:1.4rem; }
+  .card-price-over b { font-size:1.9rem; }
+  .swipe-actions { gap:16px; padding-top:16px; }
+  .swipe-kbd { display:flex; gap:18px; justify-content:center; padding:0 0 4px; color:var(--text2); font-size:.8rem; }
+  .swipe-kbd span { display:inline-flex; align-items:center; gap:6px; }
+  .swipe-quick {
+    display:flex; flex-direction:column; flex:1; min-width:0; overflow-y:auto;
+    background:var(--bg2); border:1px solid var(--border); border-radius:20px; padding:26px 30px;
+    scrollbar-width:thin; scrollbar-color:var(--bg3) transparent;
+  }
+  .swipe-quick:empty { display:none; }
+  .swipe-quick > * { flex-shrink:0; }
+  .sq-head { display:flex; justify-content:space-between; gap:12px; margin-bottom:6px; }
+  .sq-ov { font-size:var(--fs-tiny); font-weight:600; letter-spacing:1px; text-transform:uppercase; color:var(--text2); }
+  .sq-title { font-family:'Fraunces',serif; font-size:1.75rem; line-height:1.2; font-weight:700; margin-top:6px; }
+  .sq-price { display:flex; align-items:baseline; gap:10px; margin-top:12px; }
+  .sq-price b { font-family:'Fraunces',serif; font-size:2.3rem; line-height:1.1; font-weight:700; }
+  .sq-price span { color:var(--text2); font-size:.95rem; }
+  .sq-thumbs { display:flex; gap:8px; margin-top:16px; flex-wrap:wrap; }
+  .sq-thumb { width:92px; height:66px; border-radius:12px; overflow:hidden; border:2px solid transparent; padding:0; background:var(--bg3); cursor:pointer; color:var(--text2); font-weight:600; font-size:.9rem; }
+  .sq-thumb img { width:100%; height:100%; object-fit:cover; display:block; }
+  .sq-thumb.on { border-color:var(--accent); }
+  .sq-thumb:hover { border-color:var(--border-hover); }
+  .sq-more { display:flex; align-items:center; justify-content:center; }
+  .sq-cols { display:grid; grid-template-columns:1fr 1fr; gap:0 24px; }
+  .swipe-quick .detail-list { background:var(--bg3); border:0; }
+  .sq-desc { font-size:.92rem; line-height:1.6; display:-webkit-box; -webkit-line-clamp:5; -webkit-box-orient:vertical; overflow:hidden; }
+  .sq-map { height:130px; border-radius:16px; overflow:hidden; border:1px solid var(--border); background:var(--bg3); }
+  .sq-map iframe { width:100%; height:100%; border:0; display:block; }
+  .sq-actions { display:flex; gap:12px; margin-top:auto; position:sticky; bottom:-26px; padding:16px 0 26px; background:linear-gradient(to top, var(--bg2) 75%, transparent); }
+  .sq-btn { width:auto; height:48px; display:inline-flex; align-items:center; justify-content:center; gap:8px; padding:0 20px; font-weight:600; }
+}

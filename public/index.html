@@ -119,19 +119,28 @@
 
   <!-- ── SWIPE ─────────────────────────────────────── -->
   <div id="view-swipe" class="view active">
-    <div class="card-stack" id="card-stack">
-      <div class="empty-state" id="empty-swipe">
-        <div class="empty-icon">🏘️</div>
-        <p>Keine Inserate mehr.</p>
-        <p class="empty-sub">Füge welche hinzu oder richte einen Suchagenten ein.</p>
+    <div class="swipe-layout">
+      <div class="swipe-main">
+        <div class="card-stack" id="card-stack">
+          <div class="empty-state" id="empty-swipe">
+            <div class="empty-icon">🏘️</div>
+            <p>Keine Inserate mehr.</p>
+            <p class="empty-sub">Füge welche hinzu oder richte einen Suchagenten ein.</p>
+          </div>
+        </div>
+        <div class="swipe-actions" id="swipe-actions" style="display:none">
+          <button class="action-btn-mini undo"  id="btn-undo"     title="Letzte Aktion zurücknehmen" aria-label="Rückgängig" disabled><span class="i" data-icon="undo"></span></button>
+          <button class="action-btn dislike"    id="btn-dislike"  title="Nein (←)" aria-label="Nein"><span class="i lg" data-icon="x"></span></button>
+          <button class="action-btn superlike"  id="btn-superlike" title="Super! (↑)" aria-label="Super-Like"><span class="i lg" data-icon="star"></span></button>
+          <button class="action-btn like"       id="btn-like"     title="Ja! (→)" aria-label="Ja"><span class="i lg" data-icon="heart"></span></button>
+          <button class="action-btn-mini skip"  id="btn-skip"     title="Überspringen – später nochmal anzeigen" aria-label="Überspringen"><span class="i" data-icon="skip"></span></button>
+        </div>
+        <div class="swipe-kbd" id="swipe-kbd" aria-hidden="true">
+          <span><kbd>←</kbd>Nein</span><span><kbd>↑</kbd>Super</span><span><kbd>→</kbd>Ja</span><span><kbd>↓</kbd>Später</span><span><kbd>Z</kbd>Rückgängig</span>
+        </div>
       </div>
-    </div>
-    <div class="swipe-actions" id="swipe-actions" style="display:none">
-      <button class="action-btn-mini undo"  id="btn-undo"     title="Letzte Aktion zurücknehmen" aria-label="Rückgängig" disabled><span class="i" data-icon="undo"></span></button>
-      <button class="action-btn dislike"    id="btn-dislike"  title="Nein (←)" aria-label="Nein"><span class="i lg" data-icon="x"></span></button>
-      <button class="action-btn superlike"  id="btn-superlike" title="Super! (↑)" aria-label="Super-Like"><span class="i lg" data-icon="star"></span></button>
-      <button class="action-btn like"       id="btn-like"     title="Ja! (→)" aria-label="Ja"><span class="i lg" data-icon="heart"></span></button>
-      <button class="action-btn-mini skip"  id="btn-skip"     title="Überspringen – später nochmal anzeigen" aria-label="Überspringen"><span class="i" data-icon="skip"></span></button>
+      <!-- Desktop only: quick view of the top listing (filled by renderQuickView) -->
+      <aside class="swipe-quick" id="swipe-quick" aria-label="Schnellansicht"></aside>
     </div>
   </div>
 
@@ -729,6 +738,7 @@
       <button class="action-btn superlike"  id="detail-btn-superlike" title="Super!" aria-label="Super-Like"><span class="i lg" data-icon="star"></span></button>
       <button class="action-btn like"       id="detail-btn-like"      title="Ja!" aria-label="Ja"><span class="i lg" data-icon="heart"></span></button>
       <button class="action-btn-mini skip"  id="detail-btn-skip"      title="Überspringen – später nochmal anzeigen" aria-label="Überspringen"><span class="i" data-icon="skip"></span></button>
+      <span class="detail-kbd" aria-hidden="true"><span><kbd>←</kbd>Nein</span><span><kbd>↑</kbd>Super</span><span><kbd>→</kbd>Ja</span><span><kbd>Esc</kbd>Schließen</span></span>
     </div>
   </div>
 </div>

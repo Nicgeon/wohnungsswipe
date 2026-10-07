@@ -225,6 +225,37 @@ $id('lightbox').addEventListener('click', e => { if (e.target === $id('lightbox'
 //  swipe actions themselves) so tapping through to the original
 //  listing becomes the exception rather than the default habit.
 // ══════════════════════════════════════════════════════════
+// Kosten / Details lists, shared by the detail view and the desktop quick view.
+function listingLists(listing) {
+  const cold  = (listing.price_cold || '').trim();
+  const total = (listing.price      || '').trim();
+  const costRows = [
+    ['Kaltmiete',      cold],
+    ['Nebenkosten',    listing.nebenkosten],
+    ['Heizkosten',     listing.heizkosten],
+    ['Kaution',        listing.kaution],
+  ].filter(([, v]) => v && v.trim());
+  if (cold && total && total !== cold) costRows.push(['Warmmiete', total, true]);
+  const factRows = [
+    ['Wohnungstyp',    listing.property_type],
+    ['Verfügbar ab',   listing.available_from],
+  ].filter(([, v]) => v && v.trim());
+  const list = rows => `<ul class="detail-list">${rows.map(([l, v, isTotal]) =>
+    `<li${isTotal ? ' class="total"' : ''}><span>${esc(l)}</span><b>${esc(v)}</b></li>`).join('')}</ul>`;
+  return {
+    costsHtml: costRows.length ? `<div class="detail-section-label">Kosten</div>${list(costRows)}` : '',
+    factsHtml: factRows.length ? `<div class="detail-section-label">Details</div>${list(factRows)}` : '',
+  };
+}
+
+// Small OpenStreetMap embed around the listing's coordinates ('' without coordinates).
+function osmEmbedHtml(listing) {
+  if (!Number.isFinite(listing.latitude) || !Number.isFinite(listing.longitude)) return '';
+  const lat = listing.latitude, lon = listing.longitude, d = 0.006;
+  const bbox = `${lon - d}%2C${lat - d}%2C${lon + d}%2C${lat + d}`;
+  return `<iframe src="https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${lat}%2C${lon}" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>`;
+}
+
 const detailView = {
   listing:   null,
   imgs:      [],
@@ -259,29 +290,10 @@ const detailView = {
     // Cost list (Kosten) and a second list for the remaining facts (Details).
     // Only rendered when at least one field was actually scraped, so older
     // listings without this data don't show an empty box.
-    const costRows = [
-      ['Kaltmiete',      cold],
-      ['Nebenkosten',    listing.nebenkosten],
-      ['Heizkosten',     listing.heizkosten],
-      ['Kaution',        listing.kaution],
-    ].filter(([, v]) => v && v.trim());
-    if (cold && total && total !== cold) costRows.push(['Warmmiete', total, true]);
-    const factRows = [
-      ['Wohnungstyp',    listing.property_type],
-      ['Verfügbar ab',   listing.available_from],
-    ].filter(([, v]) => v && v.trim());
-    const list = rows => `<ul class="detail-list">${rows.map(([l, v, total]) =>
-      `<li${total ? ' class="total"' : ''}><span>${esc(l)}</span><b>${esc(v)}</b></li>`).join('')}</ul>`;
+    const { costsHtml, factsHtml } = listingLists(listing);
     const costsEl = $id('detail-costs');
-    if (costRows.length || factRows.length) {
-      costsEl.style.display = '';
-      costsEl.innerHTML =
-        (costRows.length ? `<div class="detail-section-label">Kosten</div>${list(costRows)}` : '') +
-        (factRows.length ? `<div class="detail-section-label">Details</div>${list(factRows)}` : '');
-    } else {
-      costsEl.style.display = 'none';
-      costsEl.innerHTML = '';
-    }
+    costsEl.style.display = (costsHtml || factsHtml) ? '' : 'none';
+    costsEl.innerHTML = costsHtml + factsHtml;
 
     this._loadChanges(listing.id);
 
@@ -313,12 +325,7 @@ const detailView = {
     const mapLabel = $id('detail-map-label');
     const hasCoords = Number.isFinite(listing.latitude) && Number.isFinite(listing.longitude);
     if (hasCoords) {
-      const lat = listing.latitude, lon = listing.longitude;
-      const d = 0.006; // small bounding box around the point, roughly a few hundred metres
-      const bbox = `${lon - d}%2C${lat - d}%2C${lon + d}%2C${lat + d}`;
-      mapEmbed.innerHTML = `<iframe
-        src="https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${lat}%2C${lon}"
-        loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>`;
+      mapEmbed.innerHTML = osmEmbedHtml(listing);
       mapEmbed.style.display = ''; mapLabel.style.display = '';
     } else {
       mapEmbed.style.display = 'none'; mapLabel.style.display = 'none';
@@ -985,6 +992,50 @@ function updateSwipeBadge(count) {
   }
 }
 
+// Desktop quick view: the top listing's essentials next to the card stack, so most
+// listings can be judged without opening the full detail view (hidden below 1100px by CSS).
+let _quickId = null;
+function renderQuickView(listing) {
+  const el = $id('swipe-quick');
+  if (!el) return;
+  if (!listing) { _quickId = null; el.innerHTML = ''; return; }
+  if (_quickId === listing.id) return;
+  _quickId = listing.id;
+  const images = parseImages(listing).filter(u => u && u.startsWith('http'));
+  const cold  = (listing.price_cold || '').trim();
+  const total = (listing.price      || '').trim();
+  const price = cold
+    ? `<b>${esc(cold)}</b><span>kalt${total && total !== cold ? ` · ${esc(total)} warm` : ''}</span>`
+    : (total ? `<b>${esc(total)}</b>` : '');
+  const { costsHtml, factsHtml } = listingLists(listing);
+  const thumbs = images.slice(0, 4).map((u, i) => `<button type="button" class="sq-thumb${i === 0 ? ' on' : ''}" data-sq-photo="${i}" aria-label="Foto ${i + 1} vergrößern"><img src="${esc(u)}" alt="" loading="lazy"></button>`).join('')
+    + (images.length > 4 ? `<button type="button" class="sq-thumb sq-more" data-sq-photo="4" aria-label="Alle Fotos ansehen">+${images.length - 4}</button>` : '');
+  const map = osmEmbedHtml(listing);
+  const desc = (listing.description || '').trim();
+  el.innerHTML = `
+    <div class="sq-head"><span class="sq-ov">Schnellansicht</span><span class="sq-ov">${esc(listing.platform || 'Inserat')}</span></div>
+    <h2 class="sq-title">${esc(listing.title || 'Inserat')}</h2>
+    ${price ? `<div class="sq-price">${price}</div>` : ''}
+    ${thumbs ? `<div class="sq-thumbs">${thumbs}</div>` : ''}
+    ${(costsHtml || factsHtml) ? `<div class="sq-cols"><div>${costsHtml}</div><div>${factsHtml}</div></div>` : ''}
+    ${desc ? `<div class="detail-section-label">Beschreibung</div><p class="sq-desc">${esc(desc)}</p>` : ''}
+    ${map ? `<div class="detail-section-label">Lage</div><div class="sq-map">${map}</div>` : ''}
+    <div class="sq-actions">
+      <button type="button" class="btn-primary sq-btn" data-sq="message">${icon('chat', 'sm')}Nachricht vorbereiten</button>
+      <button type="button" class="btn-secondary sq-btn" data-sq="details">${icon('external', 'sm')}Alle Details</button>
+    </div>`;
+  el.scrollTop = 0;
+  el._listing = listing; el._images = images;
+}
+$id('swipe-quick')?.addEventListener('click', e => {
+  const el = $id('swipe-quick'); const l = el._listing; if (!l) return;
+  const ph = e.target.closest('[data-sq-photo]');
+  if (ph) { lb.open(el._images, Number(ph.dataset.sqPhoto) || 0); return; }
+  const act = e.target.closest('[data-sq]')?.dataset.sq;
+  if (act === 'details') detailView.open(l, { fromSwipe: true });
+  if (act === 'message') messageModal.open(l, {});
+});
+
 function renderStack() {
   const stack   = $id('card-stack');
   const actions = $id('swipe-actions');
@@ -993,8 +1044,9 @@ function renderStack() {
 
   if (!state.swipeQueue.length) {
     stack.querySelectorAll('.swipe-card').forEach(c => c.remove());
-    empty.style.display = ''; actions.style.display = 'none'; return;
+    empty.style.display = ''; actions.style.display = 'none'; renderQuickView(null); return;
   }
+  renderQuickView(state.swipeQueue[0]);
   empty.style.display = 'none'; actions.style.display = 'flex';
 
   const top3 = state.swipeQueue.slice(0, 3);
