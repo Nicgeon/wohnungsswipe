@@ -368,26 +368,81 @@ const employmentText = p => {
 
 // Free sentence for the group profile's "Berufliche Situation" when adopting a personal profile.
 
+// Listing titles often carry price talk or marketing after the actual name
+// ("Souterrain mit Terrasse & Garten | 750 € inkl. aller NK"). In a letter to the
+// landlord only the name belongs in the quotation marks.
+function cleanListingTitle(title) {
+  const orig = (title || '').replace(/\s+/g, ' ').trim();
+  if (!orig) return '';
+  let t = orig.split(/\s[|｜]\s/)[0];                                             // "… | 750 € inkl. NK"
+  t = t.replace(/\s*[(\[][^)\]]*(?:€|eur\b|euro\b)[^)\]]*[)\]]/gi, '');          // "(550 € KM)"
+  t = t.replace(/[\s,;:–—-]*\b\d[\d.,]*\s?(?:€|eur\b|euro\b)(?:\s.*)?$/i, '');     // trailing "750 € inkl. aller NK"
+  t = t.replace(/[\s,;:–—-]+\d[\d.,]*\s?(?:m²|m2|qm)\s*$/i, '');                      // trailing ", 55 m²"
+  t = t.replace(/[\p{Extended_Pictographic}\uFE0F]/gu, '').replace(/[!?*]{2,}\s*$/g, '').replace(/[\s,;:–—|-]+$/g, '').trim();
+  return t.length >= 6 ? t : orig;
+}
+
+// Why the flat appeals: built from what the listing really offers, so the sentence is
+// never a blank "[…]". Known amenity tags → genitive phrases, plus the district.
+const FEATURE_PHRASES = [
+  [/balkon/i, 'des Balkons'], [/terrasse/i, 'der Terrasse'], [/garten/i, 'des Gartens'],
+  [/einbauküche|einbaukueche/i, 'der Einbauküche'], [/aufzug|fahrstuhl/i, 'des Aufzugs'],
+  [/keller/i, 'des Kellers'], [/parkett/i, 'des Parketts'], [/dielen/i, 'des Dielenbodens'],
+  [/fußbodenheizung|fussbodenheizung/i, 'der Fußbodenheizung'], [/tageslichtbad/i, 'des Tageslichtbads'],
+  [/stellplatz|garage/i, 'des Stellplatzes'], [/altbau/i, 'des Altbaus'], [/neubau/i, 'des Neubaus'],
+  [/saniert|renoviert/i, 'der Sanierung'], [/möbliert|moebliert/i, 'der Möblierung'],
+];
+function listingAppeal(listing) {
+  let tags = [];
+  try { tags = JSON.parse(listing.tags_json || '[]'); } catch (_) {}
+  const hay = [...tags, listing.title || ''].join(' | ');
+  const feats = [];
+  for (const [re, phrase] of FEATURE_PHRASES) if (re.test(hay) && !feats.includes(phrase)) feats.push(phrase);
+  const parts = feats.slice(0, 2);
+  const loc = (listing.location || '').replace(/^\s*\d{4,5}\s*/, '').trim();
+  if (loc) parts.push(`der Lage in ${loc}`);
+  return parts.length ? germanList(parts) : '';
+}
+
+// Supporting documents as sentences ("A und B legen wir Ihnen gerne vor. C ist beantragt.").
+// The sentence form avoids "…zur Verfügung, A (liegt vor)" fragments and needs no gender guessing.
+function documentsText(documents, { formal = true, plural = true } = {}) {
+  const byStatus = {};
+  for (const d of documents) if (d.doc) (byStatus[d.status || 'vorhanden'] ||= []).push(d.doc);
+  const you = formal ? 'Ihnen' : 'dir';
+  const out = [];
+  const list = names => germanList(names);
+  if (byStatus.vorhanden?.length) out.push(`${cap(list(byStatus.vorhanden))} ${plural ? 'legen wir' : 'lege ich'} ${you} gerne vor.`);
+  if (byStatus.beantragt?.length) {
+    const names = byStatus.beantragt;
+    out.push(`${cap(list(names))} ${(names.length > 1 || names.some(isPluralDoc)) ? 'sind' : 'ist'} beantragt.`);
+  }
+  if (byStatus.auf_anfrage?.length) out.push(`${cap(list(byStatus.auf_anfrage))} ${plural ? 'können wir' : 'kann ich'} ${you} auf Wunsch gerne nachreichen.`);
+  return out.join(' ');
+}
+
 // Build the {placeholder} substitution map from a listing + profile(s).
 // For a group, person-related placeholders aggregate every filled member
 // profile ({name} -> "Anna, Ben und Chris"); for a solo request `profiles`
 // is just [profile], so behaviour is unchanged. Expects visibleProfile()
 // copies so hidden fields come out empty.
-function buildPlaceholders(listing, profile, profiles = [profile], members = null) {
+function buildPlaceholders(listing, profile, profiles = [profile], members = null, opts = {}) {
   const uniq = arr => [...new Set(arr.filter(Boolean))];
   const docs = new Map();
   for (const pr of profiles) for (const d of parseDocuments(pr)) {
     if (d.doc && !docs.has(d.doc.toLowerCase())) docs.set(d.doc.toLowerCase(), d);
   }
-  const unterlagen = [...docs.values()]
-    .map(d => `${d.doc} (${DOC_STATUS_LABEL[d.status]?.[isPluralDoc(d.doc) ? 'many' : 'one'] || d.status})`)
-    .join(', ');
+  const formalTone = opts.formal === undefined ? true : !!opts.formal;
   const people = members || profiles;               // group search: names/jobs come from the members
   const names = uniq(people.map(x => x.display_name));
   const namen = germanList(names);
   const { persons, children: kinder } = householdOf(profiles);
+  const plural = persons > 1;
+  const unterlagen = documentsText([...docs.values()], { formal: formalTone, plural });
+  const unterlagenListe = germanList([...docs.values()].map(d => d.doc));
+  const appeal = listingAppeal(listing);
   return {
-    titel:   listing.title || '',
+    titel:   cleanListingTitle(listing.title),
     preis:   listing.price_cold || listing.price || '',
     warm:    listing.price || '',
     kalt:    listing.price_cold || '',
@@ -409,7 +464,10 @@ function buildPlaceholders(listing, profile, profiles = [profile], members = nul
     einkommen: uniq(profiles.map(x => optionLabel('income_range', x.income_range))).join(', '),
     telefon: uniq(profiles.map(x => x.phone)).join(' oder '),
     erreichbarkeit: uniq(profiles.map(x => x.availability)).join(' bzw. '),
-    unterlagen,
+    unterlagen,                       // full sentences: "A und B legen wir Ihnen gerne vor. C ist beantragt."
+    unterlagen_liste: unterlagenListe, // names only: "A, B und C"
+    merkmale: appeal,                 // "des Balkons und der Lage in Neustadt"
+    grund:   appeal ? `Die Wohnung spricht ${plural ? 'uns' : 'mich'} besonders aufgrund ${appeal} an.` : '',
   };
 }
 
@@ -417,12 +475,16 @@ function buildPlaceholders(listing, profile, profiles = [profile], members = nul
 // removed (instead of leaking a literal "{beruf}" into a message that gets
 // sent to a landlord); unknown ones (typos) stay visible and are reported
 // back in `unknown` so the UI can warn about them.
+const SENTENCE_PLACEHOLDERS = new Set(['unterlagen', 'grund']);
 function applyTemplate(tpl, placeholders) {
   const unknown = [];
-  const text = tpl.replace(/\{([\wäöüÄÖÜß]+)\}/g, (m, key) => {
+  // "…zur Verfügung, {unterlagen}" – these placeholders are whole sentences, so a comma in front of
+  // them becomes a full stop (and disappears together with an empty value).
+  const text = tpl.replace(/(,[ \t]*)?\{([\wäöüÄÖÜß]+)\}/g, (m, comma, key) => {
     const k = key.toLowerCase();
-    if (placeholders[k] === undefined) { if (!unknown.includes(m)) unknown.push(m); return m; }
-    return placeholders[k];
+    if (placeholders[k] === undefined) { if (!unknown.includes(`{${key}}`)) unknown.push(`{${key}}`); return m; }
+    if (comma && SENTENCE_PLACEHOLDERS.has(k)) return placeholders[k] ? `. ${placeholders[k]}` : '.';
+    return (comma || '') + placeholders[k];
   })
     .replace(/[ \t]+([,.;:!?])/g, '$1')
     .replace(/(\S)[ \t]{2,}/g, '$1 ');
@@ -488,7 +550,8 @@ function buildGuidedMessage(listing, profiles, formal, members = null) {
   const paragraphs = [];
   paragraphs.push(formal ? 'Sehr geehrte Damen und Herren,' : 'Hallo,');
 
-  const titleRef = listing.title ? `${formal ? 'Ihre' : 'deine'} Anzeige „${listing.title}“` : `${formal ? 'Ihre' : 'deine'} Wohnungsanzeige`;
+  const cleanTitle = cleanListingTitle(listing.title);
+  const titleRef = cleanTitle ? `${formal ? 'Ihre' : 'deine'} Anzeige „${cleanTitle}“` : `${formal ? 'Ihre' : 'deine'} Wohnungsanzeige`;
   const details = [];
   if (listing.size)  details.push(listing.size);
   if (listing.rooms) details.push(`${listing.rooms} Zimmer`);
@@ -522,6 +585,10 @@ function buildGuidedMessage(listing, profiles, formal, members = null) {
     else if (name)        paragraphs.push(`Mein Name ist ${name}.`);
     else if (job)         paragraphs.push(`Ich bin ${job}.`);
   }
+
+  // Why this flat (from the listing's own amenities and district)
+  const appeal = listingAppeal(listing);
+  if (appeal) paragraphs.push(`Die Wohnung spricht ${uns} besonders aufgrund ${appeal} an.`);
 
   // ── Facts: a few sentences instead of a chain of "Wir …" fragments ──
   const facts = [];
@@ -582,7 +649,7 @@ function buildGuidedMessage(listing, profiles, formal, members = null) {
   }
   if (facts.length) paragraphs.push(facts.join(' '));
 
-  // ── Supporting documents, grouped by status: "A und B liegen vor. C ist beantragt." ──
+  // ── Supporting documents, as sentences grouped by status ──
   const docsByName = new Map();
   for (const prof of profiles) {
     for (const d of parseDocuments(prof)) {
@@ -590,19 +657,8 @@ function buildGuidedMessage(listing, profiles, formal, members = null) {
       if (d.doc && !docsByName.has(key)) docsByName.set(key, d);
     }
   }
-  const documents = [...docsByName.values()];
-  if (documents.length) {
-    const byStatus = {};
-    for (const d of documents) (byStatus[d.status] ||= []).push(d.doc);
-    const statusSentences = [];
-    for (const status of Object.keys(DOC_STATUS_LABEL)) {
-      const names = byStatus[status];
-      if (!names?.length) continue;
-      const label = DOC_STATUS_LABEL[status][(names.length > 1 || names.some(isPluralDoc)) ? 'many' : 'one'];
-      statusSentences.push(`${germanList(names)} ${label}`);
-    }
-    if (statusSentences.length) paragraphs.push(statusSentences.map(x => cap(x) + '.').join(' '));
-  }
+  const docText = documentsText([...docsByName.values()], { formal, plural });
+  if (docText) paragraphs.push(docText);
 
   // Free-text about sections
   const abouts = profiles.map(x => x.about_text).filter(Boolean);
@@ -679,7 +735,7 @@ function groupMembersStatus(entries) {
 }
 
 module.exports = {
-  OPTIONS, SHARE_KEYS, SHARE_KEY_NAMES, SECTIONS, DOC_STATUS_LABEL,
+  OPTIONS, SHARE_KEYS, SHARE_KEY_NAMES, SECTIONS, DOC_STATUS_LABEL, cleanListingTitle, listingAppeal, documentsText,
   householdOf, normalizeGroupProfile, groupAsProfile, completenessGroup, GROUP_SHARE_KEY_NAMES, MEMBER_FED_KEYS, cleanDocuments, parseDocuments, parseShare, hasData, normalizeInput,
   completeness, isFilled, movePhraseOf, personsOf, childrenOf, visibleProfile, blockStatus,
   buildPlaceholders, applyTemplate, buildGuidedMessage, summarizeForAi, groupMembersStatus,

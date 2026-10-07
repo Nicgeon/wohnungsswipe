@@ -862,7 +862,7 @@ app.post('/api/groups/:id/profile/preview', requireAuth, (req, res) => {
   const members = col.profiles.map(pr => P.visibleProfile(pr, { blocks }));
   const tpl = (typeof b.template === 'string' ? b.template : '').substring(0, 4000);
   if (b.mode === 'template' && tpl.trim()) {
-    const { text, unknown } = P.applyTemplate(tpl, P.buildPlaceholders(SAMPLE_LISTING, vis[0], vis, members));
+    const { text, unknown } = P.applyTemplate(tpl, P.buildPlaceholders(SAMPLE_LISTING, vis[0], vis, members, { formal: !!requester.formal }));
     return res.json({ message: text, missingProfiles: col.missing, unknownPlaceholders: unknown,
                       completeness: P.completenessGroup({ ...gp, documents_json: gp.documents_json }) });
   }
@@ -954,7 +954,7 @@ Gib NUR den Nachrichtentext zurück, ohne Betreff, ohne Erklärungen.`;
     const groupTpl = groupId ? getGroupTemplate(req.session.userId, groupId) : '';
     const tpl = (groupTpl && groupTpl.trim()) ? groupTpl : requester.custom_template;
     if (tpl && tpl.trim()) {
-      const { text, unknown } = P.applyTemplate(tpl, P.buildPlaceholders(listing, profiles[0], profiles, members));
+      const { text, unknown } = P.applyTemplate(tpl, P.buildPlaceholders(listing, profiles[0], profiles, members, { formal }));
       return res.json({ message: text, mode: 'template', missingProfiles, unknownPlaceholders: unknown,
                         templateSource: (groupTpl && groupTpl.trim()) ? 'group' : 'personal' });
     }
@@ -1007,7 +1007,7 @@ app.post('/api/message/preview', requireAuth, (req, res) => {
   let message;
   let unknown = [];
   if (b.mode === 'template' && profile.custom_template.trim()) {
-    const r = P.applyTemplate(profile.custom_template, P.buildPlaceholders(SAMPLE_LISTING, vis));
+    const r = P.applyTemplate(profile.custom_template, P.buildPlaceholders(SAMPLE_LISTING, vis, [vis], null, { formal: !!profile.formal }));
     message = r.text; unknown = r.unknown;
   } else {
     message = P.buildGuidedMessage(SAMPLE_LISTING, [vis], profile.formal);
