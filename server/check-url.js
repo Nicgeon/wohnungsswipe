@@ -23,6 +23,10 @@ const { fetchPageRaw, checkListingStatus, detectPlatform, scrapeListing } = requ
     const h1 = $('h1#viewad-title');
     console.log('h1#viewad-title vorhanden:', h1.length > 0, '| data-soldlabel:', JSON.stringify(h1.attr('data-soldlabel') ?? null));
     console.log('.adexpired-Marker:', $('.adexpired, [data-testid="adexpired"]').length, '| reserved-Badge:', $('[data-testid="reserved-badge"], .reserved-badge').length);
+    console.log('h1-HTML:', (h1.first().toString() || '(keiner)').replace(/\s+/g, ' ').slice(0, 500));
+    console.log('Preis-Element:', $('#viewad-price').text().trim() || '(keins)', '| Beschreibung vorhanden:', $('#viewad-description-text, #viewad-description').length > 0, '| Kontakt-Box:', $('#viewad-contact, #viewad-contact-box').length > 0);
+    console.log('og:title:', $('meta[property="og:title"]').attr('content') || '(keins)');
+    console.log('Bilder:', $('img[src*="prod-ads/images"]').length);
     const why = {};
     console.log('Entscheidung (nur Seiteninhalt):', checkListingStatus($, platform, why), why.reason ? `(${why.reason})` : '');
     if (!h1.length) console.log('Textanfang:', $('body').text().replace(/\s+/g, ' ').trim().slice(0, 300));
