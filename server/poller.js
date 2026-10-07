@@ -1130,4 +1130,4 @@ async function pollSearchJob(job, exists, insert) {
   return { newCount, totalFound: urls.length };
 }
 
-module.exports = { pollSearchJob, checkExistingListings, detectPlatform, scrapeListing };
+module.exports = { pollSearchJob, checkExistingListings, detectPlatform, scrapeListing, fetchPageRaw, checkListingStatus };
