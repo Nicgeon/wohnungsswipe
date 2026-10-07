@@ -285,15 +285,17 @@ async function initDb() {
   migrate("ALTER TABLE users       ADD COLUMN notify_matrix   TEXT");
 
   // One-time repair: an over-eager text heuristic flagged live Kleinanzeigen ads
-  // as offline. Put the auto-flagged ones (not user reports) back to active; the
-  // next status check re-evaluates them with the fixed detection.
+  // as offline (already when they were first scraped, so there is no archive
+  // note for most of them). Put every Kleinanzeigen ad back to active except
+  // the ones a user reported by hand; the next status check re-evaluates them
+  // with the fixed detection.
   try {
-    if (!dbGet("SELECT 1 AS x FROM app_meta WHERE key='ka_offline_repair'")) {
+    if (!dbGet("SELECT 1 AS x FROM app_meta WHERE key='ka_offline_repair2'")) {
       dbRun(`UPDATE listings SET status='active'
              WHERE platform='kleinanzeigen' AND status='offline'
-               AND id IN (SELECT listing_id FROM archive_notes WHERE reason='offline')`);
+               AND id NOT IN (SELECT listing_id FROM archive_notes WHERE reason='reported')`);
       dbRun("DELETE FROM archive_notes WHERE reason='offline' AND listing_id IN (SELECT id FROM listings WHERE status='active')");
-      dbRun("INSERT OR IGNORE INTO app_meta (key,value) VALUES ('ka_offline_repair','1')");
+      dbRun("INSERT OR IGNORE INTO app_meta (key,value) VALUES ('ka_offline_repair2','1')");
     }
   } catch (e) { console.warn('[Migration] Kleinanzeigen-Reparatur fehlgeschlagen:', e.message); }
 
@@ -1848,7 +1850,13 @@ app.post('/api/jobs/reset-all', requireAuth, async (req, res) => {
 });
 
 // ── Job runner ─────────────────────────────────────────────
+// A run takes minutes (every listing is fetched with a pause) while the
+// scheduler ticks every 60s and last_run is only written at the end, so
+// without this guard the same job ran several times in parallel.
+const runningJobs = new Set();
 async function runJob(job) {
+  if (runningJobs.has(job.id)) return;
+  runningJobs.add(job.id);
   console.log(`[Poller] Job: ${job.label}`);
   try {
     const { newCount, totalFound } = await pollSearchJob(
@@ -1898,6 +1906,8 @@ async function runJob(job) {
     console.error(`[Poller] Fehler bei ${job.label}: ${err.message}`);
     dbRun(`UPDATE search_jobs SET last_run=datetime('now'),last_error=? WHERE id=?`, [err.message, job.id]);
     saveDb();
+  } finally {
+    runningJobs.delete(job.id);
   }
 }
 

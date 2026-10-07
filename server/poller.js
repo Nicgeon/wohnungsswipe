@@ -550,21 +550,21 @@ function extractTextWithParagraphs($, el) {
 // Unknown (e.g. a bot-check page without the ad markup) counts as active:
 // a wrong "offline" archives a live ad for everyone, a missed one is
 // corrected on the next check by the site's own signals.
-function checkKleinanzeigenStatus($) {
+function checkKleinanzeigenStatus($, why = {}) {
   const title = $('title').text().toLowerCase();
   // <h1 id="viewad-title" data-soldlabel="Nicht mehr verfügbar"> is rendered
   // server-side by Kleinanzeigen for deleted/reserved/sold ads.
   const soldLabel = ($('h1#viewad-title').attr('data-soldlabel') || '').trim();
-  if (soldLabel) return /reserv|vergeben/i.test(soldLabel) ? 'reserved' : 'offline';
-  if ($('.adexpired, [data-testid="adexpired"]').length) return 'offline';
-  if ($('[data-testid="reserved-badge"], .reserved-badge').length) return 'reserved';
+  if (soldLabel) { why.reason = `data-soldlabel="${soldLabel}"`; return /reserv|vergeben/i.test(soldLabel) ? 'reserved' : 'offline'; }
+  if ($('.adexpired, [data-testid="adexpired"]').length) { why.reason = 'adexpired-Marker'; return 'offline'; }
+  if ($('[data-testid="reserved-badge"], .reserved-badge').length) { why.reason = 'reserved-Badge'; return 'reserved'; }
   if ($('h1#viewad-title').length) return 'active';
-  if (/404|not found|seite nicht gefunden|anzeige.*(nicht mehr|gelöscht|nicht vorhanden)/i.test(title)) return 'offline';
+  if (/404|not found|seite nicht gefunden|anzeige.*(nicht mehr|gelöscht|nicht vorhanden)/i.test(title)) { why.reason = `Seitentitel "${title.slice(0, 80)}"`; return 'offline'; }
   return 'active';
 }
 
-function checkListingStatus($, platform) {
-  if (platform === 'kleinanzeigen') return checkKleinanzeigenStatus($);
+function checkListingStatus($, platform, why = {}) {
+  if (platform === 'kleinanzeigen') return checkKleinanzeigenStatus($, why);
   const bodyText = getVisibleText($, 'body').toLowerCase();
   const title    = $('title').text().toLowerCase();
 
@@ -688,6 +688,7 @@ async function scrapeListing(url, opts = {}) {
     const otherAd = /\/s-anzeige\//.test(finalPath) && startId && finalId && startId !== finalId;
     if (startedOnListing && (wentToSearch || otherAd)) {
       d.status = 'offline';
+      console.log(`[Status] ${url} → offline (Weiterleitung auf ${finalUrl})`);
       d.title = d.title || 'Inserat nicht mehr verfügbar';
       d.description = `Anzeige nicht mehr verfügbar (weitergeleitet zu ${finalUrl})`;
       return d;
@@ -723,7 +724,11 @@ async function scrapeListing(url, opts = {}) {
     stripOtherListingsContent($, url);
     stripSellerPreviewImages($);
   }
-  d.status = checkListingStatus($, platform);
+  const why = {};
+  d.status = checkListingStatus($, platform, why);
+  if (platform === 'kleinanzeigen' && d.status !== 'active') {
+    console.log(`[Status] ${url} → ${d.status} (${why.reason || 'unbekannt'})`);
+  }
 
   if (platform === 'kleinanzeigen') {
     // Extra at-a-glance facts (Schlafzimmer/Badezimmer/Etage) that don't
