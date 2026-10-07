@@ -72,6 +72,7 @@ function showScreen(id) {
 const SUB_VIEWS = new Set(['add', 'jobs', 'archive', 'settings', 'profile']);
 
 function showView(name, isSubNav = false) {
+  if (name !== 'rated' && state.ratedSelectMode) setRatedSelectMode(false);
   // The profile page autosaves; make sure nothing is lost when leaving it.
   if (name !== 'profile') window.pfFlush?.();
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
@@ -638,19 +639,10 @@ function buildListCard(listing, opts = {}) {
   const visLabel = { global:'🌐 Alle', private:'🔒 Nur ich', group:'👥 Gruppe' }[listing.visibility || 'global'];
 
   const div = document.createElement('div');
-  div.className = 'list-card' + (opts.selectable ? ' list-card-selectable' : '');
+  div.className = 'list-card' + (opts.selectable ? ' list-card-selectable' : '') + (opts.rated ? ' rc' : '');
 
-  div.innerHTML = `
-    ${opts.selectable ? `<label class="rated-select-wrap" title="Inserat auswählen"><input type="checkbox" class="rated-select" data-listing-id="${listing.id}" ${state.ratedSelected.has(Number(listing.id)) ? 'checked' : ''}><span></span></label>` : ''}
-    <div class="list-card-img-area">
-      ${hasImg
-        ? `<img class="list-card-img" src="${esc(images[0])}" onerror="this.style.display='none'" />`
-        : `<div class="list-card-img-placeholder">🏠</div>`}
-      ${images.length > 1 ? `<span class="list-card-photo-badge">📷 ${images.length}</span>` : ''}
-      ${listing.status === 'offline'   ? `<span class="list-card-offline-badge">Offline</span>` : ''}
-      ${listing.status === 'reserved'  ? `<span class="list-card-offline-badge" style="background:rgba(240,200,60,.8)">Reserviert</span>` : ''}
-    </div>
-    <button class="card-menu-btn" data-menu-toggle title="Optionen">⋮</button>
+  // Shared pieces (same data-* hooks for both card layouts)
+  const menuHtml = `
     <div class="card-menu" data-menu style="display:none">
       ${!opts.isArchive ? `<button data-menu-action="unswipe">↩ Bewertung zurückziehen</button>` : ''}
       ${!opts.isArchive
@@ -670,7 +662,67 @@ function buildListCard(listing, opts = {}) {
         <option value="">Gruppe wählen…</option>
       </select>
       <button data-vis-group-confirm>OK</button>
-    </div>` : ''}
+    </div>` : ''}`;
+  const noteHtml = `
+      <div class="contact-note-wrap" data-note-wrap>
+        <textarea class="contact-note" placeholder="Notiz (optional): Wann kontaktiert, Antwort, etc." data-note-text>${esc(listing.contact_note || '')}</textarea>
+        <div class="contact-note-actions">
+          <button class="contact-note-save" data-note-save>Speichern</button>
+          <button data-note-cancel>Abbrechen</button>
+        </div>
+      </div>`;
+
+  if (opts.rated) {
+    // "Meine Bewertungen": one card, laid out as a row on phones and as a
+    // vertical card (price on the photo) on wider screens – see .rc in style.css.
+    const rate = { like: ['heart', 'Like'], superlike: ['star', 'Super-Like'], dislike: ['x', 'Nein'] }[swipe];
+    const contactedText = '✓ Angeschrieben' + (listing.contact_note ? ' · ' + listing.contact_note.substring(0, 40) : '');
+    div.classList.toggle('rc-dim', swipe === 'dislike');
+    div.dataset.rate = swipe || '';
+    div.innerHTML = `
+      ${opts.selectable ? `<label class="rated-select-wrap rc-check" title="Inserat auswählen"><input type="checkbox" class="rated-select" data-listing-id="${listing.id}" ${state.ratedSelected.has(Number(listing.id)) ? 'checked' : ''}><span>${icon('check', 'sm')}</span></label>` : ''}
+      <div class="list-card-img-area rc-ph">
+        ${hasImg
+          ? `<img class="list-card-img" src="${esc(images[0])}" loading="lazy" onerror="this.style.display='none'" />`
+          : `<div class="list-card-img-placeholder">${icon('image', 'lg')}</div>`}
+        ${rate ? `<span class="rc-rate ${swipe}">${icon(rate[0], 'sm')}<span class="rc-rate-label">${rate[1]}</span></span>` : ''}
+        ${listing.status === 'offline'  ? `<span class="rc-strip">Offline</span>` : ''}
+        ${listing.status === 'reserved' ? `<span class="rc-strip res">Reserviert</span>` : ''}
+        <div class="rc-price-over">${(cold || total) ? `<b>${esc(cold || total)}</b><span>${cold ? 'kalt' + (total && total !== cold ? ` · ${esc(total)} warm` : '') : ''}</span>` : ''}</div>
+      </div>
+      <button class="card-menu-btn" data-menu-toggle title="Optionen" aria-label="Optionen">${icon('dots')}</button>
+      ${menuHtml}
+      <div class="list-card-body rc-body">
+        <div class="list-card-title">${esc(listing.title || 'Inserat')}</div>
+        <div class="rc-price">${(cold || total) ? `<b>${esc(cold || total)}</b><span>${cold ? 'kalt' + (total && total !== cold ? ` · ${esc(total)} warm` : '') : ''}</span>` : ''}</div>
+        ${listing.location ? `<div class="rc-loc">${icon('pin', 'sm')}<span>${esc(listing.location)}</span></div>` : ''}
+        <div class="rc-facts">
+          ${listing.size  ? `<span class="rc-chip">${esc(listing.size)}</span>` : ''}
+          ${listing.rooms ? `<span class="rc-chip">${esc(listing.rooms)} Zi.</span>` : ''}
+          ${listing.status === 'reserved' ? `<span class="rc-chip warn">Reserviert</span>` : ''}
+          ${listing.status === 'offline'  ? `<span class="rc-chip bad">Nicht mehr verfügbar</span>` : ''}
+          <span class="contacted-badge rc-chip like" ${listing.contacted ? '' : 'hidden'}>${esc(contactedText)}</span>
+        </div>
+        ${opts.matchInfo ? `<div class="match-count" style="font-size:.76rem;color:var(--like);margin-bottom:5px">${esc(opts.matchInfo)}</div>` : ''}
+        <div class="rc-foot">
+          <button type="button" class="rc-btn primary" data-rc="message">${icon('chat', 'sm')}Nachricht</button>
+          <button type="button" class="rc-btn" data-open-detail>Details</button>
+          <button type="button" class="rc-btn rc-contact" data-rc="contact">${icon('mail', 'sm')}<span>${listing.contacted ? 'Notiz' : 'Als angeschrieben'}</span></button>
+        </div>
+        ${noteHtml}
+      </div>`;
+  } else div.innerHTML = `
+    ${opts.selectable ? `<label class="rated-select-wrap" title="Inserat auswählen"><input type="checkbox" class="rated-select" data-listing-id="${listing.id}" ${state.ratedSelected.has(Number(listing.id)) ? 'checked' : ''}><span></span></label>` : ''}
+    <div class="list-card-img-area">
+      ${hasImg
+        ? `<img class="list-card-img" src="${esc(images[0])}" onerror="this.style.display='none'" />`
+        : `<div class="list-card-img-placeholder">🏠</div>`}
+      ${images.length > 1 ? `<span class="list-card-photo-badge">📷 ${images.length}</span>` : ''}
+      ${listing.status === 'offline'   ? `<span class="list-card-offline-badge">Offline</span>` : ''}
+      ${listing.status === 'reserved'  ? `<span class="list-card-offline-badge" style="background:rgba(240,200,60,.8)">Reserviert</span>` : ''}
+    </div>
+    <button class="card-menu-btn" data-menu-toggle title="Optionen">⋮</button>
+    ${menuHtml}
     <div class="list-card-body">
       <div class="list-card-title">${esc(listing.title || 'Inserat')}</div>
       ${cold  ? `<div class="list-card-price">${esc(cold)} <span style="font-size:.7rem;font-weight:400;color:var(--text2)">kalt</span></div>` : ''}
@@ -685,13 +737,7 @@ function buildListCard(listing, opts = {}) {
       ${swipe ? `<div class="swipe-badge ${swipe}">${swipeLabelMap[swipe]||swipe}</div>` : ''}
       ${listing.contacted ? `<div class="contacted-badge">📬 Angeschrieben${listing.contact_note ? ' · ' + esc(listing.contact_note.substring(0,40)) : ''}</div>` : ''}
       <button class="list-card-link" data-open-detail type="button">Details ansehen →</button>
-      <div class="contact-note-wrap" data-note-wrap>
-        <textarea class="contact-note" placeholder="Notiz (optional): Wann kontaktiert, Antwort, etc." data-note-text>${esc(listing.contact_note || '')}</textarea>
-        <div class="contact-note-actions">
-          <button class="contact-note-save" data-note-save>Speichern</button>
-          <button data-note-cancel>Abbrechen</button>
-        </div>
-      </div>
+      ${noteHtml}
     </div>`;
 
   if (opts.selectable) {
@@ -704,10 +750,19 @@ function buildListCard(listing, opts = {}) {
     });
   }
 
-  if (hasImg) div.querySelector('.list-card-img-area').addEventListener('click', e => {
+  if (hasImg && !opts.rated) div.querySelector('.list-card-img-area').addEventListener('click', e => {
     if (e.target.closest('[data-menu-toggle]') || e.target.closest('[data-menu]')) return;
     lb.open(images);
   });
+  if (opts.rated) {
+    // Tap anywhere on the card (except its controls) → detail view; footer shortcuts reuse the menu actions.
+    div.addEventListener('click', e => {
+      if (e.target.closest('button, a, label, input, textarea, select, [data-menu], [data-note-wrap], [data-vis-group-picker]')) return;
+      detailView.open(listing);
+    });
+    div.querySelector('[data-rc="message"]')?.addEventListener('click', e => { e.stopPropagation(); messageModal.open(listing, { groupId: opts.groupId || null }); });
+    div.querySelector('[data-rc="contact"]')?.addEventListener('click', e => { e.stopPropagation(); div.querySelector('[data-menu-action="contact-toggle"]')?.click(); });
+  }
 
   div.querySelector('[data-open-detail]')?.addEventListener('click', e => {
     e.stopPropagation(); detailView.open(listing);
@@ -753,6 +808,8 @@ function buildListCard(listing, opts = {}) {
             toast('📬 Als angeschrieben markiert');
             noteWrap.classList.add('open');
             btn.textContent = '✓ Angeschrieben (Notiz bearbeiten)';
+            div.querySelector('.contacted-badge')?.removeAttribute('hidden');
+            const rcSpan = div.querySelector('.rc-contact span'); if (rcSpan) rcSpan.textContent = 'Notiz';
             // Insert contacted badge if not already present
             if (!div.querySelector('.contacted-badge')) {
               const badge = document.createElement('div');
@@ -853,7 +910,7 @@ function buildListCard(listing, opts = {}) {
     noteWrap.classList.remove('open');
     toast('✓ Notiz gespeichert');
     const badge = div.querySelector('.contacted-badge');
-    if (badge) badge.textContent = '📬 Angeschrieben' + (noteText.value ? ' · ' + noteText.value.substring(0,40) : '');
+    if (badge) badge.textContent = (opts.rated ? '✓ Angeschrieben' : '📬 Angeschrieben') + (noteText.value ? ' · ' + noteText.value.substring(0,40) : '');
   });
   div.querySelector('[data-note-cancel]')?.addEventListener('click', () => noteWrap.classList.remove('open'));
 
@@ -1374,24 +1431,37 @@ let _ratedAll = [];
 
 async function loadRated() {
   const d = await api('/api/listings/rated');
-  _ratedAll = d.listings || [];
+  // The server returns newest rating first; remember that order for "Älteste zuerst".
+  _ratedAll = (d.listings || []).map((l, i) => ({ ...l, _order: i }));
   state.ratedSelected.clear();
   renderRated();
 }
 
+// "700 €" / "1.150 €" / "1.150,50 €" → number (Infinity when there is no price, so those sort last)
+function priceNumber(l) {
+  const raw = (l.price_cold || l.price || '').replace(/[^\d.,]/g, '');
+  if (!raw) return Infinity;
+  const n = parseFloat(raw.replace(/\./g, '').replace(',', '.'));
+  return Number.isFinite(n) ? n : Infinity;
+}
+
 function ratedVisible() {
   const filter = state.ratedFilter;
-  return filter === 'all' ? _ratedAll : _ratedAll.filter(l => l.my_swipe === filter);
+  const items = filter === 'all' ? _ratedAll.slice() : _ratedAll.filter(l => l.my_swipe === filter);
+  const sort = state.ratedSort || 'recent';
+  if (sort === 'oldest')          items.sort((a, b) => b._order - a._order);
+  else if (sort === 'price-asc')  items.sort((a, b) => priceNumber(a) - priceNumber(b) || a._order - b._order);
+  else if (sort === 'price-desc') items.sort((a, b) => (priceNumber(b) === Infinity ? -1 : priceNumber(b)) - (priceNumber(a) === Infinity ? -1 : priceNumber(a)) || a._order - b._order);
+  else                            items.sort((a, b) => a._order - b._order);
+  return items;
 }
 
 function updateRatedBulkButtons() {
   const count = state.ratedSelected.size;
   const del = $id('rated-delete-selected-btn');
   const sel = $id('rated-select-all-btn');
-  if (del) {
-    del.disabled = count === 0;
-    del.textContent = count ? `🗑 ${count} Bewertung${count === 1 ? '' : 'en'} entfernen` : '🗑 Bewertungen entfernen';
-  }
+  $id('rated-bulk-count').textContent = `${count} ausgewählt`;
+  if (del) del.disabled = count === 0;
   if (sel) {
     const visible = ratedVisible();
     const all = visible.length > 0 && visible.every(l => state.ratedSelected.has(Number(l.id)));
@@ -1400,21 +1470,45 @@ function updateRatedBulkButtons() {
   }
 }
 
+function setRatedSelectMode(on) {
+  state.ratedSelectMode = on;
+  $id('view-rated').classList.toggle('select-mode', on);
+  $id('rated-bulk-bar').hidden = !on;
+  document.body.classList.toggle('rated-selecting', on);
+  const t = $id('rated-select-toggle');
+  t.setAttribute('aria-pressed', String(on));
+  if (!on) state.ratedSelected.clear();
+  renderRated();
+}
+
 function renderRated() {
   const list   = $id('rated-list');
   const empty  = $id('rated-empty');
-  const filter = state.ratedFilter;
   const items  = ratedVisible();
+  // Counts + subtitle
+  const cnt = { all: _ratedAll.length, like: 0, superlike: 0, dislike: 0 };
+  _ratedAll.forEach(l => { if (cnt[l.my_swipe] !== undefined) cnt[l.my_swipe]++; });
+  document.querySelectorAll('#rated-filter [data-count]').forEach(el => { el.textContent = cnt[el.dataset.count] ?? 0; });
+  $id('rated-sub').textContent = _ratedAll.length ? `${_ratedAll.length} Inserat${_ratedAll.length === 1 ? '' : 'e'} bewertet` : 'Noch nichts bewertet';
   // Never keep hidden (filtered-out) items selected, so "entfernen" only
   // ever deletes what the user can currently see ticked.
   const visibleIds = new Set(items.map(l => Number(l.id)));
   [...state.ratedSelected].forEach(id => { if (!visibleIds.has(id)) state.ratedSelected.delete(id); });
   list.innerHTML = '';
-  if (!items.length) { empty.style.display = ''; updateRatedBulkButtons(); return; }
+  list.classList.toggle('rated-selecting', !!state.ratedSelectMode);
+  if (!items.length) {
+    empty.style.display = '';
+    empty.querySelector('p').textContent = _ratedAll.length ? 'Keine Bewertungen in diesem Filter.' : 'Keine Bewertungen.';
+    updateRatedBulkButtons(); return;
+  }
   empty.style.display = 'none';
-  items.forEach(l => list.appendChild(buildListCard(l, { selectable: true })));
+  items.forEach(l => list.appendChild(buildListCard(l, { selectable: !!state.ratedSelectMode, rated: true })));
   updateRatedBulkButtons();
 }
+
+$id('rated-select-toggle').addEventListener('click', () => setRatedSelectMode(!state.ratedSelectMode));
+$id('rated-select-done').addEventListener('click', () => setRatedSelectMode(false));
+$id('rated-sort').addEventListener('change', e => { state.ratedSort = e.target.value; renderRated(); });
 
 $id('rated-select-all-btn').addEventListener('click', () => {
   const visible = ratedVisible();

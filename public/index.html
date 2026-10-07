@@ -205,19 +205,29 @@
   <!-- ── RATED ─────────────────────────────────────── -->
   <div id="view-rated" class="view">
     <div class="view-content">
-      <div class="rated-header">
-        <div>
+      <div class="rated-head">
+        <div class="rated-titles">
           <h2 class="view-title">Meine Bewertungen</h2>
-          <div class="rated-bulk-actions">
-            <button class="btn-ghost compact" id="rated-select-all-btn" type="button">Alle auswählen</button>
-            <button class="btn-danger compact" id="rated-delete-selected-btn" type="button" disabled>🗑 Bewertungen entfernen</button>
-          </div>
+          <p class="rated-sub" id="rated-sub">&nbsp;</p>
         </div>
-        <div class="rated-filter" id="rated-filter">
-          <button class="filter-btn active" data-filter="all">Alle</button>
-          <button class="filter-btn" data-filter="like">♥ Likes</button>
-          <button class="filter-btn" data-filter="superlike">⭐ Super</button>
-          <button class="filter-btn" data-filter="dislike">✕ Nein</button>
+        <div class="rated-ctl">
+          <div class="rated-seg" id="rated-filter" role="group" aria-label="Filter">
+            <button class="filter-btn active" data-filter="all" type="button">Alle <span class="rf-n" data-count="all">0</span></button>
+            <button class="filter-btn" data-filter="like" type="button" aria-label="Likes"><span class="i rf-like" data-icon="heart"></span><span class="rf-label">Likes</span> <span class="rf-n" data-count="like">0</span></button>
+            <button class="filter-btn" data-filter="superlike" type="button" aria-label="Super-Likes"><span class="i rf-super" data-icon="star"></span><span class="rf-label">Super</span> <span class="rf-n" data-count="superlike">0</span></button>
+            <button class="filter-btn" data-filter="dislike" type="button" aria-label="Nein"><span class="i rf-no" data-icon="x"></span><span class="rf-label">Nein</span> <span class="rf-n" data-count="dislike">0</span></button>
+          </div>
+          <div class="rated-tools">
+            <label class="rated-sort"><span class="i sm" data-icon="sort"></span>
+              <select id="rated-sort" aria-label="Sortierung">
+                <option value="recent">Zuletzt bewertet</option>
+                <option value="oldest">Älteste zuerst</option>
+                <option value="price-asc">Preis aufsteigend</option>
+                <option value="price-desc">Preis absteigend</option>
+              </select>
+            </label>
+            <button class="rated-tool" id="rated-select-toggle" type="button"><span class="i sm" data-icon="check"></span>Auswählen</button>
+          </div>
         </div>
       </div>
       <div id="rated-list" class="listings-grid"></div>
@@ -225,6 +235,14 @@
         <div class="empty-icon">💔</div><p>Keine Bewertungen.</p>
       </div>
     </div>
+  </div>
+
+  <!-- Bulk bar for "Auswählen" mode in Meine Bewertungen -->
+  <div class="rated-bulk" id="rated-bulk-bar" hidden>
+    <div class="rb-info"><strong id="rated-bulk-count">0 ausgewählt</strong><span>Inserate bleiben bestehen und erscheinen wieder beim Swipen</span></div>
+    <button class="rb-btn" id="rated-select-all-btn" type="button">Alle auswählen</button>
+    <button class="rb-btn danger" id="rated-delete-selected-btn" type="button" disabled><span class="i sm" data-icon="trash"></span><span id="rated-delete-label">Entfernen</span></button>
+    <button class="rb-btn primary" id="rated-select-done" type="button">Fertig</button>
   </div>
 
   <!-- ── GROUPS ────────────────────────────────────── -->

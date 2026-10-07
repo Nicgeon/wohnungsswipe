@@ -30,6 +30,11 @@ const ICONS = {
   logout:   'M10 4H6a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h4M15 8l4 4-4 4M19 12H9',
   chat:     'M5 5h14a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1h-8l-4 4v-4H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z',
   flag:     'M6 21V4M6 5h11l-2 4 2 4H6',
+  check:    'M5 12l4 4 10-10',
+  mail:     'M4 6h16v12H4zM4 7l8 6 8-6',
+  dots:     'M12 6h.01M12 12h.01M12 18h.01',
+  sort:     'M4 7h10M4 12h7M4 17h4M17 7v10M17 17l-3-3M17 17l3-3',
+  trash:    'M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12',
 };
 function icon(name, cls = '') {
   return `<svg class="ic ${cls}" viewBox="0 0 24 24" aria-hidden="true"><path d="${ICONS[name] || ''}"/></svg>`;
