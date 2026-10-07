@@ -1,6 +1,6 @@
 {
   "name": "wohnungsswipe",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Tinder-style Wohnungssuche",
   "main": "server/index.js",
   "scripts": {
