@@ -552,10 +552,19 @@ function extractTextWithParagraphs($, el) {
 // corrected on the next check by the site's own signals.
 function checkKleinanzeigenStatus($, why = {}) {
   const title = $('title').text().toLowerCase();
-  // <h1 id="viewad-title" data-soldlabel="Nicht mehr verfügbar"> is rendered
-  // server-side by Kleinanzeigen for deleted/reserved/sold ads.
-  const soldLabel = ($('h1#viewad-title').attr('data-soldlabel') || '').trim();
-  if (soldLabel) { why.reason = `data-soldlabel="${soldLabel}"`; return /reserv|vergeben/i.test(soldLabel) ? 'reserved' : 'offline'; }
+  // The h1 carries data-soldlabel on EVERY ad ("Nicht mehr verfügbar" on
+  // offers, "Gefunden" on wanted ads) — it is only the label text Kleinanzeigen
+  // would show, not a status. The real signal is the visible status prefix
+  // inside the h1 ("Gelöscht • …", "Reserviert • …"), which only exists on
+  // deleted/reserved/sold ads.
+  const $h1 = $('h1#viewad-title');
+  const STATUS_WORD = /^(gelöscht|reserviert|verkauft|vergeben|gefunden|nicht mehr verfügbar|abgelaufen)\b/i;
+  let prefix = ($h1.find('.text-onSurfaceNonessential').first().text() || '').replace(/[•·\s]+$/g, '').trim();
+  if (!STATUS_WORD.test(prefix)) {
+    const m = $h1.text().trim().match(/^(gelöscht|reserviert|verkauft|vergeben|gefunden|nicht mehr verfügbar|abgelaufen)\s*[•·]/i);
+    prefix = m ? m[1] : '';
+  }
+  if (prefix) { why.reason = `Status-Präfix im Titel: "${prefix}"`; return /reserv/i.test(prefix) ? 'reserved' : 'offline'; }
   if ($('.adexpired, [data-testid="adexpired"]').length) { why.reason = 'adexpired-Marker'; return 'offline'; }
   if ($('[data-testid="reserved-badge"], .reserved-badge').length) { why.reason = 'reserved-Badge'; return 'reserved'; }
   if ($('h1#viewad-title').length) return 'active';

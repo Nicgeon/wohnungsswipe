@@ -290,12 +290,12 @@ async function initDb() {
   // the ones a user reported by hand; the next status check re-evaluates them
   // with the fixed detection.
   try {
-    if (!dbGet("SELECT 1 AS x FROM app_meta WHERE key='ka_offline_repair2'")) {
+    if (!dbGet("SELECT 1 AS x FROM app_meta WHERE key='ka_offline_repair3'")) {
       dbRun(`UPDATE listings SET status='active'
              WHERE platform='kleinanzeigen' AND status='offline'
                AND id NOT IN (SELECT listing_id FROM archive_notes WHERE reason='reported')`);
       dbRun("DELETE FROM archive_notes WHERE reason='offline' AND listing_id IN (SELECT id FROM listings WHERE status='active')");
-      dbRun("INSERT OR IGNORE INTO app_meta (key,value) VALUES ('ka_offline_repair2','1')");
+      dbRun("INSERT OR IGNORE INTO app_meta (key,value) VALUES ('ka_offline_repair3','1')");
     }
   } catch (e) { console.warn('[Migration] Kleinanzeigen-Reparatur fehlgeschlagen:', e.message); }
 
