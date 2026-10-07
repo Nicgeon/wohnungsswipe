@@ -1326,3 +1326,39 @@ body.rated-selecting #view-rated .view-content { padding-bottom:150px; }
   .rb-info { flex:1; }
   .rb-btn { flex:none; }
 }
+
+/* ══════════════════════════════════════════════════════════
+   "Angeschrieben" bar (detail view, message dialog) + group card buttons
+══════════════════════════════════════════════════════════ */
+.cbar { display:flex; flex-direction:column; gap:8px; }
+.cbar-toggle {
+  display:flex; align-items:center; justify-content:center; gap:8px; width:100%; min-height:48px; padding:0 14px;
+  border-radius:12px; border:1px solid var(--border-strong); background:transparent; color:var(--text);
+  font-size:.9rem; font-weight:500; cursor:pointer; transition:background .15s, border-color .15s;
+}
+.cbar-toggle:hover { background:var(--hover-bg); }
+.cbar-toggle:disabled { opacity:.5; cursor:default; }
+.cbar.on .cbar-toggle { background:rgba(91,220,138,.12); border-color:var(--like); color:var(--like); font-weight:600; }
+:root[data-theme="light"] .cbar.on .cbar-toggle { background:rgba(20,120,60,.1); }
+.cbar-note {
+  width:100%; height:44px; padding:0 14px; border-radius:12px; border:1px solid var(--border-input);
+  background:var(--bg3); color:var(--text); font-size:.9rem; outline:none;
+}
+.cbar-note:focus { border-color:var(--accent-text); }
+.cbar.nudge .cbar-toggle { animation:cbarPulse 1.2s ease-out 2; border-color:var(--accent-text); color:var(--accent-text); }
+.cbar.nudge.on .cbar-toggle { animation:none; }
+@keyframes cbarPulse { 0% { box-shadow:0 0 0 0 var(--accent-soft); } 70% { box-shadow:0 0 0 10px transparent; } 100% { box-shadow:0 0 0 0 transparent; } }
+.msg-contact { margin:10px 0 2px; }
+.detail-action-row > .detail-contact { display:block; min-height:0; }
+
+.gl-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-top:10px; }
+.gl-btn {
+  display:inline-flex; align-items:center; gap:6px; height:36px; padding:0 12px; border-radius:10px;
+  border:1px solid var(--border-strong); background:transparent; color:var(--text); font-size:.8rem; font-weight:500; cursor:pointer; white-space:nowrap;
+}
+.gl-btn:hover { background:var(--hover-bg); }
+.gl-btn.on { background:rgba(91,220,138,.12); border-color:var(--like); color:var(--like); font-weight:600; }
+:root[data-theme="light"] .gl-btn.on { background:rgba(20,120,60,.1); }
+.gl-link { margin-left:auto; display:inline-flex; align-items:center; gap:2px; background:none; border:0; padding:0 4px; height:36px; color:var(--accent-text); font-size:.8rem; font-weight:600; cursor:pointer; font-family:inherit; }
+.gl-link:hover { text-decoration:underline; }
+[data-contacted-badge] { cursor:pointer; }

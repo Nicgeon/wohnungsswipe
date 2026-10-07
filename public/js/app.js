@@ -226,6 +226,85 @@ $id('lightbox').addEventListener('click', e => { if (e.target === $id('lightbox'
 //  swipe actions themselves) so tapping through to the original
 //  listing becomes the exception rather than the default habit.
 // ══════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════
+//  "Angeschrieben" – one place for the contact state of a listing
+//  (own, or per group when groupId is set). Used by the detail view,
+//  the message dialog and the cards; cards are kept in sync through
+//  applyContactToCards().
+// ══════════════════════════════════════════════════════════
+const contactApi = {
+  q: g => g ? `?groupId=${g}` : '',
+  async get(id, g)        { const r = await api(`/api/contacts/${id}${this.q(g)}`); return r.contact || null; },
+  mark(id, g, note = '')  { return api('/api/contacts', { method: 'POST', body: { listingId: id, groupId: g || null, note } }); },
+  unmark(id, g)           { return api(`/api/contacts/${id}${this.q(g)}`, { method: 'DELETE' }); },
+  note(id, g, note)       { return api(`/api/contacts/${id}`, { method: 'PATCH', body: { note, groupId: g || null } }); },
+};
+
+// Keeps already rendered cards (group results, "Bewertet") in step with a change made elsewhere.
+function applyContactToCards(listingId, groupId, contacted, note = '') {
+  const noteTxt = note ? ' · ' + note.substring(0, 40) : '';
+  if (groupId) {
+    const card = document.querySelector(`.group-listing-card[data-listing-id="${listingId}"]`);
+    if (card) {
+      const badge = card.querySelector('[data-contacted-badge]');
+      if (badge) badge.style.display = contacted ? '' : 'none';
+      const span = card.querySelector('[data-contacted-note]'); if (span) span.textContent = contacted ? noteTxt : '';
+      const quick = card.querySelector('[data-contact-quick]');
+      if (quick) { quick.setAttribute('aria-pressed', String(contacted)); quick.classList.toggle('on', contacted);
+                   quick.querySelector('span:last-child').textContent = contacted ? 'Angeschrieben' : 'Als angeschrieben'; }
+    }
+    return;
+  }
+  const rated = _ratedAll.find(l => Number(l.id) === Number(listingId));
+  if (rated) { rated.contacted = contacted ? 1 : 0; rated.contact_note = contacted ? note : ''; }
+  document.querySelectorAll(`.list-card.rc[data-listing-id="${listingId}"]`).forEach(card => {
+    const badge = card.querySelector('.contacted-badge');
+    if (badge) { badge.hidden = !contacted; badge.textContent = '✓ Angeschrieben' + noteTxt; }
+    const lbl = card.querySelector('.rc-contact span'); if (lbl) lbl.textContent = contacted ? 'Notiz' : 'Als angeschrieben';
+  });
+}
+
+// Toggle button (+ note field once marked). `el` is a container; returns {nudge()}.
+function mountContactBar(el, listingId, groupId) {
+  let contact = null, alive = true;
+  const draw = () => {
+    const on = !!contact;
+    el.innerHTML = `
+      <div class="cbar${on ? ' on' : ''}">
+        <button type="button" class="cbar-toggle" aria-pressed="${on}">${icon(on ? 'check' : 'mail', 'sm')}<span>${on ? 'Angeschrieben' : 'Als angeschrieben markieren'}</span></button>
+        ${on ? `<input type="text" class="cbar-note" maxlength="200" placeholder="Notiz (optional): z. B. Besichtigung Fr 17 Uhr" value="${esc(contact.note || '')}" aria-label="Notiz zum Anschreiben">` : ''}
+      </div>`;
+  };
+  el.innerHTML = '<div class="cbar"><button type="button" class="cbar-toggle" disabled>…</button></div>';
+  contactApi.get(listingId, groupId).then(c => { if (alive) { contact = c; draw(); } }).catch(() => {});
+  el.onclick = async e => {
+    if (!e.target.closest('.cbar-toggle') || e.target.closest('[disabled]')) return;
+    if (!contact) {
+      const r = await contactApi.mark(listingId, groupId, '');
+      if (!r.success) { toast('❌ ' + (r.error || 'Fehler')); return; }
+      contact = { note: '' }; draw(); applyContactToCards(listingId, groupId, true, '');
+      toast('✓ Als angeschrieben markiert');
+      el.querySelector('.cbar-note')?.focus();
+    } else {
+      const r = await contactApi.unmark(listingId, groupId);
+      if (!r.success) { toast('❌ ' + (r.error || 'Fehler')); return; }
+      contact = null; draw(); applyContactToCards(listingId, groupId, false);
+      toast('Markierung entfernt');
+    }
+  };
+  el.onchange = async e => {
+    if (!e.target.classList.contains('cbar-note') || !contact) return;
+    contact.note = e.target.value.trim();
+    await contactApi.note(listingId, groupId, contact.note);
+    applyContactToCards(listingId, groupId, true, contact.note);
+    toast('✓ Notiz gespeichert');
+  };
+  return {
+    nudge() { el.querySelector('.cbar')?.classList.add('nudge'); },
+    destroy() { alive = false; el.onclick = null; el.onchange = null; el.innerHTML = ''; },
+  };
+}
+
 // Kosten / Details lists, shared by the detail view and the desktop quick view.
 function listingLists(listing) {
   const cold  = (listing.price_cold || '').trim();
@@ -296,6 +375,9 @@ const detailView = {
     costsEl.style.display = (costsHtml || factsHtml) ? '' : 'none';
     costsEl.innerHTML = costsHtml + factsHtml;
 
+    this._contact?.destroy();
+    this._contact = mountContactBar($id('detail-contact'), listing.id, this.groupId);
+
     this._loadChanges(listing.id);
 
     const tags = parseTags(listing.tags_json);
@@ -364,6 +446,7 @@ const detailView = {
   },
 
   close() {
+    this._contact?.destroy(); this._contact = null;
     $id('detail-view').style.display = 'none';
     document.removeEventListener('keydown', detailView._key);
     this.listing = null;
@@ -640,6 +723,7 @@ function buildListCard(listing, opts = {}) {
 
   const div = document.createElement('div');
   div.className = 'list-card' + (opts.selectable ? ' list-card-selectable' : '') + (opts.rated ? ' rc' : '');
+  div.dataset.listingId = listing.id;
 
   // Shared pieces (same data-* hooks for both card layouts)
   const menuHtml = `
@@ -1665,7 +1749,11 @@ async function openGroupDetail(group, opts = {}) {
                 <button data-note-cancel>Abbrechen</button>
               </div>
             </div>
-            <button data-open-detail data-listing="${r.id}" type="button" style="font-size:.73rem;color:var(--accent);display:block;margin-top:5px;background:none;border:none;padding:0;cursor:pointer;text-align:left;font-family:inherit">Details ansehen →</button>
+            <div class="gl-actions">
+              <button type="button" class="gl-btn" data-prepare-message data-listing="${r.id}">${icon('chat', 'sm')}<span>Nachricht</span></button>
+              <button type="button" class="gl-btn gl-contact${r.group_contacted ? ' on' : ''}" data-contact-quick data-listing="${r.id}" aria-pressed="${r.group_contacted ? 'true' : 'false'}">${icon('mail', 'sm')}<span>${r.group_contacted ? 'Angeschrieben' : 'Als angeschrieben'}</span></button>
+              <button data-open-detail data-listing="${r.id}" type="button" class="gl-link">Details ${icon('next', 'sm')}</button>
+            </div>
           </div>
         </div>`;
     }).join('');
@@ -1798,6 +1886,33 @@ async function openGroupDetail(group, opts = {}) {
       return;
     }
 
+    // Visible "Angeschrieben" button on the card: marks / unmarks in one tap
+    const quick = e.target.closest('[data-contact-quick]');
+    if (quick) {
+      e.stopPropagation();
+      const lid = parseInt(quick.dataset.listing);
+      const card = detailEl.querySelector(`.group-listing-card[data-listing-id="${lid}"]`);
+      const wasOn = quick.getAttribute('aria-pressed') === 'true';
+      if (!wasOn) {
+        const r = await contactApi.mark(lid, group.id, '');
+        if (!r.success) { toast('❌ ' + (r.error || 'Fehler')); return; }
+        applyContactToCards(lid, group.id, true, '');
+        card?.querySelector('[data-note-wrap]')?.classList.add('open');
+        card?.querySelector('[data-note-text]')?.focus();
+        toast('✓ Als angeschrieben markiert – Notiz optional');
+      } else {
+        const r = await contactApi.unmark(lid, group.id);
+        if (!r.success) { toast('❌ ' + (r.error || 'Fehler')); return; }
+        applyContactToCards(lid, group.id, false);
+        card?.querySelector('[data-note-wrap]')?.classList.remove('open');
+        toast('Markierung entfernt');
+      }
+      return;
+    }
+    // Tapping the "Angeschrieben" badge opens the note field
+    const badgeTap = e.target.closest('[data-contacted-badge]');
+    if (badgeTap) { badgeTap.closest('.group-listing-card')?.querySelector('[data-note-wrap]')?.classList.toggle('open'); return; }
+
     // Contact toggle chosen from the menu
     const contactToggle = e.target.closest('[data-contact-toggle]');
     if (contactToggle) {
@@ -1849,7 +1964,7 @@ async function openGroupDetail(group, opts = {}) {
       e.stopPropagation();
       const lid  = parseInt(prepMsgBtn.dataset.listing);
       const menu = prepMsgBtn.closest('.card-menu');
-      menu.style.display = 'none';
+      if (menu) menu.style.display = 'none';
       const r = resultsById[lid];
       if (r) messageModal.open(r, { groupId: group.id });
       return;

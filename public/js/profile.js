@@ -3,7 +3,12 @@
  * ($id, api, toast, esc, state, showView, …). */
 
 const PLACEHOLDER_LIST = ['titel','preis','kalt','warm','zimmer','groesse','lage','name','namen','personen','kinder',
-  'beruf','wohnform','einzug','mietdauer','beschaeftigung','einkommen','haushalt','unterlagen','telefon','erreichbarkeit'];
+  'beruf','wohnform','einzug','mietdauer','beschaeftigung','einkommen','haushalt','unterlagen','unterlagen_liste','grund','merkmale','telefon','erreichbarkeit'];
+const PLACEHOLDER_HINT = {
+  titel: 'Titel der Anzeige ohne Preisangaben', unterlagen: 'ganze Sätze, z. B. „A und B legen wir Ihnen gerne vor.“',
+  unterlagen_liste: 'nur die Namen, z. B. „A, B und C“', grund: 'ganzer Satz: „Die Wohnung spricht uns besonders aufgrund … an.“',
+  merkmale: 'z. B. „des Balkons und der Lage in Neustadt“ (nach „aufgrund“)',
+};
 
 const pfSvg = (paths, size = 20) =>
   `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
@@ -282,7 +287,7 @@ function pfSectionBody(id) {
       ${pfFieldHtml('Besichtigungszeiten', pfInputHtml('availability', 'z.B. Mo–Fr ab 17 Uhr, am Wochenende ganztägig'), 'availability')}`;
     case 'template': return `
       ${pfFieldHtml('Vorlage', `<p class="pf-hint" style="margin:0 0 6px">Platzhalter anklicken zum Einfügen:</p>
-        <div class="placeholder-chips">${PLACEHOLDER_LIST.map(ph => `<button type="button" class="ph-chip" data-ph="${ph}">{${ph}}</button>`).join('')}</div>
+        <div class="placeholder-chips">${PLACEHOLDER_LIST.map(ph => `<button type="button" class="ph-chip" data-ph="${ph}"${PLACEHOLDER_HINT[ph] ? ` title="${esc(PLACEHOLDER_HINT[ph])}"` : ''}>{${ph}}</button>`).join('')}</div>
         <textarea class="pf-input" rows="8" data-input="custom_template" placeholder="Leer lassen, um die geführte Nachricht zu nutzen. Beispiel: Hallo, ich interessiere mich für {titel} für {preis}…"></textarea>`)}`;
   }
   return '';
@@ -707,10 +712,12 @@ const messageModal = {
     this.renderControls();
     $id('message-blocks-block').open = pfDesktop();   // collapsed on phones so the text stays within reach
     $id('message-modal').style.display = 'flex';
+    this._contact?.destroy();
+    this._contact = mountContactBar($id('message-contact'), listing.id, this.groupId);
     await this.generate(this.tone, { force: true });
   },
 
-  close() { $id('message-modal').style.display = 'none'; this.listing = null; },
+  close() { this._contact?.destroy(); this._contact = null; $id('message-modal').style.display = 'none'; this.listing = null; },
 
   listingHtml(l) {
     const bits = [(l.price_cold || '').trim() && `${esc(l.price_cold)} kalt`, (l.price || '').trim() && `${esc(l.price)} warm`,
@@ -867,7 +874,11 @@ $id('message-modal').addEventListener('click', async e => {
   }
 });
 $id('message-copy').addEventListener('click', async () => {
-  try { await navigator.clipboard.writeText($id('message-text').value); toast('📋 Nachricht kopiert!'); }
+  try {
+    await navigator.clipboard.writeText($id('message-text').value);
+    toast('📋 Nachricht kopiert – danach hier als angeschrieben markieren');
+    messageModal._contact?.nudge();
+  }
   catch (e) { toast('❌ Kopieren fehlgeschlagen'); }
 });
 
