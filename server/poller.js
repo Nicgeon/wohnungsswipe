@@ -543,7 +543,28 @@ function extractTextWithParagraphs($, el) {
 }
 
 // ── Check if listing is offline or reserved ───────────────
+// Kleinanzeigen is decided by its own structural signals only. The generic
+// body-text patterns below ("anzeige … nicht … vorhanden", "vergeben", …) use
+// `.*` across the whole page text and match footer/sidebar/description
+// wording on perfectly active ads, which flagged every ad as offline.
+// Unknown (e.g. a bot-check page without the ad markup) counts as active:
+// a wrong "offline" archives a live ad for everyone, a missed one is
+// corrected on the next check by the site's own signals.
+function checkKleinanzeigenStatus($) {
+  const title = $('title').text().toLowerCase();
+  // <h1 id="viewad-title" data-soldlabel="Nicht mehr verfügbar"> is rendered
+  // server-side by Kleinanzeigen for deleted/reserved/sold ads.
+  const soldLabel = ($('h1#viewad-title').attr('data-soldlabel') || '').trim();
+  if (soldLabel) return /reserv|vergeben/i.test(soldLabel) ? 'reserved' : 'offline';
+  if ($('.adexpired, [data-testid="adexpired"]').length) return 'offline';
+  if ($('[data-testid="reserved-badge"], .reserved-badge').length) return 'reserved';
+  if ($('h1#viewad-title').length) return 'active';
+  if (/404|not found|seite nicht gefunden|anzeige.*(nicht mehr|gelöscht|nicht vorhanden)/i.test(title)) return 'offline';
+  return 'active';
+}
+
 function checkListingStatus($, platform) {
+  if (platform === 'kleinanzeigen') return checkKleinanzeigenStatus($);
   const bodyText = getVisibleText($, 'body').toLowerCase();
   const title    = $('title').text().toLowerCase();
 
@@ -574,29 +595,6 @@ function checkListingStatus($, platform) {
   }
 
   // Platform-specific
-  if (platform === 'kleinanzeigen') {
-    // Most authoritative signal first: Kleinanzeigen renders the ad's own
-    // status directly as a data attribute on the title element —
-    // <h1 id="viewad-title" data-soldlabel="Nicht mehr verfügbar">,
-    // alongside a "Gelöscht • " prefix span inside the same h1. This is
-    // server-rendered (confirmed against a real deleted ad's page source,
-    // not just the post-JS DOM), so it's present before any client-side
-    // script runs — unlike the generic text patterns above, which can miss
-    // this case because the page's visible text has no "anzeige...gelöscht"
-    // phrase together, just the bare "Gelöscht" label. A non-empty value
-    // here is a direct, intentional status signal from the site itself, so
-    // we trust it outright rather than pattern-matching around it.
-    const soldLabel = ($('h1#viewad-title').attr('data-soldlabel') || '').trim();
-    if (soldLabel) {
-      return /reserv|vergeben/i.test(soldLabel) ? 'reserved' : 'offline';
-    }
-
-    if ($('.adexpired, [data-testid="adexpired"], .banner--warning').length) return 'offline';
-    if ($('[data-testid="reserved-badge"], .reserved-badge').length) return 'reserved';
-    // Only flag as offline if there's NO title AND the page is very small
-    // (avoids false positives on JS-heavy pages that just haven't loaded yet)
-    if (!$('h1#viewad-title, h1.headline').length && bodyText.length < 3000) return 'offline';
-  }
   if (platform === 'immoscout') {
     if ($('[data-qa="expose-offline"], .expose--inactive').length) return 'offline';
   }
@@ -659,10 +657,13 @@ async function scrapeListing(url, opts = {}) {
     finalUrl = raw.finalUrl;
   }
   catch (e) {
-    // HTTP 404 / 410 = definitely offline; 403 for non-SPA = likely offline
-    if (e.message.includes('404') || e.message.includes('410') || e.message.includes('403')) {
-      d.status = 'offline';
-    }
+    // HTTP 404 / 410 = definitely offline; 403 for non-SPA = likely offline.
+    // Kleinanzeigen answers bot traffic with 403/429 on live ads too, so there
+    // only 404/410 count.
+    const gone = e.message.includes('404') || e.message.includes('410');
+    const blocked = e.message.includes('403') && platform !== 'kleinanzeigen';
+    if (gone || blocked) d.status = 'offline';
+    d.fetchFailed = true;
     d.title = 'Inserat (nicht ladbar)';
     d.description = `Fehler: ${e.message}`;
     return d;
@@ -677,10 +678,15 @@ async function scrapeListing(url, opts = {}) {
     const startedOnListing = /\/s-anzeige\//.test(url);
     const idMatch = url.match(/(\d{6,})-\d+-\d+/);
     const startId = idMatch ? idMatch[1] : null;
-    const stillOnListing = /\/s-anzeige\//.test(finalUrl);
+    let finalPath = finalUrl;
+    try { finalPath = new URL(finalUrl).pathname; } catch (_) {}
+    // Only a redirect to a category/search page or the start page means the ad
+    // is gone; a redirect to e.g. a consent or bot-check page says nothing.
+    const wentToSearch = /^\/s-(?!anzeige\/)/.test(finalPath) || finalPath === '/';
     const finalIdMatch = finalUrl.match(/(\d{6,})-\d+-\d+/);
     const finalId = finalIdMatch ? finalIdMatch[1] : null;
-    if (startedOnListing && (!stillOnListing || (startId && finalId && startId !== finalId))) {
+    const otherAd = /\/s-anzeige\//.test(finalPath) && startId && finalId && startId !== finalId;
+    if (startedOnListing && (wentToSearch || otherAd)) {
       d.status = 'offline';
       d.title = d.title || 'Inserat nicht mehr verfügbar';
       d.description = `Anzeige nicht mehr verfügbar (weitergeleitet zu ${finalUrl})`;
@@ -1069,7 +1075,7 @@ async function checkExistingListings(listings, onStatusChange, onFieldChange) {
         results[fresh.status] = (results[fresh.status] || 0) + 1;
       }
 
-      if (onFieldChange) {
+      if (onFieldChange && !fresh.fetchFailed) {
         const changes = [];
         for (const field of TRACKED_FIELDS) {
           const oldVal = (listing[field] || '').trim();

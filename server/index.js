@@ -230,6 +230,7 @@ async function initDb() {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (user_id, group_id)
     );
+    CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT);
   `);
 
   // Migrations
@@ -282,6 +283,19 @@ async function initDb() {
            SELECT group_id, household_type, persons, children, move_in_type, move_in_date, updated_by FROM group_settings`);
   migrate("ALTER TABLE search_jobs ADD COLUMN visibility_id INTEGER");
   migrate("ALTER TABLE users       ADD COLUMN notify_matrix   TEXT");
+
+  // One-time repair: an over-eager text heuristic flagged live Kleinanzeigen ads
+  // as offline. Put the auto-flagged ones (not user reports) back to active; the
+  // next status check re-evaluates them with the fixed detection.
+  try {
+    if (!dbGet("SELECT 1 AS x FROM app_meta WHERE key='ka_offline_repair'")) {
+      dbRun(`UPDATE listings SET status='active'
+             WHERE platform='kleinanzeigen' AND status='offline'
+               AND id IN (SELECT listing_id FROM archive_notes WHERE reason='offline')`);
+      dbRun("DELETE FROM archive_notes WHERE reason='offline' AND listing_id IN (SELECT id FROM listings WHERE status='active')");
+      dbRun("INSERT OR IGNORE INTO app_meta (key,value) VALUES ('ka_offline_repair','1')");
+    }
+  } catch (e) { console.warn('[Migration] Kleinanzeigen-Reparatur fehlgeschlagen:', e.message); }
 
   // One-time seed: build each user's new per-type/per-channel matrix from
   // their old blanket toggles, so nobody's existing preferences silently
