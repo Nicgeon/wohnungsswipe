@@ -1,0 +1,4 @@
+# Shell-Skripte laufen im Linux-Container – immer mit LF auschecken,
+# auch unter Windows (CRLF bricht die Shebang-Zeile).
+*.sh text eol=lf
+Dockerfile text eol=lf

@@ -13,7 +13,10 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY server/ ./server/
 COPY public/ ./public/
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh && mkdir -p /data && chown node:node /data
+# sed strips Windows line endings (CRLF) in case the repo was checked out
+# on Windows — otherwise the shebang becomes "/bin/sh\r" and won't start.
+RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh \
+ && chmod +x /usr/local/bin/docker-entrypoint.sh && mkdir -p /data && chown node:node /data
 
 # SESSION_SECRET is deliberately not set here: if it isn't provided at
 # runtime, the server generates a random one and stores it on the volume.
