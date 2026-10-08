@@ -1239,5 +1239,9 @@ async function pollSearchJob(job, exists, insert) {
 
 module.exports = {
   pollSearchJob, checkExistingListings, detectPlatform, scrapeListing, fetchPageRaw, checkListingStatus,
+  // Shared with index.js for the other places that call out to a
+  // user-supplied address (ntfy server, browser-push endpoint).
   isUrlAllowed: isUrlSyntacticallyAllowed,
+  safeAgentFor: agentFor,
+  safeHttpsAgent,
 };

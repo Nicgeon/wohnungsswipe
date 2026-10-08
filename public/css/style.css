@@ -1423,3 +1423,22 @@ body.rated-selecting #view-rated .view-content { padding-bottom:150px; }
 .group-cards { margin-bottom:6px; }
 .rc .vote-chips { margin-top:10px; }
 .contact-note-unmark { margin-left:auto; color:var(--dislike); }
+
+/* ── Group join requests ───────────────────────────────── */
+.join-hint { font-size:var(--fs-small); color:var(--text2); margin:-4px 0 14px; line-height:1.45; }
+.group-card-pending { cursor:default; border-style:dashed; }
+.group-card-pending:hover { transform:none; border-color:var(--border-hover); }
+.group-pending-tag { display:inline-flex; align-items:center; gap:6px; color:var(--accent-text); font-weight:600; }
+.group-pending-tag .ic { width:14px; height:14px; }
+.group-req-badge { display:inline-flex; align-items:center; height:22px; padding:0 9px; border-radius:999px; background:var(--accent); color:var(--on-accent); font-size:.72rem; font-weight:700; }
+.join-requests { display:flex; flex-direction:column; gap:8px; margin-bottom:18px; }
+.join-request { display:flex; align-items:center; gap:12px; padding:12px 14px; background:var(--bg2); border:1px solid var(--accent); border-radius:14px; }
+.join-request-info { flex:1; min-width:0; display:flex; flex-direction:column; }
+.join-request-info b { font-weight:600; }
+.join-request-info span { font-size:var(--fs-small); color:var(--text2); }
+.join-request .btn-primary, .join-request .btn-ghost { width:auto; padding:8px 14px; font-size:.85rem; }
+@media (max-width: 520px) {
+  .join-request { flex-wrap:wrap; }
+  .join-request-info { flex:1 1 calc(100% - 60px); }
+  .join-request .btn-ghost, .join-request .btn-primary { flex:1; }
+}

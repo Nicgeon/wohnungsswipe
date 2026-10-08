@@ -15,7 +15,7 @@ const fs         = require('fs');
 const crypto     = require('crypto');
 const MemoryStore = require('memorystore')(session);
 const webpush    = require('web-push');
-const { pollSearchJob, checkExistingListings, detectPlatform, scrapeListing, isUrlAllowed } = require('./poller');
+const { pollSearchJob, checkExistingListings, detectPlatform, scrapeListing, isUrlAllowed, safeAgentFor, safeHttpsAgent } = require('./poller');
 const mailer     = require('./mailer');
 const P          = require('./profile');
 
@@ -253,6 +253,16 @@ async function initDb() {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (user_id, group_id)
     );
+    -- Entering an invite code no longer makes you a member straight away: it
+    -- files a request here that an existing member has to accept, since
+    -- membership exposes the group profile (phone, income, documents) and
+    -- the contact notes.
+    CREATE TABLE IF NOT EXISTS group_join_requests (
+      group_id   INTEGER NOT NULL,
+      user_id    INTEGER NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (group_id, user_id)
+    );
     CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT);
   `);
 
@@ -443,6 +453,13 @@ const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, max: 30, standardHeaders: true, legacyHeaders: false,
   message: { error: 'Zu viele Versuche – bitte in ein paar Minuten erneut versuchen' },
 });
+// Joining by invite code: keyed by account (falls back to IP) so guessing
+// codes from one account is slow, on top of joins needing approval anyway.
+const joinLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 10, standardHeaders: true, legacyHeaders: false,
+  keyGenerator: req => (req.session?.userId ? `u${req.session.userId}` : `ip${req.ip}`),
+  message: { error: 'Zu viele Beitrittsversuche – bitte später erneut versuchen' },
+});
 // ── Per-type, per-channel notification preferences ──────────
 // Users can choose exactly which channel(s) they want for each kind of
 // notification, instead of one blanket on/off per channel. The matrix is
@@ -612,6 +629,10 @@ app.put('/api/user/password', requireAuth, async (req, res) => {
 app.put('/api/user/notifications', requireAuth, (req, res) => {
   const { notify_email, notify_push, notify_match, notify_new,
           notify_digest_interval, ntfy_topic, ntfy_server, notify_threshold, notify_matrix } = req.body;
+  if (ntfy_server != null && !isStr(ntfy_server)) return res.status(400).json({ error: 'Ungültiger ntfy-Server' });
+  if (ntfy_topic  != null && !isStr(ntfy_topic))  return res.status(400).json({ error: 'Ungültiges ntfy-Topic' });
+  if (ntfy_server && ntfy_server.trim() && !isUrlAllowed(ntfy_server.trim()))
+    return res.status(400).json({ error: 'ntfy-Server: bitte eine öffentliche http(s)-Adresse angeben' });
   const validIntervals = ['instant','15min','1h','6h','daily'];
   const interval    = validIntervals.includes(notify_digest_interval) ? notify_digest_interval : 'instant';
   const threshold   = Math.max(1, Math.min(100, parseInt(notify_threshold) || 1));
@@ -1078,14 +1099,22 @@ app.get('/api/push/vapid-key', (req, res) => {
 
 app.post('/api/push/subscribe', requireAuth, (req, res) => {
   const { endpoint, keys } = req.body;
-  if (!endpoint || !keys?.p256dh || !keys?.auth)
+  if (!isStr(endpoint) || !isStr(keys?.p256dh) || !isStr(keys?.auth) || !endpoint)
+    return res.status(400).json({ error: 'Ungültige Subscription' });
+  // Real push services (FCM, Mozilla, Apple) are always public https URLs;
+  // anything else would just make this server send requests wherever the
+  // client points it.
+  if (!endpoint.startsWith('https://') || !isUrlAllowed(endpoint))
     return res.status(400).json({ error: 'Ungültige Subscription' });
   try {
     dbRun('INSERT OR REPLACE INTO push_subscriptions (user_id,endpoint,p256dh,auth) VALUES (?,?,?,?)',
       [req.session.userId, endpoint, keys.p256dh, keys.auth]);
     saveDb();
     res.json({ success: true });
-  } catch(e) { res.status(500).json({ error: e.message }); }
+  } catch(e) {
+    console.error('[Push] Subscription speichern fehlgeschlagen:', e.message);
+    res.status(500).json({ error: 'Subscription konnte nicht gespeichert werden' });
+  }
 });
 
 app.post('/api/push/unsubscribe', requireAuth, (req, res) => {
@@ -1106,7 +1135,8 @@ async function sendPushToUser(userId, payload) {
     try {
       await webpush.sendNotification(
         { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
-        JSON.stringify(payload)
+        JSON.stringify(payload),
+        { agent: safeHttpsAgent }   // endpoint comes from the client – same SSRF guard as the scraper
       );
       console.log(`[Push] Gesendet an Nutzer ${userId}`);
     } catch (e) {
@@ -1616,19 +1646,27 @@ app.get('/api/contacts/:listingId', requireAuth, (req, res) => {
 
 // ── Groups ─────────────────────────────────────────────────
 app.get('/api/groups/mine', requireAuth, (req, res) => {
-  res.json({ groups: dbAll(`
-    SELECT g.*, COUNT(m2.user_id) as member_count
+  const groups = dbAll(`
+    SELECT g.*, COUNT(m2.user_id) as member_count,
+      (SELECT COUNT(*) FROM group_join_requests r WHERE r.group_id=g.id) as pending_requests
     FROM groups_table g
     JOIN group_members m  ON g.id=m.group_id  AND m.user_id=?
     LEFT JOIN group_members m2 ON g.id=m2.group_id
     GROUP BY g.id ORDER BY g.created_at DESC
-  `, [req.session.userId]) });
+  `, [req.session.userId]);
+  // Groups this user asked to join and is still waiting on (name only –
+  // nothing else about a group is visible before being accepted).
+  const requested = dbAll(`
+    SELECT g.id, g.name, r.created_at FROM group_join_requests r
+    JOIN groups_table g ON g.id=r.group_id WHERE r.user_id=? ORDER BY r.created_at DESC
+  `, [req.session.userId]);
+  res.json({ groups, requested });
 });
 
 app.post('/api/groups/create', requireAuth, (req, res) => {
   const { name } = req.body;
   if (!name) return res.status(400).json({ error: 'Gruppenname erforderlich' });
-  const code = crypto.randomBytes(3).toString('hex').toUpperCase();
+  const code = crypto.randomBytes(4).toString('hex').toUpperCase();   // 8 chars
   const r    = dbRun('INSERT INTO groups_table (name,invite_code,created_by) VALUES (?,?,?)',
     [name.trim(), code, req.session.userId]);
   dbRun('INSERT INTO group_members (group_id,user_id) VALUES (?,?)', [r.lastInsertRowid, req.session.userId]);
@@ -1636,12 +1674,68 @@ app.post('/api/groups/create', requireAuth, (req, res) => {
   res.json({ success: true, group: dbGet('SELECT * FROM groups_table WHERE id=?', [r.lastInsertRowid]) });
 });
 
-app.post('/api/groups/join', requireAuth, (req, res) => {
-  const group = dbGet('SELECT * FROM groups_table WHERE invite_code=?', [(req.body.code||'').toUpperCase()]);
+// Entering an invite code files a join request; an existing member has to
+// accept it (see /requests below) before the new person sees anything of the
+// group.
+app.post('/api/groups/join', requireAuth, joinLimiter, async (req, res) => {
+  const code  = isStr(req.body.code) ? req.body.code.trim().toUpperCase() : '';
+  const group = code && dbGet('SELECT * FROM groups_table WHERE invite_code=?', [code]);
   if (!group) return res.status(404).json({ error: 'Gruppe nicht gefunden' });
-  try { dbRun('INSERT OR IGNORE INTO group_members (group_id,user_id) VALUES (?,?)', [group.id, req.session.userId]); } catch(_) {}
+  const uid = req.session.userId;
+  if (isGroupMember(group.id, uid))
+    return res.json({ success: true, alreadyMember: true, group });
+  const existing = dbGet('SELECT 1 FROM group_join_requests WHERE group_id=? AND user_id=?', [group.id, uid]);
+  dbRun('INSERT OR IGNORE INTO group_join_requests (group_id,user_id) VALUES (?,?)', [group.id, uid]);
   saveDb();
-  res.json({ success: true, group });
+  res.json({ success: true, pending: true, group: { id: group.id, name: group.name } });
+
+  if (existing) return;                         // don't re-notify on a repeated request
+  const requester = dbGet('SELECT username FROM users WHERE id=?', [uid]);
+  const title = 'Neue Beitrittsanfrage';
+  const body  = `${requester?.username || 'Jemand'} möchte der Gruppe „${group.name}“ beitreten`;
+  for (const { user_id } of dbAll('SELECT user_id FROM group_members WHERE group_id=?', [group.id])) {
+    const m = dbGet('SELECT * FROM users WHERE id=?', [user_id]);
+    if (!m) continue;
+    if (shouldNotify(m, 'nudge', 'push')) await sendPushToUser(m.id, { title, body, url: '/?view=groups', icon: '/icon-192.png' }).catch(() => {});
+    if (shouldNotify(m, 'nudge', 'ntfy')) await sendNtfy(m, title, body, 'groups').catch(() => {});
+  }
+});
+
+// Withdraw one's own pending request
+app.delete('/api/groups/:id/request', requireAuth, (req, res) => {
+  dbRun('DELETE FROM group_join_requests WHERE group_id=? AND user_id=?', [req.params.id, req.session.userId]);
+  saveDb();
+  res.json({ success: true });
+});
+
+// Pending requests for a group – visible to its members only
+app.get('/api/groups/:id/requests', requireAuth, (req, res) => {
+  if (!isGroupMember(req.params.id, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff' });
+  res.json({ requests: dbAll(`
+    SELECT u.id, u.username, r.created_at FROM group_join_requests r
+    JOIN users u ON u.id=r.user_id WHERE r.group_id=? ORDER BY r.created_at ASC
+  `, [req.params.id]) });
+});
+
+// Any member can accept or decline (the group is a trusted circle).
+app.post('/api/groups/:id/requests/:userId/:decision', requireAuth, async (req, res) => {
+  const gid = parseInt(req.params.id), target = parseInt(req.params.userId), decision = req.params.decision;
+  if (!['accept', 'decline'].includes(decision)) return res.status(404).json({ error: 'Unbekannte Aktion' });
+  if (!isGroupMember(gid, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff' });
+  if (!dbGet('SELECT 1 FROM group_join_requests WHERE group_id=? AND user_id=?', [gid, target]))
+    return res.status(404).json({ error: 'Anfrage nicht gefunden' });
+  dbRun('DELETE FROM group_join_requests WHERE group_id=? AND user_id=?', [gid, target]);
+  if (decision === 'accept') dbRun('INSERT OR IGNORE INTO group_members (group_id,user_id) VALUES (?,?)', [gid, target]);
+  saveDb();
+  res.json({ success: true });
+
+  if (decision !== 'accept') return;
+  const group = dbGet('SELECT name FROM groups_table WHERE id=?', [gid]);
+  const m = dbGet('SELECT * FROM users WHERE id=?', [target]);
+  if (!m || !group) return;
+  const title = 'Beitritt bestätigt', body = `Du bist jetzt Mitglied der Gruppe „${group.name}“`;
+  if (shouldNotify(m, 'nudge', 'push')) await sendPushToUser(m.id, { title, body, url: '/?view=groups', icon: '/icon-192.png' }).catch(() => {});
+  if (shouldNotify(m, 'nudge', 'ntfy')) await sendNtfy(m, title, body, 'groups').catch(() => {});
 });
 
 app.get('/api/groups/:id/members', requireAuth, (req, res) => {
@@ -2107,6 +2201,13 @@ async function sendNtfy(user, title, body, view = '') {
   if (!user.ntfy_topic) return;
   const server    = (user.ntfy_server || '').trim() || 'https://ntfy.sh';
   const url       = `${server}/${encodeURIComponent(user.ntfy_topic)}`;
+  // The ntfy server is user-configurable, so it gets the same protection as
+  // the scraper: refuse private/internal addresses, both up front and at
+  // connect time (see the SSRF guard in poller.js).
+  if (!isUrlAllowed(url)) {
+    console.warn(`[ntfy] Server-Adresse für Nutzer ${user.id} abgelehnt (ungültig oder intern): ${server}`);
+    return;
+  }
   const safeTitle = stripEmojis(title) || 'WohnungsSwipe';
   const safeBody  = stripEmojis(body)  || stripEmojis(title) || '';
   const tags      = extractNtfyTags(title + ' ' + body);
@@ -2122,6 +2223,7 @@ async function sendNtfy(user, title, body, view = '') {
       },
       body: safeBody,
       timeout: 8000,
+      agent: safeAgentFor(url),
     });
     // fetch() only rejects on network-level failures (DNS, connection
     // refused, timeout) — it does NOT throw on HTTP error responses like
