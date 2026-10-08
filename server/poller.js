@@ -10,6 +10,100 @@
 
 const fetch   = require('node-fetch');
 const cheerio = require('cheerio');
+const dns     = require('dns');
+const http    = require('http');
+const https   = require('https');
+const { isIP, BlockList } = require('net');
+
+// ── SSRF guard ───────────────────────────────────────────────
+// Every URL the scraper fetches ultimately comes from a user (a listing link
+// they pasted, or a search-agent URL) — so a malicious or compromised
+// account could otherwise make THIS SERVER fetch anything it can reach:
+// other containers/services on the same host or Docker network, the
+// cloud-metadata endpoint (169.254.169.254) on a cloud VM, etc. — and in
+// several cases (listings/add) the fetched page's title ends up stored and
+// shown back to every user, turning it into a readable internal-network
+// probe.
+//
+// Checking the URL once, before it's saved, isn't enough: a hostname's DNS
+// can be repointed after the fact ("DNS rebinding") to resolve to an
+// internal address only once the job actually runs. So the check below is
+// wired into the `lookup` option of a dedicated http/https Agent, which
+// Node calls to resolve the hostname at the moment it opens the TCP
+// connection — i.e. on every single fetch, for whatever address the name
+// resolves to right then, not just whatever it resolved to when a job was
+// created.
+// Built on Node's own net.BlockList rather than hand-rolled octet/prefix
+// arithmetic, specifically because BlockList already does the one thing
+// that's easy to get subtly wrong by hand: an IPv4-mapped IPv6 address
+// ("::ffff:127.0.0.1", or its equally valid hex-compressed form
+// "::ffff:7f00:1") is matched against the IPv4 rules below automatically,
+// in whichever textual form it shows up as.
+const blockedIps = new BlockList();
+const BLOCKED_V4 = [
+  ['0.0.0.0', 8],       // "this network"
+  ['10.0.0.0', 8],      // RFC1918
+  ['100.64.0.0', 10],   // CGNAT
+  ['127.0.0.0', 8],     // loopback
+  ['169.254.0.0', 16],  // link-local, incl. cloud-metadata (169.254.169.254)
+  ['172.16.0.0', 12],   // RFC1918
+  ['192.0.0.0', 24],    // IETF protocol assignments
+  ['192.168.0.0', 16],  // RFC1918
+  ['198.18.0.0', 15],   // benchmarking
+  ['224.0.0.0', 4],     // multicast + reserved (224.0.0.0 - 255.255.255.255)
+];
+const BLOCKED_V6 = [
+  ['::', 128],          // unspecified
+  ['::1', 128],          // loopback
+  ['fc00::', 7],         // unique local (ULA)
+  ['fe80::', 10],        // link-local
+  ['64:ff9b::', 96],     // NAT64 (not auto-unwrapped to IPv4 by BlockList, so blocked outright)
+];
+for (const [net_, prefix] of BLOCKED_V4) blockedIps.addSubnet(net_, prefix, 'ipv4');
+for (const [net_, prefix] of BLOCKED_V6) blockedIps.addSubnet(net_, prefix, 'ipv6');
+
+function isPrivateOrReservedIp(ip) {
+  const fam = isIP(ip);
+  if (fam !== 4 && fam !== 6) return true; // couldn't classify it – refuse rather than risk it
+  return blockedIps.check(ip, fam === 4 ? 'ipv4' : 'ipv6');
+}
+
+// Cheap, synchronous pre-check (protocol + literal IP/hostname) used right
+// when a URL is submitted, so the user gets an immediate, clear 400 instead
+// of the request failing deep inside a background scrape. This is a
+// convenience, NOT the security boundary — a hostname can still resolve to
+// a private address later, which is why the real enforcement lives in the
+// `lookup` function below and runs on every actual fetch.
+function isUrlSyntacticallyAllowed(url) {
+  let u;
+  try { u = new URL(url); } catch (_) { return false; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+  // IPv6 literals keep their brackets in URL#hostname (e.g. "[::1]"); strip
+  // them before classifying, same as node-fetch does when connecting.
+  const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal')) return false;
+  if (isIP(host) && isPrivateOrReservedIp(host)) return false;
+  return true;
+}
+
+// Resolves a hostname the same way Node would for an outgoing connection,
+// but refuses to hand back an address in a private/reserved range. Passed
+// as the `lookup` option of the Agents below, so it runs on every connect.
+function safeLookup(hostname, options, callback) {
+  if (typeof options === 'function') { callback = options; options = {}; }
+  dns.lookup(hostname, { ...options, all: true }, (err, addresses) => {
+    if (err) return callback(err);
+    const list = Array.isArray(addresses) ? addresses : [{ address: addresses, family: options.family || isIP(addresses) }];
+    const safe = list.find(a => !isPrivateOrReservedIp(a.address));
+    if (!safe) return callback(new Error(`SSRF-Schutz: ${hostname} löst nur auf private/reservierte Adressen auf`));
+    if (options.all) return callback(null, list.filter(a => !isPrivateOrReservedIp(a.address)));
+    callback(null, safe.address, safe.family);
+  });
+}
+
+const safeHttpAgent  = new http.Agent({ lookup: safeLookup, keepAlive: true });
+const safeHttpsAgent = new https.Agent({ lookup: safeLookup, keepAlive: true });
+const agentFor = url => (new URL(url).protocol === 'https:' ? safeHttpsAgent : safeHttpAgent);
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 const HEADERS = {
@@ -52,7 +146,8 @@ async function fetchPage(url, timeoutMs = 18000, allowedFailCodes = []) {
 // (Kleinanzeigen bounces expired ads to a category/search page with HTTP
 // 200 instead of returning a 404, which would otherwise look "alive").
 async function fetchPageRaw(url, timeoutMs = 18000, allowedFailCodes = [], requestHeaders = HEADERS) {
-  const res = await fetch(url, { headers: requestHeaders, timeout: timeoutMs });
+  if (!isUrlSyntacticallyAllowed(url)) throw new Error('URL abgelehnt (ungültig oder zeigt auf eine private/interne Adresse)');
+  const res = await fetch(url, { headers: requestHeaders, timeout: timeoutMs, agent: agentFor(url) });
   if (!res.ok && !allowedFailCodes.includes(res.status)) {
     throw new Error(`HTTP ${res.status}`);
   }
@@ -1142,4 +1237,11 @@ async function pollSearchJob(job, exists, insert) {
   return { newCount, totalFound: urls.length };
 }
 
-module.exports = { pollSearchJob, checkExistingListings, detectPlatform, scrapeListing, fetchPageRaw, checkListingStatus };
+module.exports = {
+  pollSearchJob, checkExistingListings, detectPlatform, scrapeListing, fetchPageRaw, checkListingStatus,
+  // Shared with index.js for the other places that call out to a
+  // user-supplied address (ntfy server, browser-push endpoint).
+  isUrlAllowed: isUrlSyntacticallyAllowed,
+  safeAgentFor: agentFor,
+  safeHttpsAgent,
+};

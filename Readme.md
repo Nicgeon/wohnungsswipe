@@ -30,7 +30,8 @@ services:
     environment:
       - PORT=3000
       - DB_PATH=/data/wohnungsswipe.db
-      - SESSION_SECRET=changeme
+      # optional, see below – if unset a random secret is generated and stored in the volume
+      # - SESSION_SECRET=
 
       # ── E-Mail (optional) ─────────────────────────────
       # Ohne diese Einstellungen werden E-Mails nur geloggt, nicht gesendet.
@@ -56,8 +57,11 @@ volumes:
 ```
 
 ### What you should change:
-- SESSION_SECRET 
-    - would reccomend changing it to something long and funny
+- SESSION_SECRET (optional)
+    - signs the login cookies. If you leave it unset, the server generates a random secret on first start and keeps it in the data volume (`/data/session-secret`).
+    - if you set it yourself, use a long random value, e.g. `openssl rand -hex 32`. Placeholder values like `changeme` are ignored.
+- BASE_URL
+    - set it to your public `https://…` address when running behind a reverse proxy – this also enables secure (HTTPS-only) cookies.
 
 ## Credits
 Parts of this project were taken over from the fork

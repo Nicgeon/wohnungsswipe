@@ -539,6 +539,10 @@
           </div>
           <button class="btn-secondary compact" id="save-email-btn">Speichern</button>
         </div>
+        <div class="field-group">
+          <label>Aktuelles Passwort zur Bestätigung</label>
+          <input type="password" id="settings-email-pw" placeholder="••••••••" autocomplete="current-password" />
+        </div>
         <p class="form-error"   id="settings-email-error"></p>
         <p class="form-success" id="settings-email-ok"></p>
       </div>
@@ -850,10 +854,11 @@
 <div id="join-group-modal" class="modal" style="display:none">
   <div class="modal-card">
     <h3>Gruppe beitreten</h3>
-    <div class="field-group"><label>Einladungscode</label><input type="text" id="join-code" placeholder="ABC123" style="text-transform:uppercase" /></div>
+    <div class="field-group"><label>Einladungscode</label><input type="text" id="join-code" placeholder="A1B2C3D4" style="text-transform:uppercase" autocomplete="off" /></div>
+    <p class="join-hint">Ein Mitglied der Gruppe bestätigt deinen Beitritt, danach siehst du die Gruppe.</p>
     <div class="modal-actions">
       <button class="btn-ghost" id="cancel-join">Abbrechen</button>
-      <button class="btn-primary" id="confirm-join">Beitreten</button>
+      <button class="btn-primary" id="confirm-join">Anfrage senden</button>
     </div>
     <p class="form-error" id="join-group-error"></p>
   </div>

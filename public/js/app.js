@@ -55,6 +55,12 @@ function esc(s) {
   return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+// Listing URLs come from user input / scraped pages; only ever link to
+// http(s) so an old or crafted row can't turn a link into javascript:…
+function safeHref(url) {
+  return /^https?:\/\//i.test(String(url || '').trim()) ? String(url).trim() : '#';
+}
+
 function parseTags(json) {
   try { return JSON.parse(json || '[]'); } catch { return []; }
 }
@@ -474,8 +480,8 @@ const detailView = {
       mapBtn.style.display = 'none';
     }
 
-    $id('detail-original-link').href = listing.url || '#';
-    $id('detail-quick-original').href = listing.url || '#';
+    $id('detail-original-link').href = safeHref(listing.url);
+    $id('detail-quick-original').href = safeHref(listing.url);
 
     // Swipe actions only make sense (and only stay in sync with the queue)
     // when opened from the swipe page itself.
@@ -1650,13 +1656,33 @@ document.getElementById('rated-filter').addEventListener('click', e => {
 async function loadGroups() {
   const d = await api('/api/groups/mine');
   state.groups = d.groups || [];
+  state.groupRequests = d.requested || [];
   renderGroups();
 }
 
 function renderGroups() {
   const grid = $id('groups-list');
   grid.innerHTML = '';
+  // Join requests I sent that are still waiting for a member to accept
+  (state.groupRequests || []).forEach(r => {
+    const card = document.createElement('div');
+    card.className = 'group-card group-card-pending';
+    card.innerHTML = `
+      <div class="group-card-name">${esc(r.name)}</div>
+      <div class="group-card-meta">
+        <span class="group-pending-tag">${icon('send', 'sm')}Beitrittsanfrage gesendet</span>
+        <button type="button" class="btn-link" data-withdraw>Zurückziehen</button>
+      </div>`;
+    card.querySelector('[data-withdraw]').addEventListener('click', async e => {
+      e.stopPropagation();
+      await api(`/api/groups/${r.id}/request`, { method: 'DELETE' });
+      toast('Anfrage zurückgezogen');
+      loadGroups();
+    });
+    grid.appendChild(card);
+  });
   if (!state.groups.length) {
+    if ((state.groupRequests || []).length) return;
     grid.innerHTML = `<div class="empty-state"><div class="empty-icon i">${icon('users')}</div><p>Noch keine Gruppen.</p><p class="empty-sub">Erstelle eine oder tritt bei.</p></div>`;
     return;
   }
@@ -1668,6 +1694,7 @@ function renderGroups() {
       <div class="group-card-meta">
         <span>${g.member_count} ${g.member_count===1?'Mitglied':'Mitglieder'}</span>
         <span class="group-code" data-code="${esc(g.invite_code)}">${esc(g.invite_code)}</span>
+        ${g.pending_requests ? `<span class="group-req-badge">${g.pending_requests} ${g.pending_requests === 1 ? 'Anfrage' : 'Anfragen'}</span>` : ''}
       </div>`;
     card.querySelector('.group-code').addEventListener('click', e => {
       e.stopPropagation();
@@ -1683,11 +1710,22 @@ async function openGroupDetail(group, opts = {}) {
   $id('group-detail').style.display  = '';
 
   // Load swipe status in parallel
-  const [{ members = [] }, { results = [], memberCount = 0 }, { status: swipeStatus = [] }] = await Promise.all([
+  const [{ members = [] }, { results = [], memberCount = 0 }, { status: swipeStatus = [] }, { requests: joinRequests = [] }] = await Promise.all([
     api(`/api/groups/${group.id}/members`),
     api(`/api/groups/${group.id}/results`),
     api(`/api/groups/${group.id}/swipe-status`),
+    api(`/api/groups/${group.id}/requests`),
   ]);
+  const requestsHtml = joinRequests.length ? `
+    <p class="section-label">Beitrittsanfragen</p>
+    <div class="join-requests">${joinRequests.map(r => `
+      <div class="join-request" data-request="${r.id}">
+        <div class="member-card-avatar">${esc((r.username || '?').charAt(0).toUpperCase())}</div>
+        <div class="join-request-info"><b>${esc(r.username)}</b><span>möchte der Gruppe beitreten</span></div>
+        <button type="button" class="btn-ghost" data-request-action="decline" data-user="${r.id}">Ablehnen</button>
+        <button type="button" class="btn-primary" data-request-action="accept" data-user="${r.id}">Annehmen</button>
+      </div>`).join('')}
+    </div>` : '';
 
   // Build members section with nudge buttons
   const myId = state.user?.userId;
@@ -1745,6 +1783,7 @@ async function openGroupDetail(group, opts = {}) {
     </div>
 
     <div id="gd-panel-ratings">
+    ${requestsHtml}
     <p class="section-label">Mitglieder</p>
     <div class="members-nudge-list" style="margin-bottom:18px">${membersHtml}</div>
     ${results.length
@@ -1776,6 +1815,19 @@ async function openGroupDetail(group, opts = {}) {
   $id('gd-tabs').querySelectorAll('.gd-tab').forEach(b => b.addEventListener('click', () => showGroupTab(b.dataset.gdTab)));
   if (opts.tab === 'profile') showGroupTab('profile');
   window.__toast = toast;
+
+  // Accept / decline join requests
+  $id('group-detail-content').querySelectorAll('[data-request-action]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const action = btn.dataset.requestAction;
+      btn.closest('.join-request').querySelectorAll('button').forEach(b => { b.disabled = true; });
+      const r = await api(`/api/groups/${group.id}/requests/${btn.dataset.user}/${action}`, { method: 'POST' });
+      if (!r.success) { toast('❌ ' + (r.error || 'Fehler')); openGroupDetail(group); return; }
+      toast(action === 'accept' ? '✓ Beitritt bestätigt' : 'Anfrage abgelehnt');
+      openGroupDetail(group);
+      loadGroups();
+    });
+  });
 
   // Wire nudge buttons
   $id('group-detail-content').querySelectorAll('[data-nudge]').forEach(btn => {
@@ -1830,7 +1882,8 @@ $id('confirm-join').addEventListener('click', async () => {
   const d = await api('/api/groups/join', { method:'POST', body:{ code } });
   if (d.error) return setErr('join-group-error', d.error);
   $id('join-group-modal').style.display = 'none';
-  toast(`✅ Gruppe "${d.group.name}" beigetreten!`);
+  if (d.alreadyMember) toast(`✓ Du bist bereits in „${d.group.name}“`);
+  else toast(`✓ Beitrittsanfrage an „${d.group.name}“ gesendet`, 3500);
   await loadGroups();
 });
 
@@ -2098,6 +2151,7 @@ async function loadSettings() {
   $id('settings-email').value     = me.email||'';
   clr('settings-username-error','settings-username-ok','settings-email-error','settings-email-ok','settings-pw-error','settings-pw-ok','notify-ok','ntfy-ok');
   $id('settings-pw-current').value = $id('settings-pw-new').value = $id('settings-pw-confirm').value = '';
+  $id('settings-email-pw').value = '';
 
   // Notification toggles
   $id('notify-email').checked = !!me.notify_email;
@@ -2152,8 +2206,11 @@ $id('save-username-btn').addEventListener('click', async () => {
 
 $id('save-email-btn').addEventListener('click', async () => {
   clr('settings-email-error','settings-email-ok');
-  const d = await api('/api/user/email', { method:'PUT', body:{ email:$id('settings-email').value.trim() } });
+  const pw = $id('settings-email-pw').value;
+  if (!pw) return setErr('settings-email-error','Bitte aktuelles Passwort eingeben');
+  const d = await api('/api/user/email', { method:'PUT', body:{ email:$id('settings-email').value.trim(), currentPassword:pw } });
   if (d.error) return setErr('settings-email-error', d.error);
+  $id('settings-email-pw').value = '';
   $id('settings-display-email').textContent = $id('settings-email').value.trim();
   setOk('settings-email-ok','✓ Gespeichert'); toast('✅ E-Mail geändert');
 });
@@ -2214,6 +2271,7 @@ $id('save-ntfy-btn').addEventListener('click', async () => {
     notify_matrix:    readMatrixFromUI(),
   }});
   if (d.success) { setOk('ntfy-ok','✓ Gespeichert'); toast('✅ ntfy gespeichert'); }
+  else toast('❌ ' + (d.error || 'Fehler'));
 });
 
 async function saveNotifySettings() {
@@ -2227,6 +2285,7 @@ async function saveNotifySettings() {
     notify_matrix:          readMatrixFromUI(),
   }});
   if (d.success) setOk('notify-matrix-ok','✓ Gespeichert');
+  else toast('❌ ' + (d.error || 'Fehler'));
 }
 
 // ── Web Push ──────────────────────────────────────────────

@@ -1,5 +1,12 @@
 const express    = require('express');
+// Patches Express's routing so a rejected Promise inside an `async (req,res)
+// => {...}` handler reaches the error middleware below instead of becoming
+// an unhandled rejection that (on modern Node) kills the whole process. Must
+// be required before any routes are defined.
+require('express-async-errors');
 const session    = require('express-session');
+const helmet     = require('helmet');
+const rateLimit  = require('express-rate-limit');
 const bcrypt     = require('bcryptjs');
 const initSqlJs  = require('sql.js');
 const fetch      = require('node-fetch');
@@ -8,16 +15,35 @@ const fs         = require('fs');
 const crypto     = require('crypto');
 const MemoryStore = require('memorystore')(session);
 const webpush    = require('web-push');
-const { pollSearchJob, checkExistingListings, detectPlatform, scrapeListing } = require('./poller');
+const { pollSearchJob, checkExistingListings, detectPlatform, scrapeListing, isUrlAllowed, safeAgentFor, safeHttpsAgent } = require('./poller');
 const mailer     = require('./mailer');
 const P          = require('./profile');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
+// ── Crash safety net ────────────────────────────────────────
+// Background work (the search-job scheduler, digest flush, status checks –
+// see startScheduler() below) runs outside any Express request, so
+// express-async-errors can't help there: a rejected promise or stray throw
+// in a setInterval/setTimeout callback (e.g. a scraper choking on an
+// unexpected page) has nothing to catch it and, since Node 15, that alone
+// takes the whole process down. These are the last line of defence: log and
+// keep running rather than silently killing the app (and every logged-in
+// user's session) for everyone.
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err);
+});
+
 // ── Web Push VAPID setup ──────────────────────────────────
 let VAPID_PUBLIC, VAPID_PRIVATE;
-const vapidFile = process.env.VAPID_FILE || path.join(__dirname, '../data/vapid.json');
+// Defined below, next to the database (dbDir) — i.e. on the persistent
+// volume in Docker, so the keys (and with them every browser's push
+// subscription) survive a container being recreated.
+let vapidFile;
 
 function initVapid() {
   try {
@@ -47,6 +73,7 @@ function initVapid() {
 const dbPath = process.env.DB_PATH || path.join(__dirname, '../data/wohnungsswipe.db');
 const dbDir  = path.dirname(dbPath);
 if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
+vapidFile = process.env.VAPID_FILE || path.join(dbDir, 'vapid.json');
 
 let db;
 
@@ -230,6 +257,16 @@ async function initDb() {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (user_id, group_id)
     );
+    -- Entering an invite code no longer makes you a member straight away: it
+    -- files a request here that an existing member has to accept, since
+    -- membership exposes the group profile (phone, income, documents) and
+    -- the contact notes.
+    CREATE TABLE IF NOT EXISTS group_join_requests (
+      group_id   INTEGER NOT NULL,
+      user_id    INTEGER NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (group_id, user_id)
+    );
     CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT);
   `);
 
@@ -283,6 +320,9 @@ async function initDb() {
            SELECT group_id, household_type, persons, children, move_in_type, move_in_date, updated_by FROM group_settings`);
   migrate("ALTER TABLE search_jobs ADD COLUMN visibility_id INTEGER");
   migrate("ALTER TABLE users       ADD COLUMN notify_matrix   TEXT");
+  // Bumped on every password change/reset; sessions remember the value they
+  // were created with, so all older logins become invalid (see below).
+  migrate("ALTER TABLE users       ADD COLUMN pw_version      INTEGER DEFAULT 0");
 
   // One-time repair: an over-eager text heuristic flagged live Kleinanzeigen ads
   // as offline (already when they were first scraped, so there is no archive
@@ -385,16 +425,101 @@ function insertListing(data, addedBy = null, sourceJobId = null, visibility = 'g
 }
 
 // ── Middleware ─────────────────────────────────────────────
+// The session secret signs every login cookie — anyone who knows it can
+// forge a session for any user. These are the placeholders that have
+// shipped in this repo's Dockerfile / docker-compose.yml / source, so
+// they're public knowledge and must never actually be used. If no real
+// secret is configured, a random one is generated once and kept next to
+// the database, so sessions still survive restarts.
+const KNOWN_DEFAULT_SECRETS = new Set([
+  'wohnungsswipe-dev-secret', 'change-me-in-production', 'aendere-mich-bitte-im-produktivbetrieb',
+  'changeme', 'secret',
+]);
+function resolveSessionSecret() {
+  const env = (process.env.SESSION_SECRET || '').trim();
+  if (env && !KNOWN_DEFAULT_SECRETS.has(env)) {
+    if (env.length < 16) console.warn('[Session] SESSION_SECRET ist sehr kurz – bitte mindestens 32 zufällige Zeichen verwenden');
+    return env;
+  }
+  if (env) console.warn('[Session] SESSION_SECRET ist ein bekannter Standardwert und wird ignoriert');
+  const file = path.join(dbDir, 'session-secret');
+  try {
+    const stored = fs.readFileSync(file, 'utf8').trim();
+    if (stored.length >= 32) return stored;
+  } catch (_) { /* not created yet */ }
+  const secret = crypto.randomBytes(48).toString('hex');
+  try { fs.writeFileSync(file, secret, { mode: 0o600 }); }
+  catch (e) { console.warn('[Session] Secret konnte nicht gespeichert werden – Sitzungen gehen beim Neustart verloren:', e.message); }
+  console.log(`[Session] Zufälliges Session-Secret erzeugt (${file})`);
+  return secret;
+}
+
+// Whether this deployment is reachable over HTTPS, inferred from BASE_URL
+// (already required to be set correctly for links in emails/push to work).
+// Defaults to false so a plain local/docker-compose setup over
+// http://localhost — where a Secure cookie would just make the browser
+// silently refuse to store it, breaking login — keeps working unchanged.
+const IS_HTTPS = (process.env.BASE_URL || '').startsWith('https://');
+if (IS_HTTPS) {
+  // Only trust the immediate reverse proxy (nginx/traefik etc. on the same
+  // host) for X-Forwarded-*, not an arbitrary chain — required for
+  // req.secure / rate limiting below to see the real client over HTTPS.
+  app.set('trust proxy', 1);
+}
+
+// Security headers (CSP intentionally left off: the app relies throughout
+// on an early inline <head> script for the no-flash theme switch, and on
+// inline style="" attributes, which a default CSP would block outright).
+app.use(helmet({ contentSecurityPolicy: false }));
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, '../public')));
 app.use(session({
   store:             new MemoryStore({ checkPeriod: 86400000 }),
-  secret:            process.env.SESSION_SECRET || 'wohnungsswipe-dev-secret',
+  secret:            resolveSessionSecret(),
   resave:            false,
   saveUninitialized: false,
-  cookie:            { maxAge: 7 * 24 * 60 * 60 * 1000 },
+  cookie:            { maxAge: 7 * 24 * 60 * 60 * 1000, sameSite: 'lax', secure: IS_HTTPS },
 }));
+
+// Ends sessions that no longer belong to a valid login: the account was
+// deleted, or its password was changed/reset since this session was created
+// (otherwise a stolen session would outlive the victim changing their
+// password). A fresh, empty session takes its place, so the request simply
+// continues as logged-out.
+app.use((req, res, next) => {
+  if (!req.session.userId) return next();
+  const u = dbGet('SELECT pw_version FROM users WHERE id=?', [req.session.userId]);
+  if (u && (u.pw_version || 0) === (req.session.pwv || 0)) return next();
+  req.session.regenerate(err => next(err));
+});
+
+// Issues a brand-new session ID on login, so an ID that existed before
+// (e.g. planted by someone else — session fixation) never becomes logged in.
+const startSession = (req, user) => new Promise((resolve, reject) => {
+  req.session.regenerate(err => {
+    if (err) return reject(err);
+    req.session.userId   = user.id;
+    req.session.username = user.username;
+    req.session.pwv      = user.pw_version || 0;
+    resolve();
+  });
+});
+
+// Throttles brute-force / credential-stuffing attempts against auth
+// endpoints. Keyed by IP (req.ip respects the trust-proxy setting above).
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 30, standardHeaders: true, legacyHeaders: false,
+  message: { error: 'Zu viele Versuche – bitte in ein paar Minuten erneut versuchen' },
+});
+// Joining by invite code: keyed by account (falls back to IP) so guessing
+// codes from one account is slow, on top of joins needing approval anyway.
+const joinLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 10, standardHeaders: true, legacyHeaders: false,
+  keyGenerator: req => (req.session?.userId ? `u${req.session.userId}` : `ip${req.ip}`),
+  message: { error: 'Zu viele Beitrittsversuche – bitte später erneut versuchen' },
+});
 // ── Per-type, per-channel notification preferences ──────────
 // Users can choose exactly which channel(s) they want for each kind of
 // notification, instead of one blanket on/off per channel. The matrix is
@@ -433,10 +558,18 @@ function shouldNotify(user, type, channel) {
 const requireAuth = (req, res, next) =>
   req.session.userId ? next() : res.status(401).json({ error: 'Nicht eingeloggt' });
 
+// A malformed request body (e.g. a client sending `email: {}` instead of a
+// string — whether by accident or on purpose) must never reach a
+// `.trim()`/`.toLowerCase()` call on something that isn't a string: that
+// throws, and for an `async` handler the throw becomes a rejected promise
+// that only express-async-errors catches (see the top of this file) — this
+// check means the request fails as an ordinary, logged 400 well before that.
+const isStr = v => typeof v === 'string';
+
 // ── Auth ───────────────────────────────────────────────────
-app.post('/api/auth/register', async (req, res) => {
+app.post('/api/auth/register', authLimiter, async (req, res) => {
   const { username, email, password } = req.body;
-  if (!username || !email || !password)
+  if (!isStr(username) || !isStr(email) || !isStr(password) || !username || !email || !password)
     return res.status(400).json({ error: 'Alle Felder erforderlich' });
   if (password.length < 6)
     return res.status(400).json({ error: 'Passwort mindestens 6 Zeichen' });
@@ -449,20 +582,18 @@ app.post('/api/auth/register', async (req, res) => {
   const r    = dbRun('INSERT INTO users (username,email,password_hash,unsubscribe_token,is_admin) VALUES (?,?,?,?,?)',
     [username.trim(), email.trim().toLowerCase(), hash, unsubToken, isFirstUser ? 1 : 0]);
   saveDb();
-  req.session.userId   = r.lastInsertRowid;
-  req.session.username = username.trim();
+  await startSession(req, { id: r.lastInsertRowid, username: username.trim(), pw_version: 0 });
   res.json({ success: true, username: username.trim(), userId: r.lastInsertRowid });
 });
 
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', authLimiter, async (req, res) => {
   const { email, password } = req.body;
-  if (!email || !password)
+  if (!isStr(email) || !isStr(password) || !email || !password)
     return res.status(400).json({ error: 'E-Mail und Passwort erforderlich' });
   const user = dbGet('SELECT * FROM users WHERE email=?', [email.trim().toLowerCase()]);
   if (!user || !await bcrypt.compare(password, user.password_hash))
     return res.status(401).json({ error: 'Ungültige Anmeldedaten' });
-  req.session.userId   = user.id;
-  req.session.username = user.username;
+  await startSession(req, user);
   res.json({ success: true, username: user.username, userId: user.id });
 });
 
@@ -488,9 +619,9 @@ app.get('/api/auth/stats', requireAuth, (req, res) => {
 });
 
 // ── Password reset ─────────────────────────────────────────
-app.post('/api/auth/forgot-password', async (req, res) => {
+app.post('/api/auth/forgot-password', authLimiter, async (req, res) => {
   const { email } = req.body;
-  if (!email) return res.status(400).json({ error: 'E-Mail erforderlich' });
+  if (!isStr(email) || !email) return res.status(400).json({ error: 'E-Mail erforderlich' });
   const user = dbGet('SELECT * FROM users WHERE email=?', [email.trim().toLowerCase()]);
   // Always return success to avoid user enumeration
   res.json({ success: true, message: 'Falls ein Account existiert, wurde eine E-Mail gesendet.' });
@@ -502,16 +633,17 @@ app.post('/api/auth/forgot-password', async (req, res) => {
   await mailer.sendPasswordResetMail(user.email, user.username, token);
 });
 
-app.post('/api/auth/reset-password', async (req, res) => {
+app.post('/api/auth/reset-password', authLimiter, async (req, res) => {
   const { token, password } = req.body;
-  if (!token || !password || password.length < 6)
+  if (!isStr(token) || !isStr(password) || !token || !password || password.length < 6)
     return res.status(400).json({ error: 'Ungültige Anfrage' });
   const user = dbGet("SELECT * FROM users WHERE reset_token=?", [token]);
   if (!user) return res.status(400).json({ error: 'Ungültiger oder abgelaufener Token' });
   if (new Date(user.reset_expires + 'Z') < new Date())
     return res.status(400).json({ error: 'Token abgelaufen – bitte erneut anfordern' });
   const hash = await bcrypt.hash(password, 10);
-  dbRun("UPDATE users SET password_hash=?, reset_token=NULL, reset_expires=NULL WHERE id=?", [hash, user.id]);
+  // pw_version bump logs out every existing session of this account.
+  dbRun("UPDATE users SET password_hash=?, reset_token=NULL, reset_expires=NULL, pw_version=COALESCE(pw_version,0)+1 WHERE id=?", [hash, user.id]);
   saveDb();
   await mailer.sendPasswordChangedMail(user.email, user.username);
   res.json({ success: true });
@@ -520,7 +652,7 @@ app.post('/api/auth/reset-password', async (req, res) => {
 // ── User settings ──────────────────────────────────────────
 app.put('/api/user/username', requireAuth, (req, res) => {
   const { username } = req.body;
-  if (!username?.trim()) return res.status(400).json({ error: 'Username darf nicht leer sein' });
+  if (!isStr(username) || !username.trim()) return res.status(400).json({ error: 'Username darf nicht leer sein' });
   if (dbGet('SELECT id FROM users WHERE username=? AND id!=?', [username.trim(), req.session.userId]))
     return res.status(409).json({ error: 'Username bereits vergeben' });
   dbRun('UPDATE users SET username=? WHERE id=?', [username.trim(), req.session.userId]);
@@ -529,10 +661,17 @@ app.put('/api/user/username', requireAuth, (req, res) => {
   res.json({ success: true, username: username.trim() });
 });
 
-app.put('/api/user/email', requireAuth, (req, res) => {
-  const { email } = req.body;
-  if (!email?.includes('@')) return res.status(400).json({ error: 'Gültige E-Mail erforderlich' });
-  if (dbGet('SELECT id FROM users WHERE email=? AND id!=?', [email.toLowerCase(), req.session.userId]))
+app.put('/api/user/email', requireAuth, authLimiter, async (req, res) => {
+  const { email, currentPassword } = req.body;
+  if (!isStr(email) || !email.includes('@')) return res.status(400).json({ error: 'Gültige E-Mail erforderlich' });
+  // The email address is where password resets go — changing it must need
+  // the password, or a briefly hijacked session becomes a permanent takeover.
+  if (!isStr(currentPassword) || !currentPassword)
+    return res.status(400).json({ error: 'Bitte aktuelles Passwort eingeben' });
+  const user = dbGet('SELECT password_hash FROM users WHERE id=?', [req.session.userId]);
+  if (!user || !await bcrypt.compare(currentPassword, user.password_hash))
+    return res.status(401).json({ error: 'Aktuelles Passwort falsch' });
+  if (dbGet('SELECT id FROM users WHERE email=? AND id!=?', [email.trim().toLowerCase(), req.session.userId]))
     return res.status(409).json({ error: 'E-Mail bereits vergeben' });
   dbRun('UPDATE users SET email=? WHERE id=?', [email.trim().toLowerCase(), req.session.userId]);
   saveDb();
@@ -541,14 +680,17 @@ app.put('/api/user/email', requireAuth, (req, res) => {
 
 app.put('/api/user/password', requireAuth, async (req, res) => {
   const { currentPassword, newPassword } = req.body;
-  if (!currentPassword || !newPassword || newPassword.length < 6)
+  if (!isStr(currentPassword) || !isStr(newPassword) || !currentPassword || !newPassword || newPassword.length < 6)
     return res.status(400).json({ error: 'Ungültige Anfrage' });
   const user = dbGet('SELECT * FROM users WHERE id=?', [req.session.userId]);
   if (!await bcrypt.compare(currentPassword, user.password_hash))
     return res.status(401).json({ error: 'Aktuelles Passwort falsch' });
   const hash = await bcrypt.hash(newPassword, 10);
-  dbRun('UPDATE users SET password_hash=? WHERE id=?', [hash, req.session.userId]);
+  // Logs out all other sessions of this account; this one stays logged in.
+  const pwv = (user.pw_version || 0) + 1;
+  dbRun('UPDATE users SET password_hash=?, pw_version=? WHERE id=?', [hash, pwv, req.session.userId]);
   saveDb();
+  req.session.pwv = pwv;
   await mailer.sendPasswordChangedMail(user.email, user.username);
   res.json({ success: true });
 });
@@ -556,6 +698,10 @@ app.put('/api/user/password', requireAuth, async (req, res) => {
 app.put('/api/user/notifications', requireAuth, (req, res) => {
   const { notify_email, notify_push, notify_match, notify_new,
           notify_digest_interval, ntfy_topic, ntfy_server, notify_threshold, notify_matrix } = req.body;
+  if (ntfy_server != null && !isStr(ntfy_server)) return res.status(400).json({ error: 'Ungültiger ntfy-Server' });
+  if (ntfy_topic  != null && !isStr(ntfy_topic))  return res.status(400).json({ error: 'Ungültiges ntfy-Topic' });
+  if (ntfy_server && ntfy_server.trim() && !isUrlAllowed(ntfy_server.trim()))
+    return res.status(400).json({ error: 'ntfy-Server: bitte eine öffentliche http(s)-Adresse angeben' });
   const validIntervals = ['instant','15min','1h','6h','daily'];
   const interval    = validIntervals.includes(notify_digest_interval) ? notify_digest_interval : 'instant';
   const threshold   = Math.max(1, Math.min(100, parseInt(notify_threshold) || 1));
@@ -1022,14 +1168,22 @@ app.get('/api/push/vapid-key', (req, res) => {
 
 app.post('/api/push/subscribe', requireAuth, (req, res) => {
   const { endpoint, keys } = req.body;
-  if (!endpoint || !keys?.p256dh || !keys?.auth)
+  if (!isStr(endpoint) || !isStr(keys?.p256dh) || !isStr(keys?.auth) || !endpoint)
+    return res.status(400).json({ error: 'Ungültige Subscription' });
+  // Real push services (FCM, Mozilla, Apple) are always public https URLs;
+  // anything else would just make this server send requests wherever the
+  // client points it.
+  if (!endpoint.startsWith('https://') || !isUrlAllowed(endpoint))
     return res.status(400).json({ error: 'Ungültige Subscription' });
   try {
     dbRun('INSERT OR REPLACE INTO push_subscriptions (user_id,endpoint,p256dh,auth) VALUES (?,?,?,?)',
       [req.session.userId, endpoint, keys.p256dh, keys.auth]);
     saveDb();
     res.json({ success: true });
-  } catch(e) { res.status(500).json({ error: e.message }); }
+  } catch(e) {
+    console.error('[Push] Subscription speichern fehlgeschlagen:', e.message);
+    res.status(500).json({ error: 'Subscription konnte nicht gespeichert werden' });
+  }
 });
 
 app.post('/api/push/unsubscribe', requireAuth, (req, res) => {
@@ -1050,7 +1204,8 @@ async function sendPushToUser(userId, payload) {
     try {
       await webpush.sendNotification(
         { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
-        JSON.stringify(payload)
+        JSON.stringify(payload),
+        { agent: safeHttpsAgent }   // endpoint comes from the client – same SSRF guard as the scraper
       );
       console.log(`[Push] Gesendet an Nutzer ${userId}`);
     } catch (e) {
@@ -1111,7 +1266,8 @@ async function checkAndNotifyMatch(listingId, groupId) {
 // ── Listings ───────────────────────────────────────────────
 app.post('/api/listings/add', requireAuth, async (req, res) => {
   const { url, visibility, visibility_id } = req.body;
-  if (!url) return res.status(400).json({ error: 'URL erforderlich' });
+  if (!isStr(url) || !url) return res.status(400).json({ error: 'URL erforderlich' });
+  if (!isUrlAllowed(url)) return res.status(400).json({ error: 'Ungültige URL' });
 
   const vis   = ['global','private','group'].includes(visibility) ? visibility : 'global';
   const visId = vis === 'group' ? (parseInt(visibility_id) || null) : null;
@@ -1392,6 +1548,17 @@ app.post('/api/listings/:id/report-offline', requireAuth, (req, res) => {
   const listing = dbGet('SELECT * FROM listings WHERE id=?', [id]);
   if (!listing) return res.status(404).json({ error: 'Inserat nicht gefunden' });
 
+  // This instantly delists the listing for EVERY user, so it must stay
+  // limited to people who've actually encountered it — otherwise, since ids
+  // are sequential, any account could walk through all of them and empty
+  // out the shared listing pool for the whole instance. "Encountered" means:
+  // added it, swiped on it (like/dislike/superlike/skip), or an admin.
+  const user       = dbGet('SELECT is_admin FROM users WHERE id=?', [req.session.userId]);
+  const hasSwiped  = !!dbGet('SELECT 1 FROM swipes WHERE user_id=? AND listing_id=?', [req.session.userId, id]);
+  const isOwner    = listing.added_by === req.session.userId;
+  if (!user?.is_admin && !hasSwiped && !isOwner)
+    return res.status(403).json({ error: 'Nur wer dieses Inserat gesehen hat, kann es als offline melden' });
+
   dbRun("UPDATE listings SET status='offline' WHERE id=?", [id]);
   try { dbRun("INSERT OR IGNORE INTO archive_notes (listing_id,reason) VALUES (?,?)", [id, 'reported']); } catch (_) {}
   saveDb();
@@ -1425,6 +1592,7 @@ app.get('/api/listings/liked', requireAuth, (req, res) => {
   const { groupId } = req.query;
   let liked;
   if (groupId) {
+    if (!isGroupMember(groupId, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff auf diese Gruppe' });
     const members = dbAll('SELECT user_id FROM group_members WHERE group_id=?', [groupId]);
     if (!members.length) return res.json({ listings: [] });
     const ids = members.map(m => m.user_id);
@@ -1496,12 +1664,12 @@ app.post('/api/contacts', requireAuth, (req, res) => {
     try {
       dbRun('INSERT OR REPLACE INTO contacts (listing_id,user_id,group_id,note,contacted_at) VALUES (?,NULL,?,?,datetime("now"))',
         [listingId, groupId, note||'']);
-    } catch(e) { return res.status(500).json({ error: e.message }); }
+    } catch(e) { console.error('[Contacts]', e.message); return res.status(500).json({ error: 'Speichern fehlgeschlagen' }); }
   } else {
     try {
       dbRun('INSERT OR REPLACE INTO contacts (listing_id,user_id,group_id,note,contacted_at) VALUES (?,?,NULL,?,datetime("now"))',
         [listingId, req.session.userId, note||'']);
-    } catch(e) { return res.status(500).json({ error: e.message }); }
+    } catch(e) { console.error('[Contacts]', e.message); return res.status(500).json({ error: 'Speichern fehlgeschlagen' }); }
   }
   saveDb();
   res.json({ success: true });
@@ -1510,6 +1678,7 @@ app.post('/api/contacts', requireAuth, (req, res) => {
 app.delete('/api/contacts/:listingId', requireAuth, (req, res) => {
   const { groupId } = req.query;
   if (groupId) {
+    if (!isGroupMember(groupId, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff auf diese Gruppe' });
     dbRun('DELETE FROM contacts WHERE listing_id=? AND group_id=?', [req.params.listingId, groupId]);
   } else {
     dbRun('DELETE FROM contacts WHERE listing_id=? AND user_id=? AND group_id IS NULL', [req.params.listingId, req.session.userId]);
@@ -1522,6 +1691,7 @@ app.delete('/api/contacts/:listingId', requireAuth, (req, res) => {
 app.patch('/api/contacts/:listingId', requireAuth, (req, res) => {
   const { note, groupId } = req.body;
   if (groupId) {
+    if (!isGroupMember(groupId, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff auf diese Gruppe' });
     dbRun('UPDATE contacts SET note=? WHERE listing_id=? AND group_id=?', [note||'', req.params.listingId, groupId]);
   } else {
     dbRun('UPDATE contacts SET note=? WHERE listing_id=? AND user_id=? AND group_id IS NULL', [note||'', req.params.listingId, req.session.userId]);
@@ -1535,6 +1705,7 @@ app.get('/api/contacts/:listingId', requireAuth, (req, res) => {
   const { groupId } = req.query;
   let contact;
   if (groupId) {
+    if (!isGroupMember(groupId, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff auf diese Gruppe' });
     contact = dbGet('SELECT * FROM contacts WHERE listing_id=? AND group_id=?', [req.params.listingId, groupId]);
   } else {
     contact = dbGet('SELECT * FROM contacts WHERE listing_id=? AND user_id=? AND group_id IS NULL', [req.params.listingId, req.session.userId]);
@@ -1544,19 +1715,27 @@ app.get('/api/contacts/:listingId', requireAuth, (req, res) => {
 
 // ── Groups ─────────────────────────────────────────────────
 app.get('/api/groups/mine', requireAuth, (req, res) => {
-  res.json({ groups: dbAll(`
-    SELECT g.*, COUNT(m2.user_id) as member_count
+  const groups = dbAll(`
+    SELECT g.*, COUNT(m2.user_id) as member_count,
+      (SELECT COUNT(*) FROM group_join_requests r WHERE r.group_id=g.id) as pending_requests
     FROM groups_table g
     JOIN group_members m  ON g.id=m.group_id  AND m.user_id=?
     LEFT JOIN group_members m2 ON g.id=m2.group_id
     GROUP BY g.id ORDER BY g.created_at DESC
-  `, [req.session.userId]) });
+  `, [req.session.userId]);
+  // Groups this user asked to join and is still waiting on (name only –
+  // nothing else about a group is visible before being accepted).
+  const requested = dbAll(`
+    SELECT g.id, g.name, r.created_at FROM group_join_requests r
+    JOIN groups_table g ON g.id=r.group_id WHERE r.user_id=? ORDER BY r.created_at DESC
+  `, [req.session.userId]);
+  res.json({ groups, requested });
 });
 
 app.post('/api/groups/create', requireAuth, (req, res) => {
   const { name } = req.body;
   if (!name) return res.status(400).json({ error: 'Gruppenname erforderlich' });
-  const code = crypto.randomBytes(3).toString('hex').toUpperCase();
+  const code = crypto.randomBytes(4).toString('hex').toUpperCase();   // 8 chars
   const r    = dbRun('INSERT INTO groups_table (name,invite_code,created_by) VALUES (?,?,?)',
     [name.trim(), code, req.session.userId]);
   dbRun('INSERT INTO group_members (group_id,user_id) VALUES (?,?)', [r.lastInsertRowid, req.session.userId]);
@@ -1564,15 +1743,72 @@ app.post('/api/groups/create', requireAuth, (req, res) => {
   res.json({ success: true, group: dbGet('SELECT * FROM groups_table WHERE id=?', [r.lastInsertRowid]) });
 });
 
-app.post('/api/groups/join', requireAuth, (req, res) => {
-  const group = dbGet('SELECT * FROM groups_table WHERE invite_code=?', [(req.body.code||'').toUpperCase()]);
+// Entering an invite code files a join request; an existing member has to
+// accept it (see /requests below) before the new person sees anything of the
+// group.
+app.post('/api/groups/join', requireAuth, joinLimiter, async (req, res) => {
+  const code  = isStr(req.body.code) ? req.body.code.trim().toUpperCase() : '';
+  const group = code && dbGet('SELECT * FROM groups_table WHERE invite_code=?', [code]);
   if (!group) return res.status(404).json({ error: 'Gruppe nicht gefunden' });
-  try { dbRun('INSERT OR IGNORE INTO group_members (group_id,user_id) VALUES (?,?)', [group.id, req.session.userId]); } catch(_) {}
+  const uid = req.session.userId;
+  if (isGroupMember(group.id, uid))
+    return res.json({ success: true, alreadyMember: true, group });
+  const existing = dbGet('SELECT 1 FROM group_join_requests WHERE group_id=? AND user_id=?', [group.id, uid]);
+  dbRun('INSERT OR IGNORE INTO group_join_requests (group_id,user_id) VALUES (?,?)', [group.id, uid]);
   saveDb();
-  res.json({ success: true, group });
+  res.json({ success: true, pending: true, group: { id: group.id, name: group.name } });
+
+  if (existing) return;                         // don't re-notify on a repeated request
+  const requester = dbGet('SELECT username FROM users WHERE id=?', [uid]);
+  const title = 'Neue Beitrittsanfrage';
+  const body  = `${requester?.username || 'Jemand'} möchte der Gruppe „${group.name}“ beitreten`;
+  for (const { user_id } of dbAll('SELECT user_id FROM group_members WHERE group_id=?', [group.id])) {
+    const m = dbGet('SELECT * FROM users WHERE id=?', [user_id]);
+    if (!m) continue;
+    if (shouldNotify(m, 'nudge', 'push')) await sendPushToUser(m.id, { title, body, url: '/?view=groups', icon: '/icon-192.png' }).catch(() => {});
+    if (shouldNotify(m, 'nudge', 'ntfy')) await sendNtfy(m, title, body, 'groups').catch(() => {});
+  }
+});
+
+// Withdraw one's own pending request
+app.delete('/api/groups/:id/request', requireAuth, (req, res) => {
+  dbRun('DELETE FROM group_join_requests WHERE group_id=? AND user_id=?', [req.params.id, req.session.userId]);
+  saveDb();
+  res.json({ success: true });
+});
+
+// Pending requests for a group – visible to its members only
+app.get('/api/groups/:id/requests', requireAuth, (req, res) => {
+  if (!isGroupMember(req.params.id, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff' });
+  res.json({ requests: dbAll(`
+    SELECT u.id, u.username, r.created_at FROM group_join_requests r
+    JOIN users u ON u.id=r.user_id WHERE r.group_id=? ORDER BY r.created_at ASC
+  `, [req.params.id]) });
+});
+
+// Any member can accept or decline (the group is a trusted circle).
+app.post('/api/groups/:id/requests/:userId/:decision', requireAuth, async (req, res) => {
+  const gid = parseInt(req.params.id), target = parseInt(req.params.userId), decision = req.params.decision;
+  if (!['accept', 'decline'].includes(decision)) return res.status(404).json({ error: 'Unbekannte Aktion' });
+  if (!isGroupMember(gid, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff' });
+  if (!dbGet('SELECT 1 FROM group_join_requests WHERE group_id=? AND user_id=?', [gid, target]))
+    return res.status(404).json({ error: 'Anfrage nicht gefunden' });
+  dbRun('DELETE FROM group_join_requests WHERE group_id=? AND user_id=?', [gid, target]);
+  if (decision === 'accept') dbRun('INSERT OR IGNORE INTO group_members (group_id,user_id) VALUES (?,?)', [gid, target]);
+  saveDb();
+  res.json({ success: true });
+
+  if (decision !== 'accept') return;
+  const group = dbGet('SELECT name FROM groups_table WHERE id=?', [gid]);
+  const m = dbGet('SELECT * FROM users WHERE id=?', [target]);
+  if (!m || !group) return;
+  const title = 'Beitritt bestätigt', body = `Du bist jetzt Mitglied der Gruppe „${group.name}“`;
+  if (shouldNotify(m, 'nudge', 'push')) await sendPushToUser(m.id, { title, body, url: '/?view=groups', icon: '/icon-192.png' }).catch(() => {});
+  if (shouldNotify(m, 'nudge', 'ntfy')) await sendNtfy(m, title, body, 'groups').catch(() => {});
 });
 
 app.get('/api/groups/:id/members', requireAuth, (req, res) => {
+  if (!isGroupMember(req.params.id, req.session.userId)) return res.status(403).json({ error: 'Kein Zugriff' });
   res.json({ members: dbAll(`
     SELECT u.id,u.username,gm.joined_at FROM users u
     JOIN group_members gm ON u.id=gm.user_id WHERE gm.group_id=?
@@ -1729,8 +1965,9 @@ app.get('/api/jobs', requireAuth, (req, res) => {
 
 app.post('/api/jobs', requireAuth, (req, res) => {
   const { label, search_url, interval_min = 60 } = req.body;
-  if (!label?.trim())                  return res.status(400).json({ error: 'Bezeichnung erforderlich' });
-  if (!search_url?.startsWith('http')) return res.status(400).json({ error: 'Gültige Such-URL erforderlich' });
+  if (!isStr(label) || !label.trim())                  return res.status(400).json({ error: 'Bezeichnung erforderlich' });
+  if (!isStr(search_url) || !search_url.startsWith('http')) return res.status(400).json({ error: 'Gültige Such-URL erforderlich' });
+  if (!isUrlAllowed(search_url)) return res.status(400).json({ error: 'Ungültige URL' });
   if (dbGet('SELECT id FROM search_jobs WHERE search_url=?', [search_url]))
     return res.status(409).json({ error: 'Diese Suche ist bereits vorhanden' });
   const iv = Math.max(10, Math.min(1440, parseInt(interval_min)||60));
@@ -1746,15 +1983,29 @@ app.post('/api/jobs', requireAuth, (req, res) => {
   res.json({ success: true, job: dbGet('SELECT * FROM search_jobs WHERE id=?', [r.lastInsertRowid]) });
 });
 
+// Only the search agent's owner (or an admin) may change, pause, delete or
+// force-run it — it previously had no such check at all, so any logged-in
+// user who knew (or simply guessed, since ids are sequential) a job's id
+// could manage someone else's agent, private ones included.
+function canManageJob(job, user) {
+  return !!user?.is_admin || job.added_by === user?.id;
+}
+
 app.patch('/api/jobs/:id/toggle', requireAuth, (req, res) => {
   const job = dbGet('SELECT * FROM search_jobs WHERE id=?', [req.params.id]);
   if (!job) return res.status(404).json({ error: 'Job nicht gefunden' });
+  const user = dbGet('SELECT id, is_admin FROM users WHERE id=?', [req.session.userId]);
+  if (!canManageJob(job, user)) return res.status(403).json({ error: 'Kein Zugriff auf diesen Suchagenten' });
   dbRun('UPDATE search_jobs SET active=? WHERE id=?', [job.active ? 0 : 1, job.id]);
   saveDb();
   res.json({ success: true, active: !job.active });
 });
 
 app.patch('/api/jobs/:id/interval', requireAuth, (req, res) => {
+  const job = dbGet('SELECT * FROM search_jobs WHERE id=?', [req.params.id]);
+  if (!job) return res.status(404).json({ error: 'Job nicht gefunden' });
+  const user = dbGet('SELECT id, is_admin FROM users WHERE id=?', [req.session.userId]);
+  if (!canManageJob(job, user)) return res.status(403).json({ error: 'Kein Zugriff auf diesen Suchagenten' });
   const iv = Math.max(10, Math.min(1440, parseInt(req.body.interval_min)||60));
   dbRun('UPDATE search_jobs SET interval_min=? WHERE id=?', [iv, req.params.id]);
   saveDb();
@@ -1762,6 +2013,10 @@ app.patch('/api/jobs/:id/interval', requireAuth, (req, res) => {
 });
 
 app.patch('/api/jobs/:id/visibility', requireAuth, (req, res) => {
+  const job = dbGet('SELECT * FROM search_jobs WHERE id=?', [req.params.id]);
+  if (!job) return res.status(404).json({ error: 'Job nicht gefunden' });
+  const user = dbGet('SELECT id, is_admin FROM users WHERE id=?', [req.session.userId]);
+  if (!canManageJob(job, user)) return res.status(403).json({ error: 'Kein Zugriff auf diesen Suchagenten' });
   const { visibility, visibility_id } = req.body;
   if (!['global','private','group'].includes(visibility))
     return res.status(400).json({ error: 'Ungültige Sichtbarkeit' });
@@ -1770,13 +2025,16 @@ app.patch('/api/jobs/:id/visibility', requireAuth, (req, res) => {
     const member = dbGet('SELECT 1 FROM group_members WHERE group_id=? AND user_id=?', [visId, req.session.userId]);
     if (!member) return res.status(403).json({ error: 'Nicht Mitglied dieser Gruppe' });
   }
-  dbRun('UPDATE search_jobs SET visibility=?, visibility_id=? WHERE id=? AND added_by=?',
-    [visibility, visId, req.params.id, req.session.userId]);
+  dbRun('UPDATE search_jobs SET visibility=?, visibility_id=? WHERE id=?', [visibility, visId, req.params.id]);
   saveDb();
   res.json({ success: true });
 });
 
 app.delete('/api/jobs/:id', requireAuth, (req, res) => {
+  const job = dbGet('SELECT * FROM search_jobs WHERE id=?', [req.params.id]);
+  if (!job) return res.status(404).json({ error: 'Job nicht gefunden' });
+  const user = dbGet('SELECT id, is_admin FROM users WHERE id=?', [req.session.userId]);
+  if (!canManageJob(job, user)) return res.status(403).json({ error: 'Kein Zugriff auf diesen Suchagenten' });
   dbRun('DELETE FROM search_jobs WHERE id=?', [req.params.id]);
   saveDb();
   res.json({ success: true });
@@ -1785,6 +2043,8 @@ app.delete('/api/jobs/:id', requireAuth, (req, res) => {
 app.post('/api/jobs/:id/run', requireAuth, async (req, res) => {
   const job = dbGet('SELECT * FROM search_jobs WHERE id=?', [req.params.id]);
   if (!job) return res.status(404).json({ error: 'Job nicht gefunden' });
+  const user = dbGet('SELECT id, is_admin FROM users WHERE id=?', [req.session.userId]);
+  if (!canManageJob(job, user)) return res.status(403).json({ error: 'Kein Zugriff auf diesen Suchagenten' });
   res.json({ success: true, message: 'Job gestartet…' });
   runJob(job);
 });
@@ -1805,10 +2065,6 @@ function resetJobListings(jobId) {
   dbRun(`DELETE FROM listings        WHERE id IN (${placeholders})`, ids);
   dbRun('UPDATE search_jobs SET last_run=NULL, last_error=NULL, last_new=0, total_found=0 WHERE id=?', [jobId]);
   return ids.length;
-}
-
-function canManageJob(job, user) {
-  return !!user?.is_admin || job.added_by === user?.id;
 }
 
 app.post('/api/jobs/:id/reset', requireAuth, async (req, res) => {
@@ -2014,6 +2270,13 @@ async function sendNtfy(user, title, body, view = '') {
   if (!user.ntfy_topic) return;
   const server    = (user.ntfy_server || '').trim() || 'https://ntfy.sh';
   const url       = `${server}/${encodeURIComponent(user.ntfy_topic)}`;
+  // The ntfy server is user-configurable, so it gets the same protection as
+  // the scraper: refuse private/internal addresses, both up front and at
+  // connect time (see the SSRF guard in poller.js).
+  if (!isUrlAllowed(url)) {
+    console.warn(`[ntfy] Server-Adresse für Nutzer ${user.id} abgelehnt (ungültig oder intern): ${server}`);
+    return;
+  }
   const safeTitle = stripEmojis(title) || 'WohnungsSwipe';
   const safeBody  = stripEmojis(body)  || stripEmojis(title) || '';
   const tags      = extractNtfyTags(title + ' ' + body);
@@ -2029,6 +2292,7 @@ async function sendNtfy(user, title, body, view = '') {
       },
       body: safeBody,
       timeout: 8000,
+      agent: safeAgentFor(url),
     });
     // fetch() only rejects on network-level failures (DNS, connection
     // refused, timeout) — it does NOT throw on HTTP error responses like
@@ -2266,6 +2530,20 @@ app.get('/reset-password', (req, res) => {
     }
   </script>
   </body></html>`);
+});
+
+// ── Error handling ───────────────────────────────────────────
+// Catches anything that reaches here: a synchronous throw in a route (Express
+// 4 catches those itself and forwards them), or an async handler's rejection
+// (forwarded here by express-async-errors above). Without this, Express's
+// own default error handler would still answer the request, but we want a
+// consistent JSON shape and to make sure nothing ever leaks a stack trace to
+// the client. Must be registered after all routes.
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  console.error(`[Error] ${req.method} ${req.path}:`, err);
+  if (res.headersSent) return;
+  res.status(500).json({ error: 'Interner Fehler' });
 });
 
 // ── Start ──────────────────────────────────────────────────
