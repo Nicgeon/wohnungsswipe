@@ -55,6 +55,12 @@ function esc(s) {
   return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+// Listing URLs come from user input / scraped pages; only ever link to
+// http(s) so an old or crafted row can't turn a link into javascript:…
+function safeHref(url) {
+  return /^https?:\/\//i.test(String(url || '').trim()) ? String(url).trim() : '#';
+}
+
 function parseTags(json) {
   try { return JSON.parse(json || '[]'); } catch { return []; }
 }
@@ -474,8 +480,8 @@ const detailView = {
       mapBtn.style.display = 'none';
     }
 
-    $id('detail-original-link').href = listing.url || '#';
-    $id('detail-quick-original').href = listing.url || '#';
+    $id('detail-original-link').href = safeHref(listing.url);
+    $id('detail-quick-original').href = safeHref(listing.url);
 
     // Swipe actions only make sense (and only stay in sync with the queue)
     // when opened from the swipe page itself.
@@ -2145,6 +2151,7 @@ async function loadSettings() {
   $id('settings-email').value     = me.email||'';
   clr('settings-username-error','settings-username-ok','settings-email-error','settings-email-ok','settings-pw-error','settings-pw-ok','notify-ok','ntfy-ok');
   $id('settings-pw-current').value = $id('settings-pw-new').value = $id('settings-pw-confirm').value = '';
+  $id('settings-email-pw').value = '';
 
   // Notification toggles
   $id('notify-email').checked = !!me.notify_email;
@@ -2199,8 +2206,11 @@ $id('save-username-btn').addEventListener('click', async () => {
 
 $id('save-email-btn').addEventListener('click', async () => {
   clr('settings-email-error','settings-email-ok');
-  const d = await api('/api/user/email', { method:'PUT', body:{ email:$id('settings-email').value.trim() } });
+  const pw = $id('settings-email-pw').value;
+  if (!pw) return setErr('settings-email-error','Bitte aktuelles Passwort eingeben');
+  const d = await api('/api/user/email', { method:'PUT', body:{ email:$id('settings-email').value.trim(), currentPassword:pw } });
   if (d.error) return setErr('settings-email-error', d.error);
+  $id('settings-email-pw').value = '';
   $id('settings-display-email').textContent = $id('settings-email').value.trim();
   setOk('settings-email-ok','✓ Gespeichert'); toast('✅ E-Mail geändert');
 });

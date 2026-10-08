@@ -40,7 +40,10 @@ process.on('uncaughtException', (err) => {
 
 // ── Web Push VAPID setup ──────────────────────────────────
 let VAPID_PUBLIC, VAPID_PRIVATE;
-const vapidFile = process.env.VAPID_FILE || path.join(__dirname, '../data/vapid.json');
+// Defined below, next to the database (dbDir) — i.e. on the persistent
+// volume in Docker, so the keys (and with them every browser's push
+// subscription) survive a container being recreated.
+let vapidFile;
 
 function initVapid() {
   try {
@@ -70,6 +73,7 @@ function initVapid() {
 const dbPath = process.env.DB_PATH || path.join(__dirname, '../data/wohnungsswipe.db');
 const dbDir  = path.dirname(dbPath);
 if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
+vapidFile = process.env.VAPID_FILE || path.join(dbDir, 'vapid.json');
 
 let db;
 
@@ -316,6 +320,9 @@ async function initDb() {
            SELECT group_id, household_type, persons, children, move_in_type, move_in_date, updated_by FROM group_settings`);
   migrate("ALTER TABLE search_jobs ADD COLUMN visibility_id INTEGER");
   migrate("ALTER TABLE users       ADD COLUMN notify_matrix   TEXT");
+  // Bumped on every password change/reset; sessions remember the value they
+  // were created with, so all older logins become invalid (see below).
+  migrate("ALTER TABLE users       ADD COLUMN pw_version      INTEGER DEFAULT 0");
 
   // One-time repair: an over-eager text heuristic flagged live Kleinanzeigen ads
   // as offline (already when they were first scraped, so there is no archive
@@ -418,6 +425,35 @@ function insertListing(data, addedBy = null, sourceJobId = null, visibility = 'g
 }
 
 // ── Middleware ─────────────────────────────────────────────
+// The session secret signs every login cookie — anyone who knows it can
+// forge a session for any user. These are the placeholders that have
+// shipped in this repo's Dockerfile / docker-compose.yml / source, so
+// they're public knowledge and must never actually be used. If no real
+// secret is configured, a random one is generated once and kept next to
+// the database, so sessions still survive restarts.
+const KNOWN_DEFAULT_SECRETS = new Set([
+  'wohnungsswipe-dev-secret', 'change-me-in-production', 'aendere-mich-bitte-im-produktivbetrieb',
+  'changeme', 'secret',
+]);
+function resolveSessionSecret() {
+  const env = (process.env.SESSION_SECRET || '').trim();
+  if (env && !KNOWN_DEFAULT_SECRETS.has(env)) {
+    if (env.length < 16) console.warn('[Session] SESSION_SECRET ist sehr kurz – bitte mindestens 32 zufällige Zeichen verwenden');
+    return env;
+  }
+  if (env) console.warn('[Session] SESSION_SECRET ist ein bekannter Standardwert und wird ignoriert');
+  const file = path.join(dbDir, 'session-secret');
+  try {
+    const stored = fs.readFileSync(file, 'utf8').trim();
+    if (stored.length >= 32) return stored;
+  } catch (_) { /* not created yet */ }
+  const secret = crypto.randomBytes(48).toString('hex');
+  try { fs.writeFileSync(file, secret, { mode: 0o600 }); }
+  catch (e) { console.warn('[Session] Secret konnte nicht gespeichert werden – Sitzungen gehen beim Neustart verloren:', e.message); }
+  console.log(`[Session] Zufälliges Session-Secret erzeugt (${file})`);
+  return secret;
+}
+
 // Whether this deployment is reachable over HTTPS, inferred from BASE_URL
 // (already required to be set correctly for links in emails/push to work).
 // Defaults to false so a plain local/docker-compose setup over
@@ -441,11 +477,35 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, '../public')));
 app.use(session({
   store:             new MemoryStore({ checkPeriod: 86400000 }),
-  secret:            process.env.SESSION_SECRET || 'wohnungsswipe-dev-secret',
+  secret:            resolveSessionSecret(),
   resave:            false,
   saveUninitialized: false,
   cookie:            { maxAge: 7 * 24 * 60 * 60 * 1000, sameSite: 'lax', secure: IS_HTTPS },
 }));
+
+// Ends sessions that no longer belong to a valid login: the account was
+// deleted, or its password was changed/reset since this session was created
+// (otherwise a stolen session would outlive the victim changing their
+// password). A fresh, empty session takes its place, so the request simply
+// continues as logged-out.
+app.use((req, res, next) => {
+  if (!req.session.userId) return next();
+  const u = dbGet('SELECT pw_version FROM users WHERE id=?', [req.session.userId]);
+  if (u && (u.pw_version || 0) === (req.session.pwv || 0)) return next();
+  req.session.regenerate(err => next(err));
+});
+
+// Issues a brand-new session ID on login, so an ID that existed before
+// (e.g. planted by someone else — session fixation) never becomes logged in.
+const startSession = (req, user) => new Promise((resolve, reject) => {
+  req.session.regenerate(err => {
+    if (err) return reject(err);
+    req.session.userId   = user.id;
+    req.session.username = user.username;
+    req.session.pwv      = user.pw_version || 0;
+    resolve();
+  });
+});
 
 // Throttles brute-force / credential-stuffing attempts against auth
 // endpoints. Keyed by IP (req.ip respects the trust-proxy setting above).
@@ -522,8 +582,7 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
   const r    = dbRun('INSERT INTO users (username,email,password_hash,unsubscribe_token,is_admin) VALUES (?,?,?,?,?)',
     [username.trim(), email.trim().toLowerCase(), hash, unsubToken, isFirstUser ? 1 : 0]);
   saveDb();
-  req.session.userId   = r.lastInsertRowid;
-  req.session.username = username.trim();
+  await startSession(req, { id: r.lastInsertRowid, username: username.trim(), pw_version: 0 });
   res.json({ success: true, username: username.trim(), userId: r.lastInsertRowid });
 });
 
@@ -534,8 +593,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
   const user = dbGet('SELECT * FROM users WHERE email=?', [email.trim().toLowerCase()]);
   if (!user || !await bcrypt.compare(password, user.password_hash))
     return res.status(401).json({ error: 'Ungültige Anmeldedaten' });
-  req.session.userId   = user.id;
-  req.session.username = user.username;
+  await startSession(req, user);
   res.json({ success: true, username: user.username, userId: user.id });
 });
 
@@ -584,7 +642,8 @@ app.post('/api/auth/reset-password', authLimiter, async (req, res) => {
   if (new Date(user.reset_expires + 'Z') < new Date())
     return res.status(400).json({ error: 'Token abgelaufen – bitte erneut anfordern' });
   const hash = await bcrypt.hash(password, 10);
-  dbRun("UPDATE users SET password_hash=?, reset_token=NULL, reset_expires=NULL WHERE id=?", [hash, user.id]);
+  // pw_version bump logs out every existing session of this account.
+  dbRun("UPDATE users SET password_hash=?, reset_token=NULL, reset_expires=NULL, pw_version=COALESCE(pw_version,0)+1 WHERE id=?", [hash, user.id]);
   saveDb();
   await mailer.sendPasswordChangedMail(user.email, user.username);
   res.json({ success: true });
@@ -602,10 +661,17 @@ app.put('/api/user/username', requireAuth, (req, res) => {
   res.json({ success: true, username: username.trim() });
 });
 
-app.put('/api/user/email', requireAuth, (req, res) => {
-  const { email } = req.body;
+app.put('/api/user/email', requireAuth, authLimiter, async (req, res) => {
+  const { email, currentPassword } = req.body;
   if (!isStr(email) || !email.includes('@')) return res.status(400).json({ error: 'Gültige E-Mail erforderlich' });
-  if (dbGet('SELECT id FROM users WHERE email=? AND id!=?', [email.toLowerCase(), req.session.userId]))
+  // The email address is where password resets go — changing it must need
+  // the password, or a briefly hijacked session becomes a permanent takeover.
+  if (!isStr(currentPassword) || !currentPassword)
+    return res.status(400).json({ error: 'Bitte aktuelles Passwort eingeben' });
+  const user = dbGet('SELECT password_hash FROM users WHERE id=?', [req.session.userId]);
+  if (!user || !await bcrypt.compare(currentPassword, user.password_hash))
+    return res.status(401).json({ error: 'Aktuelles Passwort falsch' });
+  if (dbGet('SELECT id FROM users WHERE email=? AND id!=?', [email.trim().toLowerCase(), req.session.userId]))
     return res.status(409).json({ error: 'E-Mail bereits vergeben' });
   dbRun('UPDATE users SET email=? WHERE id=?', [email.trim().toLowerCase(), req.session.userId]);
   saveDb();
@@ -620,8 +686,11 @@ app.put('/api/user/password', requireAuth, async (req, res) => {
   if (!await bcrypt.compare(currentPassword, user.password_hash))
     return res.status(401).json({ error: 'Aktuelles Passwort falsch' });
   const hash = await bcrypt.hash(newPassword, 10);
-  dbRun('UPDATE users SET password_hash=? WHERE id=?', [hash, req.session.userId]);
+  // Logs out all other sessions of this account; this one stays logged in.
+  const pwv = (user.pw_version || 0) + 1;
+  dbRun('UPDATE users SET password_hash=?, pw_version=? WHERE id=?', [hash, pwv, req.session.userId]);
   saveDb();
+  req.session.pwv = pwv;
   await mailer.sendPasswordChangedMail(user.email, user.username);
   res.json({ success: true });
 });
@@ -1595,12 +1664,12 @@ app.post('/api/contacts', requireAuth, (req, res) => {
     try {
       dbRun('INSERT OR REPLACE INTO contacts (listing_id,user_id,group_id,note,contacted_at) VALUES (?,NULL,?,?,datetime("now"))',
         [listingId, groupId, note||'']);
-    } catch(e) { return res.status(500).json({ error: e.message }); }
+    } catch(e) { console.error('[Contacts]', e.message); return res.status(500).json({ error: 'Speichern fehlgeschlagen' }); }
   } else {
     try {
       dbRun('INSERT OR REPLACE INTO contacts (listing_id,user_id,group_id,note,contacted_at) VALUES (?,?,NULL,?,datetime("now"))',
         [listingId, req.session.userId, note||'']);
-    } catch(e) { return res.status(500).json({ error: e.message }); }
+    } catch(e) { console.error('[Contacts]', e.message); return res.status(500).json({ error: 'Speichern fehlgeschlagen' }); }
   }
   saveDb();
   res.json({ success: true });

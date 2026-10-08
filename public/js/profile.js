@@ -689,7 +689,7 @@ const messageModal = {
     $id('message-context').textContent = this.groupId
       ? 'Anfrage für die Gruppe – das Gruppenprofil bestimmt die Angaben, Namen und Berufe kommen aus den Profilen der Mitglieder.'
       : `Anfrage für: ${listing.title || 'Inserat'}`;
-    $id('message-open-link').href = listing.url || '#';
+    $id('message-open-link').href = safeHref(listing.url);
     clr('message-error');
     $id('message-listing').innerHTML = this.listingHtml(listing);
 
