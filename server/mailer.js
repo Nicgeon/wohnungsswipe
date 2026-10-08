@@ -8,6 +8,19 @@
 
 const nodemailer = require('nodemailer');
 
+// Every value these templates interpolate — username, group name, a search
+// agent's label, a listing's title/location/price — ultimately comes from a
+// user (or, for a listing, from whatever page it links to) and is dropped
+// straight into the email's HTML body below. Without escaping, anyone could
+// put e.g. a fake "Konto gesperrt, hier klicken" link into a group name and
+// have it rendered as real markup in another member's inbox. Plain text
+// (.subject) only needs CR/LF stripped, since a literal newline there could
+// otherwise be used to smuggle extra email headers.
+const escHtml = s => String(s ?? '')
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+const safeHeader = s => String(s ?? '').replace(/[\r\n]+/g, ' ').trim();
+
 function createTransport() {
   const host = process.env.SMTP_HOST;
   if (!host) return null; // E-Mail nicht konfiguriert
@@ -84,7 +97,7 @@ async function sendPasswordResetMail(email, username, token, unsubToken='') {
     subject: 'WohnungsSwipe – Passwort zurücksetzen',
     html: template('Passwort zurücksetzen', `
       <h2>Passwort zurücksetzen</h2>
-      <p>Hallo ${username},<br>du hast eine Anfrage zum Zurücksetzen deines Passworts gestellt.</p>
+      <p>Hallo ${escHtml(username)},<br>du hast eine Anfrage zum Zurücksetzen deines Passworts gestellt.</p>
       <a href="${link}" class="btn">Neues Passwort festlegen</a>
       <p style="font-size:0.82rem;color:#5a5855">Dieser Link ist 1 Stunde gültig. Falls du die Anfrage nicht gestellt hast, kannst du diese E-Mail ignorieren.</p>
     `, unsubToken),
@@ -95,17 +108,17 @@ async function sendMatchMail(email, username, groupName, listing, unsubToken='')
   const priceStr = listing.price_cold || listing.price || '';
   return sendMail({
     to:      email,
-    subject: `Match in "${groupName}" – ${listing.title.substring(0, 40)}`,
+    subject: safeHeader(`Match in "${groupName}" – ${(listing.title || '').substring(0, 40)}`),
     html: template('Neues Match!', `
       <h2>🎉 Ihr habt einen Match!</h2>
-      <p>Hallo ${username},<br>alle Mitglieder der Gruppe <strong>${groupName}</strong> mögen diese Wohnung:</p>
+      <p>Hallo ${escHtml(username)},<br>alle Mitglieder der Gruppe <strong>${escHtml(groupName)}</strong> mögen diese Wohnung:</p>
       <div class="listing-card">
-        <h3>${listing.title}</h3>
-        ${priceStr ? `<div class="price">${priceStr}</div>` : ''}
+        <h3>${escHtml(listing.title)}</h3>
+        ${priceStr ? `<div class="price">${escHtml(priceStr)}</div>` : ''}
         <div class="meta">
-          ${listing.location ? `📍 ${listing.location}` : ''}
-          ${listing.size     ? ` &nbsp;·&nbsp; 📐 ${listing.size}` : ''}
-          ${listing.rooms    ? ` &nbsp;·&nbsp; 🚪 ${listing.rooms} Zi.` : ''}
+          ${listing.location ? `📍 ${escHtml(listing.location)}` : ''}
+          ${listing.size     ? ` &nbsp;·&nbsp; 📐 ${escHtml(listing.size)}` : ''}
+          ${listing.rooms    ? ` &nbsp;·&nbsp; 🚪 ${escHtml(listing.rooms)} Zi.` : ''}
         </div>
       </div>
       <a href="${BASE_URL()}" class="btn">In WohnungsSwipe öffnen →</a>
@@ -116,10 +129,10 @@ async function sendMatchMail(email, username, groupName, listing, unsubToken='')
 async function sendNewListingsMail(email, username, count, searchLabel, unsubToken='') {
   return sendMail({
     to:      email,
-    subject: `📡 ${count} neue Inserate – ${searchLabel}`,
+    subject: safeHeader(`📡 ${count} neue Inserate – ${searchLabel}`),
     html: template('Neue Inserate', `
       <h2>Neue Inserate verfügbar!</h2>
-      <p>Hallo ${username},<br>der Suchagent <strong>${searchLabel}</strong> hat <strong>${count} neue Inserate</strong> gefunden.</p>
+      <p>Hallo ${escHtml(username)},<br>der Suchagent <strong>${escHtml(searchLabel)}</strong> hat <strong>${escHtml(count)} neue Inserate</strong> gefunden.</p>
       <a href="${BASE_URL()}" class="btn">Jetzt swipen →</a>
     `, unsubToken),
   });
@@ -128,10 +141,10 @@ async function sendNewListingsMail(email, username, count, searchLabel, unsubTok
 async function sendNudgeMail(email, username, senderName, groupName, unsubToken='') {
   return sendMail({
     to:      email,
-    subject: `👋 ${senderName} erinnert dich ans Swipen`,
+    subject: safeHeader(`👋 ${senderName} erinnert dich ans Swipen`),
     html: template('Erinnerung', `
       <h2>👋 Zeit zum Swipen!</h2>
-      <p>Hallo ${username},<br><strong>${senderName}</strong> aus der Gruppe <strong>${groupName}</strong> erinnert dich daran, die noch offenen Inserate zu bewerten.</p>
+      <p>Hallo ${escHtml(username)},<br><strong>${escHtml(senderName)}</strong> aus der Gruppe <strong>${escHtml(groupName)}</strong> erinnert dich daran, die noch offenen Inserate zu bewerten.</p>
       <a href="${BASE_URL()}" class="btn">Jetzt swipen →</a>
     `, unsubToken),
   });
@@ -140,10 +153,10 @@ async function sendNudgeMail(email, username, senderName, groupName, unsubToken=
 async function sendProfileReminderMail(email, username, senderName, groupName, unsubToken='') {
   return sendMail({
     to:      email,
-    subject: `${senderName} bittet dich um dein Bewerber-Profil`,
+    subject: safeHeader(`${senderName} bittet dich um dein Bewerber-Profil`),
     html: template('Erinnerung', `
       <h2>Bewerber-Profil ausfüllen</h2>
-      <p>Hallo ${username},<br><strong>${senderName}</strong> aus der Gruppe <strong>${groupName}</strong> bittet dich, dein Bewerber-Profil auszufüllen, damit eure gemeinsamen Anfragen an Vermieter vollständig sind.</p>
+      <p>Hallo ${escHtml(username)},<br><strong>${escHtml(senderName)}</strong> aus der Gruppe <strong>${escHtml(groupName)}</strong> bittet dich, dein Bewerber-Profil auszufüllen, damit eure gemeinsamen Anfragen an Vermieter vollständig sind.</p>
       <a href="${BASE_URL()}" class="btn">Profil ausfüllen →</a>
     `, unsubToken),
   });
@@ -152,10 +165,10 @@ async function sendProfileReminderMail(email, username, senderName, groupName, u
 async function sendListingChangeMail(email, username, changeTitle, changeBody, unsubToken='') {
   return sendMail({
     to:      email,
-    subject: changeTitle || 'Inserat aktualisiert',
+    subject: safeHeader(changeTitle) || 'Inserat aktualisiert',
     html: template('Inserat aktualisiert', `
-      <h2>${changeTitle}</h2>
-      <p>Hallo ${username},<br>${changeBody}</p>
+      <h2>${escHtml(changeTitle)}</h2>
+      <p>Hallo ${escHtml(username)},<br>${escHtml(changeBody)}</p>
       <a href="${BASE_URL()}" class="btn">In WohnungsSwipe öffnen →</a>
     `, unsubToken),
   });
@@ -167,7 +180,7 @@ async function sendPasswordChangedMail(email, username, unsubToken='') {
     subject: 'WohnungsSwipe – Passwort geändert',
     html: template('Passwort geändert', `
       <h2>Dein Passwort wurde geändert</h2>
-      <p>Hallo ${username},<br>dein Passwort wurde soeben erfolgreich geändert.</p>
+      <p>Hallo ${escHtml(username)},<br>dein Passwort wurde soeben erfolgreich geändert.</p>
       <p>Falls du das nicht warst, wende dich bitte sofort an den Administrator.</p>
     `, unsubToken),
   });

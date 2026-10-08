@@ -5,6 +5,8 @@ const express    = require('express');
 // be required before any routes are defined.
 require('express-async-errors');
 const session    = require('express-session');
+const helmet     = require('helmet');
+const rateLimit  = require('express-rate-limit');
 const bcrypt     = require('bcryptjs');
 const initSqlJs  = require('sql.js');
 const fetch      = require('node-fetch');
@@ -406,6 +408,24 @@ function insertListing(data, addedBy = null, sourceJobId = null, visibility = 'g
 }
 
 // ── Middleware ─────────────────────────────────────────────
+// Whether this deployment is reachable over HTTPS, inferred from BASE_URL
+// (already required to be set correctly for links in emails/push to work).
+// Defaults to false so a plain local/docker-compose setup over
+// http://localhost — where a Secure cookie would just make the browser
+// silently refuse to store it, breaking login — keeps working unchanged.
+const IS_HTTPS = (process.env.BASE_URL || '').startsWith('https://');
+if (IS_HTTPS) {
+  // Only trust the immediate reverse proxy (nginx/traefik etc. on the same
+  // host) for X-Forwarded-*, not an arbitrary chain — required for
+  // req.secure / rate limiting below to see the real client over HTTPS.
+  app.set('trust proxy', 1);
+}
+
+// Security headers (CSP intentionally left off: the app relies throughout
+// on an early inline <head> script for the no-flash theme switch, and on
+// inline style="" attributes, which a default CSP would block outright).
+app.use(helmet({ contentSecurityPolicy: false }));
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, '../public')));
@@ -414,8 +434,15 @@ app.use(session({
   secret:            process.env.SESSION_SECRET || 'wohnungsswipe-dev-secret',
   resave:            false,
   saveUninitialized: false,
-  cookie:            { maxAge: 7 * 24 * 60 * 60 * 1000 },
+  cookie:            { maxAge: 7 * 24 * 60 * 60 * 1000, sameSite: 'lax', secure: IS_HTTPS },
 }));
+
+// Throttles brute-force / credential-stuffing attempts against auth
+// endpoints. Keyed by IP (req.ip respects the trust-proxy setting above).
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 30, standardHeaders: true, legacyHeaders: false,
+  message: { error: 'Zu viele Versuche – bitte in ein paar Minuten erneut versuchen' },
+});
 // ── Per-type, per-channel notification preferences ──────────
 // Users can choose exactly which channel(s) they want for each kind of
 // notification, instead of one blanket on/off per channel. The matrix is
@@ -463,7 +490,7 @@ const requireAuth = (req, res, next) =>
 const isStr = v => typeof v === 'string';
 
 // ── Auth ───────────────────────────────────────────────────
-app.post('/api/auth/register', async (req, res) => {
+app.post('/api/auth/register', authLimiter, async (req, res) => {
   const { username, email, password } = req.body;
   if (!isStr(username) || !isStr(email) || !isStr(password) || !username || !email || !password)
     return res.status(400).json({ error: 'Alle Felder erforderlich' });
@@ -483,7 +510,7 @@ app.post('/api/auth/register', async (req, res) => {
   res.json({ success: true, username: username.trim(), userId: r.lastInsertRowid });
 });
 
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', authLimiter, async (req, res) => {
   const { email, password } = req.body;
   if (!isStr(email) || !isStr(password) || !email || !password)
     return res.status(400).json({ error: 'E-Mail und Passwort erforderlich' });
@@ -517,7 +544,7 @@ app.get('/api/auth/stats', requireAuth, (req, res) => {
 });
 
 // ── Password reset ─────────────────────────────────────────
-app.post('/api/auth/forgot-password', async (req, res) => {
+app.post('/api/auth/forgot-password', authLimiter, async (req, res) => {
   const { email } = req.body;
   if (!isStr(email) || !email) return res.status(400).json({ error: 'E-Mail erforderlich' });
   const user = dbGet('SELECT * FROM users WHERE email=?', [email.trim().toLowerCase()]);
@@ -531,7 +558,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
   await mailer.sendPasswordResetMail(user.email, user.username, token);
 });
 
-app.post('/api/auth/reset-password', async (req, res) => {
+app.post('/api/auth/reset-password', authLimiter, async (req, res) => {
   const { token, password } = req.body;
   if (!isStr(token) || !isStr(password) || !token || !password || password.length < 6)
     return res.status(400).json({ error: 'Ungültige Anfrage' });
