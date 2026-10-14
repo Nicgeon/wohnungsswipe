@@ -48,6 +48,22 @@ const optionLabel  = (key, value) => OPTIONS[key].find(o => o.value === value)?.
 const PLURAL_DOC_RE = /(nachweise|unterlagen|papiere|kopien|bescheinigungen|auskünfte|verträge|belege|dokumente|zeugnisse|kontoauszüge|abrechnungen)$/i;
 const isPluralDoc = name => PLURAL_DOC_RE.test((name || '').trim());
 
+// Definite article for a document name, from the last part of the compound
+// ("Mietschuldenfreiheits|bescheinigung" → die). `acc` is the accusative ("den
+// Arbeitsvertrag stellen wir … zur Verfügung"). Returns '' for names we can't
+// classify (abbreviations like "WBS", free text) — then no article is used.
+const DOC_GENDER = [
+  [/(ung|heit|keit|schaft|ion|tät|kunft|kopie|urkunde|karte|mappe|liste|police)$/i, 'f'],
+  [/(nachweis|vertrag|ausweis|bescheid|pass|brief|auszug|beleg|schein|lebenslauf)$/i, 'm'],
+  [/(zeugnis|zertifikat|dokument|formular|schreiben|gutachten|attest)$/i, 'n'],
+];
+function docArticle(name, acc = false) {
+  const n = (name || '').trim();
+  if (isPluralDoc(n)) return 'die';
+  const g = DOC_GENDER.find(([re]) => re.test(n))?.[1];
+  return g === 'f' ? 'die' : g === 'n' ? 'das' : g === 'm' ? (acc ? 'den' : 'der') : '';
+}
+
 // Status a given document can be in, as shown in the applicant profile's
 // document list and rendered into the guided message.
 const DOC_STATUS_LABEL = {
@@ -478,20 +494,25 @@ function listingAppeal(listing) {
   return parts.length ? germanList(parts) : '';
 }
 
-// Supporting documents as sentences ("A und B stellen wir Ihnen gerne zur Verfügung. C ist beantragt.").
-// The sentence form avoids "…zur Verfügung, A (liegt vor)" fragments and needs no gender guessing.
+// Supporting documents as sentences ("Die A und die B stellen wir Ihnen gerne zur Verfügung.
+// Die C ist bereits beantragt."). The sentence form avoids "…zur Verfügung, A (liegt vor)"
+// fragments. Articles are added only when every name in a list can be classified — a lone
+// "Mietschuldenfreiheitsbescheinigung ist beantragt." reads like a note, not a letter.
 function documentsText(documents, { formal = true, plural = true } = {}) {
   const byStatus = {};
   for (const d of documents) if (d.doc) (byStatus[d.status || 'vorhanden'] ||= []).push(d.doc);
   const you = formal ? 'Ihnen' : 'dir';
   const out = [];
-  const list = names => germanList(names);
-  if (byStatus.vorhanden?.length) out.push(`${cap(list(byStatus.vorhanden))} ${plural ? 'stellen wir' : 'stelle ich'} ${you} gerne zur Verfügung.`);
+  const list = (names, acc) => {
+    const arts = names.map(n => docArticle(n, acc));
+    return germanList(arts.every(Boolean) ? names.map((n, i) => `${arts[i]} ${n}`) : names);
+  };
+  if (byStatus.vorhanden?.length) out.push(`${cap(list(byStatus.vorhanden, true))} ${plural ? 'stellen wir' : 'stelle ich'} ${you} gerne zur Verfügung.`);
   if (byStatus.beantragt?.length) {
     const names = byStatus.beantragt;
-    out.push(`${cap(list(names))} ${(names.length > 1 || names.some(isPluralDoc)) ? 'sind' : 'ist'} beantragt.`);
+    out.push(`${cap(list(names, false))} ${(names.length > 1 || names.some(isPluralDoc)) ? 'sind' : 'ist'} bereits beantragt.`);
   }
-  if (byStatus.auf_anfrage?.length) out.push(`${cap(list(byStatus.auf_anfrage))} ${plural ? 'können wir' : 'kann ich'} ${you} auf Wunsch gerne nachreichen.`);
+  if (byStatus.auf_anfrage?.length) out.push(`${cap(list(byStatus.auf_anfrage, true))} ${plural ? 'können wir' : 'kann ich'} ${you} auf Wunsch gerne nachreichen.`);
   return out.join(' ');
 }
 
@@ -722,7 +743,11 @@ function buildGuidedMessage(listing, profiles, formal, members = null) {
   // profile must not claim that the children are employed).
   if (emp.length) {
     const everyoneCovered = emp.length === people.length && people.length === persons;
-    if (!plural || people.length === 1) facts.push(`Ich ${empIch(emp[0])}.`);
+    if (!plural) facts.push(`Ich ${empIch(emp[0])}.`);
+    // A household of several with only one profile: the text speaks as "wir", so the one
+    // person is named ("Anna ist …") instead of switching to "Ich bin …".
+    else if (people.length === 1)
+      facts.push(`${empEr({ ...emp[0], name: people[0].display_name || people[0]._username ? emp[0].name : 'Eine Person aus unserem Haushalt' })}.`);
     else if (everyoneCovered && new Set(emp.map(e => e.text)).size === 1)
       facts.push(emp[0].trainee ? `Wir befinden uns ${both} derzeit in einer Ausbildung.` : `Wir sind ${both} ${emp[0].text}.`);
     else facts.push(cap(germanList(emp.map(empEr))) + '.');
