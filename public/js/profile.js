@@ -5,7 +5,7 @@
 const PLACEHOLDER_LIST = ['titel','preis','kalt','warm','zimmer','groesse','lage','name','namen','personen','kinder',
   'beruf','wohnform','einzug','mietdauer','beschaeftigung','einkommen','haushalt','unterlagen','unterlagen_liste','grund','merkmale','telefon','erreichbarkeit'];
 const PLACEHOLDER_HINT = {
-  titel: 'Titel der Anzeige ohne Preisangaben', unterlagen: 'ganze Sätze, z. B. „A und B legen wir Ihnen gerne vor.“',
+  titel: 'Titel der Anzeige ohne Preisangaben', unterlagen: 'ganze Sätze, z. B. „A und B stellen wir Ihnen gerne zur Verfügung.“',
   unterlagen_liste: 'nur die Namen, z. B. „A, B und C“', grund: 'ganzer Satz: „Die Wohnung spricht uns besonders aufgrund … an.“',
   merkmale: 'z. B. „des Balkons und der Lage in Neustadt“ (nach „aufgrund“)',
 };

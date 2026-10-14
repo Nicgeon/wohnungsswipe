@@ -1048,12 +1048,21 @@ app.post('/api/message/generate', requireAuth, async (req, res) => {
 
       const prompt = `Schreibe eine höfliche, authentische deutsche Nachricht an einen Vermieter als Antwort auf eine Wohnungsanzeige. ${formal ? 'Nutze die förmliche Sie-Anrede.' : 'Nutze eine freundliche, lockere Du/Hallo-Anrede.'} Halte sie knapp (max. 150 Wörter), ehrlich und ohne übertriebene Floskeln. Verwende ausschließlich die unten genannten Angaben und erfinde nichts dazu.
 
+Sprachliche Vorgaben:
+- Schreibe „Ihre Anzeige … gelesen“, nicht „gesehen“.
+- Keine technischen Klammerzusätze wie „(59 m², 2 Zimmer)“ – Angaben zur Wohnung, wenn überhaupt, natürlich im Satz.
+- Bei einer Ausbildung den konkreten Beruf nennen („Ich absolviere eine Ausbildung als …“), nicht nur „Ich bin in Ausbildung“.
+- Unterlagen „stellen wir/stelle ich gerne zur Verfügung“.
+- Telefonnummern, Ortsnamen und Zeitangaben genau so übernehmen, wie sie unten stehen.
+- Den Wunsch nach Besichtigung bzw. Rückmeldung nur einmal äußern, am Schluss.
+- Keine Platzhalter in eckigen Klammern; fehlende Angaben einfach weglassen.
+
 Anzeige:
-Titel: ${listing.title || ''}
+Titel: ${P.cleanListingTitle(listing.title)}
 Kaltmiete: ${listing.price_cold || listing.price || ''}
-Größe: ${listing.size || ''}
-Zimmer: ${listing.rooms || ''}
-Lage: ${listing.location || ''}
+Größe: ${P.formatSize(listing.size)}
+Zimmer: ${P.formatRooms(listing.rooms)}
+Lage: ${P.formatLocation(listing.location)}
 
 Bewerber:
 ${profileSummary}
