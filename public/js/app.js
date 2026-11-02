@@ -91,31 +91,37 @@ function showScreen(id) {
   $id(id).classList.add('active');
 }
 
-const SUB_VIEWS = new Set(['add', 'jobs', 'archive', 'settings', 'profile']);
+// Which bottom-bar / header tab a page belongs to
+const TAB_OF = { swipe:'swipe', rated:'rated', groups:'groups', jobs:'search', add:'search', archive:'search',
+                 me:'me', profile:'me', settings:'me' };
+const SEARCH_VIEWS = ['jobs', 'add', 'archive'];
+const SEARCH_LABELS = { jobs: 'Agenten', add: 'Hinzufügen', archive: 'Archiv' };
 
-const isDesktopNav = () => window.innerWidth >= 900;
-const backTarget = () => isDesktopNav() ? 'swipe' : 'more';
+// Navigation (history, back button, deep links) lives in nav.js; this only paints a page.
+function showView(name) { nav.show(name); }
 
-function showView(name, isSubNav = false) {
+function renderView(name) {
   if (name !== 'rated' && state.ratedSelectMode) setRatedSelectMode(false);
   // The profile page autosaves; make sure nothing is lost when leaving it.
   if (name !== 'profile') window.pfFlush?.();
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
-  document.querySelectorAll('.tab-nav').forEach(b => b.classList.remove('active'));
   $id(`view-${name}`).classList.add('active');
   $id('swipe-counter').style.display = name === 'swipe' ? '' : 'none';
 
-  // Desktop has no "Mehr" page: it is split between the "Inserate" dropdown and the avatar menu.
-  if (name === 'more' && isDesktopNav()) { showView('swipe'); return; }
-  // Sub-views keep their entry point highlighted: "Inserate"/avatar on desktop, "Mehr" on phones
-  const huntView = name === 'add' || name === 'jobs' || name === 'archive';
-  const desktop = isDesktopNav();
-  $id('nav-inserate')?.classList.toggle('active', desktop && huntView);
-  $id('account-btn')?.classList.toggle('on', desktop && (name === 'settings' || name === 'profile'));
-  const tabKey = SUB_VIEWS.has(name) ? 'more' : name;
-  if (!(desktop && SUB_VIEWS.has(name))) document.querySelector(`.tab-nav[data-view="${tabKey}"]`)?.classList.add('active');
+  const tab = TAB_OF[name];
+  document.querySelectorAll('.tab-nav').forEach(b => {
+    const on = b.dataset.tab === tab;
+    b.classList.toggle('active', on);
+    if (on) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+  });
+  $id('account-btn')?.classList.toggle('on', tab === 'me');
+  if (SEARCH_VIEWS.includes(name)) state.lastSearchView = name;
+  document.querySelectorAll('[data-subtabs] [data-goto]').forEach(b => {
+    const on = b.dataset.goto === name;
+    b.classList.toggle('on', on); b.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
 
-  if (name === 'more')     window.renderAccountMeta?.();
+  if (name === 'me' || SEARCH_VIEWS.includes(name)) window.renderAccountMeta?.();
   if (name === 'swipe')    loadSwipeQueue();
   if (name === 'rated')    loadRated();
   if (name === 'groups')   loadGroups();
@@ -127,20 +133,29 @@ function showView(name, isSubNav = false) {
   syncDetailMount();
 }
 
-document.querySelectorAll('.tab-nav[data-view]').forEach(btn =>
-  btn.addEventListener('click', () => showView(btn.dataset.view))
+nav.setRenderer(renderView);
+
+// Tab bar (phones: bottom, desktop: header). "Suche" reopens the part of it you were last in.
+document.querySelectorAll('.tab-nav[data-tab]').forEach(btn =>
+  btn.addEventListener('click', () =>
+    showView(btn.dataset.tab === 'search' ? (state.lastSearchView || 'jobs') : btn.dataset.view))
 );
-// Resizing from phone to desktop while on "Mehr" – that page doesn't exist there
-window.addEventListener('resize', () => {
-  if (isDesktopNav() && $id('view-more').classList.contains('active')) showView('swipe');
+$id('account-btn').addEventListener('click', () => showView('me'));
+
+// Tabs inside "Suche": Agenten · Hinzufügen · Archiv
+document.querySelectorAll('[data-subtabs]').forEach(el => {
+  el.setAttribute('role', 'tablist');
+  el.innerHTML = SEARCH_VIEWS.map(v =>
+    `<button type="button" role="tab" aria-selected="false" data-goto="${v}">${SEARCH_LABELS[v]}${v === 'jobs' || v === 'archive' ? `<span class="cnt" data-count="${v === 'jobs' ? 'agents' : 'archive'}" hidden></span>` : ''}</button>`
+  ).join('');
 });
 
-// "Mehr" sub-menu navigation
 document.querySelectorAll('[data-goto]').forEach(btn =>
-  btn.addEventListener('click', () => showView(btn.dataset.goto, true))
+  btn.addEventListener('click', () => showView(btn.dataset.goto))
 );
-document.querySelectorAll('[data-back-to-more]').forEach(btn =>
-  btn.addEventListener('click', () => showView(backTarget(), true))
+// "Zurück" inside a page = one level up (same as the phone's back gesture)
+document.querySelectorAll('[data-back]').forEach(btn =>
+  btn.addEventListener('click', () => nav.back())
 );
 
 // ══════════════════════════════════════════════════════════
@@ -193,17 +208,25 @@ $id('forgot-submit').addEventListener('click', async () => {
   setOk('forgot-ok', d.message || 'E-Mail gesendet (falls Account existiert)');
 });
 
-function onLogin(data) {
+async function onLogin(data) {
   state.user = data;
   setNavUser(data.username);
   showScreen('app-screen');
-  loadGroups().then(() => loadSwipeQueue());
+  await enterApp();
+}
+
+// Loads what every page needs, then opens the page named in the address (#/suche …)
+async function enterApp() {
+  await loadGroups();
+  nav.start();
+  if (nav.current !== 'swipe') loadSwipeQueue();     // keeps the badge on the Swipen tab right
   openSharedListingFromUrl();
 }
 
 async function doLogout() {
   await api('/api/auth/logout', { method: 'POST' });
   state.user = null; state.groups = [];
+  nav.stop();
   if ('serviceWorker' in navigator) {
     const reg = await navigator.serviceWorker.getRegistration().catch(()=>null);
     if (reg) { const sub = await reg.pushManager.getSubscription(); if (sub) sub.unsubscribe(); }
@@ -211,7 +234,6 @@ async function doLogout() {
   showScreen('auth-screen');
 }
 $id('logout-btn').addEventListener('click', doLogout);
-$id('settings-logout-btn').addEventListener('click', doLogout);
 
 // ══════════════════════════════════════════════════════════
 //  LIGHTBOX
@@ -2446,7 +2468,7 @@ async function openSharedListingFromUrl() {
   // clean and a page refresh won't keep re-opening the same listing.
   params.delete('listing');
   const cleanUrl = location.pathname + (params.toString() ? `?${params}` : '') + location.hash;
-  history.replaceState({}, '', cleanUrl);
+  history.replaceState(history.state, '', cleanUrl);
 
   const d = await api(`/api/listings/${sharedId}`);
   if (d.error || !d.listing) { toast('❌ Geteiltes Inserat nicht gefunden'); return; }
@@ -2454,6 +2476,21 @@ async function openSharedListingFromUrl() {
 }
 
 // Applicant profile page, message generator and group profile tab live in profile.js
+
+// ══════════════════════════════════════════════════════════
+//  OVERLAYS → phone back button
+//  Everything that lies on top of a page registers here, so the back
+//  gesture closes it first (see nav.js).
+// ══════════════════════════════════════════════════════════
+nav.register({ el: $id('lightbox'),    isOpen: () => $id('lightbox').style.display === 'flex',    close: () => lb.close() });
+nav.register({ el: $id('detail-view'), isOpen: () => $id('detail-view').style.display === 'flex', close: () => detailView.close() });
+document.querySelectorAll('.modal').forEach(m => nav.register({
+  el: m,
+  isOpen: () => m.style.display === 'flex',
+  close:  () => (m.id === 'message-modal' && typeof messageModal !== 'undefined') ? messageModal.close() : (m.style.display = 'none'),
+}));
+// The detail page of a group is a level inside "Gruppen"
+nav.register({ el: $id('group-detail'), isOpen: () => $id('group-detail').style.display !== 'none', close: () => $id('back-to-groups').click() });
 
 // ══════════════════════════════════════════════════════════
 //  INIT
@@ -2464,9 +2501,7 @@ async function openSharedListingFromUrl() {
     state.user = { userId: me.id, username: me.username };
     setNavUser(me.username);
     showScreen('app-screen');
-    await loadGroups();
-    loadSwipeQueue();
-    openSharedListingFromUrl();
+    await enterApp();
   } else {
     showScreen('auth-screen');
   }

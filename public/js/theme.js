@@ -97,34 +97,16 @@ const theme = (() => {
   return { apply, set, read };
 })();
 
-// ── Account menu (avatar in the top bar) ──────────────────
+// ── Profil page header + avatar ───────────────────────────
 function setNavUser(name) {
   const n = name || '';
-  const el = document.getElementById('nav-username');
+  const el = document.getElementById('me-name');
   if (el) el.textContent = n;
   const letter = (n.trim().charAt(0) || '?').toUpperCase();
-  const av = document.getElementById('nav-avatar'); if (av) av.textContent = letter;
-  const av2 = document.getElementById('acct-av'); if (av2) av2.textContent = letter;
+  for (const id of ['nav-avatar', 'me-avatar']) { const av = document.getElementById(id); if (av) av.textContent = letter; }
 }
 
-// ── Header dropdowns: avatar menu + "Inserate" (desktop) ──
-function initDropdown(btn, menu, onOpen) {
-  if (!btn || !menu) return { close() {} };
-  const close = () => { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); };
-  const open = () => {
-    document.dispatchEvent(new CustomEvent('ws-close-dropdowns', { detail: menu.id }));
-    menu.hidden = false; btn.setAttribute('aria-expanded', 'true'); onOpen?.();
-    menu.querySelector('[role="menuitem"]')?.focus();
-  };
-  btn.addEventListener('click', e => { e.stopPropagation(); menu.hidden ? open() : close(); });
-  document.addEventListener('click', e => { if (!menu.hidden && !menu.contains(e.target)) close(); });
-  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !menu.hidden) { close(); btn.focus(); } });
-  document.addEventListener('ws-close-dropdowns', e => { if (e.detail !== menu.id) close(); });
-  menu.addEventListener('click', e => { if (e.target.closest('[role="menuitem"]')) close(); });
-  return { close };
-}
-
-// Small facts shown in the menus and on the "Mehr" page (profile completeness, agents, archive); cached briefly.
+// Small facts shown on the Profil page and the "Suche" tabs (profile completeness, agents, archive); cached briefly.
 let _acctMeta = null, _acctMetaAt = 0;
 async function loadAccountMeta(force = false) {
   if (!force && _acctMeta && Date.now() - _acctMetaAt < 20000) return _acctMeta;
@@ -142,26 +124,15 @@ async function loadAccountMeta(force = false) {
 }
 async function renderAccountMeta(force = false) {
   const m = await loadAccountMeta(force);
-  const em = document.getElementById('nav-email'); if (em) em.textContent = m.email;
+  const em = document.getElementById('me-email'); if (em) em.textContent = m.email;
   const profText = m.pct == null ? 'Angaben für Nachrichten an Vermieter'
     : m.pct >= 100 ? 'Vollständig' : `${m.pct} % vollständig` + (m.missing ? ` · ${m.missing} Angabe${m.missing === 1 ? '' : 'n'} fehlen` : '');
-  const a = document.getElementById('acct-profile-sub'); if (a) a.textContent = m.pct == null ? profText : `${m.pct} % vollständig`;
   const b = document.getElementById('mh-profile-sub'); if (b) b.textContent = profText;
   const bar = document.getElementById('mh-profile-bar');
   if (bar && m.pct != null) { bar.hidden = false; bar.firstElementChild.style.width = Math.min(100, m.pct) + '%'; }
-  document.querySelectorAll('[data-meta="agents"]').forEach(el => { el.hidden = !m.agents; el.textContent = `${m.agents} aktiv`; });
-  document.querySelectorAll('[data-meta="archive"]').forEach(el => { el.hidden = !m.archive; el.textContent = m.archive; });
+  document.querySelectorAll('[data-count="agents"]').forEach(el => { el.hidden = !m.agents; el.textContent = m.agents; });
+  document.querySelectorAll('[data-count="archive"]').forEach(el => { el.hidden = !m.archive; el.textContent = m.archive; });
 }
-
-(function initMenus() {
-  initDropdown(document.getElementById('account-btn'), document.getElementById('account-menu'), () => renderAccountMeta(true));
-  initDropdown(document.getElementById('nav-inserate'), document.getElementById('inserate-menu'), () => renderAccountMeta());
-  document.getElementById('account-menu')?.addEventListener('click', e => {
-    const go = e.target.closest('[data-acct-goto]');
-    if (go) window.showView?.(go.dataset.acctGoto, true);
-  });
-  document.getElementById('mh-logout-btn')?.addEventListener('click', () => document.getElementById('logout-btn')?.click());
-})();
 
 hydrateIcons();
 theme.apply();

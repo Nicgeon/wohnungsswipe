@@ -113,37 +113,16 @@
     <div class="nav-logo"><svg class="logo-mark" viewBox="0 0 64 64" aria-hidden="true"><use href="#ws-mark"/></svg><span>Wohnungs<b>Swipe</b></span></div>
     <div class="nav-actions">
       <span class="swipe-counter" id="swipe-counter"><span id="remaining-count">0</span> übrig</span>
-      <button id="account-btn" class="nav-avatar" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="account-menu" aria-label="Konto-Menü"><span id="nav-avatar">?</span></button>
-    </div>
-    <div id="account-menu" class="account-menu" role="menu" hidden>
-      <div class="acct-head"><span class="acct-av" id="acct-av">?</span><span class="acct-who"><span class="acct-name" id="nav-username"></span><span class="acct-mail" id="nav-email"></span></span></div>
-      <button type="button" role="menuitem" class="dd-item" data-acct-goto="profile"><span class="dd-tile i" data-icon="profile"></span><span class="dd-text"><b>Bewerber-Profil</b><span id="acct-profile-sub">Angaben für Nachrichten an Vermieter</span></span></button>
-      <button type="button" role="menuitem" class="dd-item" data-acct-goto="settings"><span class="dd-tile i" data-icon="sliders"></span><span class="dd-text"><b>Konto &amp; Einstellungen</b><span>Benachrichtigungen, Passwort</span></span></button>
-      <div class="acct-theme">
-        <span class="acct-label">Darstellung</span>
-        <div class="theme-seg" role="group" aria-label="Darstellung">
-          <button type="button" data-theme-mode="auto"  aria-pressed="false"><span class="i" data-icon="auto"></span>Auto</button>
-          <button type="button" data-theme-mode="light" aria-pressed="false"><span class="i" data-icon="sun"></span>Hell</button>
-          <button type="button" data-theme-mode="dark"  aria-pressed="false"><span class="i" data-icon="moon"></span>Dunkel</button>
-        </div>
-      </div>
-      <button type="button" role="menuitem" class="dd-item danger" id="logout-btn"><span class="dd-tile i" data-icon="logout"></span><span class="dd-text"><b>Ausloggen</b></span></button>
+      <button id="account-btn" class="nav-avatar" type="button" aria-label="Mein Profil"><span id="nav-avatar">?</span></button>
     </div>
   </nav>
 
   <div class="tab-bar" role="navigation" aria-label="Hauptnavigation">
-    <button class="tab-nav active" data-view="swipe">   <span class="tab-icon i" data-icon="cards"></span><span>Swipen</span></button>
-    <button class="tab-nav"        data-view="rated">   <span class="tab-icon i" data-icon="bookmark"></span><span>Bewertet</span></button>
-    <button class="tab-nav"        data-view="groups">  <span class="tab-icon i" data-icon="users"></span><span>Gruppen</span></button>
-    <span class="nav-menu" id="nav-inserate-wrap">
-      <button class="tab-nav" id="nav-inserate" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="inserate-menu"><span class="tab-icon i" data-icon="agent"></span><span>Inserate</span><span class="i sm nav-car" data-icon="chevdown"></span></button>
-      <div class="nav-dd" id="inserate-menu" role="menu" hidden>
-        <button type="button" role="menuitem" class="dd-item" data-goto="add"><span class="dd-tile i" data-icon="addbox"></span><span class="dd-text"><b>Inserat hinzufügen</b><span>Link einfügen und direkt bewerten</span></span></button>
-        <button type="button" role="menuitem" class="dd-item" data-goto="jobs"><span class="dd-tile i" data-icon="agent"></span><span class="dd-text"><b>Suchagenten</b><span>Suchen automatisch neue Inserate</span></span><span class="dd-pill ok" data-meta="agents" hidden></span></button>
-        <button type="button" role="menuitem" class="dd-item" data-goto="archive"><span class="dd-tile i" data-icon="archive"></span><span class="dd-text"><b>Archiv</b><span>Inserate, die offline gegangen sind</span></span><span class="dd-pill" data-meta="archive" hidden></span></button>
-      </div>
-    </span>
-    <button class="tab-nav"        data-view="more">    <span class="tab-icon i" data-icon="grid"></span><span>Mehr</span></button>
+    <button class="tab-nav active" data-tab="swipe"  data-view="swipe">  <span class="tab-icon i" data-icon="cards"></span><span>Swipen</span></button>
+    <button class="tab-nav"        data-tab="rated"  data-view="rated">  <span class="tab-icon i" data-icon="bookmark"></span><span>Bewertet</span></button>
+    <button class="tab-nav"        data-tab="search" data-view="jobs">   <span class="tab-icon i" data-icon="agent"></span><span>Suche</span></button>
+    <button class="tab-nav"        data-tab="groups" data-view="groups"> <span class="tab-icon i" data-icon="users"></span><span>Gruppen</span></button>
+    <button class="tab-nav"        data-tab="me"     data-view="me">     <span class="tab-icon i" data-icon="profile"></span><span>Profil</span></button>
   </div>
 
   <!-- ── SWIPE ─────────────────────────────────────── -->
@@ -176,6 +155,7 @@
   <!-- ── ADD ───────────────────────────────────────── -->
   <div id="view-add" class="view">
     <div class="view-content">
+      <div class="sub-tabs" data-subtabs></div>
       <h2 class="view-title">Inserat hinzufügen</h2>
       <p class="view-subtitle">Link von Kleinanzeigen, ImmobilienScout24, Immowelt, rentola oder meinestadt einfügen.</p>
       <div class="card-form">
@@ -294,12 +274,15 @@
   </div>
 
   <!-- ── MORE (Mehr) ──────────────────────────────── -->
-  <div id="view-more" class="view">
-    <div class="view-content">
-      <h2 class="view-title">Mehr</h2>
-      <p class="view-subtitle">Dein Profil und deine Suche an einem Ort.</p>
+  <div id="view-me" class="view">
+    <div class="view-content me-page">
+      <h2 class="view-title">Profil</h2>
 
-      <div class="mh-group">Ich</div>
+      <div class="me-card">
+        <span class="me-avatar" id="me-avatar">?</span>
+        <span class="me-who"><span class="me-name" id="me-name"></span><span class="me-mail" id="me-email"></span></span>
+      </div>
+
       <div class="mh-list">
         <button class="mh-row" data-goto="profile">
           <span class="mh-tile i" data-icon="profile"></span>
@@ -314,27 +297,6 @@
         </button>
       </div>
 
-      <div class="mh-group">Wohnungssuche</div>
-      <div class="mh-list">
-        <button class="mh-row" data-goto="add">
-          <span class="mh-tile i" data-icon="addbox"></span>
-          <span class="mh-text"><b>Inserat hinzufügen</b><span>Link einfügen und direkt bewerten</span></span>
-          <span class="mh-chev i sm" data-icon="next"></span>
-        </button>
-        <button class="mh-row" data-goto="jobs">
-          <span class="mh-tile i" data-icon="agent"></span>
-          <span class="mh-text"><b>Suchagenten</b><span>Suchen automatisch neue Inserate</span></span>
-          <span class="dd-pill ok" data-meta="agents" hidden></span>
-          <span class="mh-chev i sm" data-icon="next"></span>
-        </button>
-        <button class="mh-row" data-goto="archive">
-          <span class="mh-tile i" data-icon="archive"></span>
-          <span class="mh-text"><b>Archiv</b><span>Inserate, die offline gegangen sind</span></span>
-          <span class="dd-pill" data-meta="archive" hidden></span>
-          <span class="mh-chev i sm" data-icon="next"></span>
-        </button>
-      </div>
-
       <div class="mh-group">Darstellung</div>
       <div class="theme-seg theme-seg-lg" role="group" aria-label="Darstellung">
         <button type="button" data-theme-mode="auto"  aria-pressed="false"><span class="i" data-icon="auto"></span>Auto</button>
@@ -342,7 +304,7 @@
         <button type="button" data-theme-mode="dark"  aria-pressed="false"><span class="i" data-icon="moon"></span>Dunkel</button>
       </div>
 
-      <button class="mh-logout" id="mh-logout-btn" type="button"><span class="i sm" data-icon="logout"></span>Ausloggen</button>
+      <button class="mh-logout" id="logout-btn" type="button"><span class="i sm" data-icon="logout"></span>Ausloggen</button>
     </div>
   </div>
 
@@ -352,7 +314,7 @@
       <div class="pf-header">
         <button class="pf-back" id="pf-back" type="button" aria-label="Zurück">‹</button>
         <div class="pf-header-text">
-          <div class="pf-crumb">Ich › Bewerber-Profil</div>
+          <div class="pf-crumb">Profil › Bewerber-Profil</div>
           <h2 class="view-title" id="pf-title">Bewerber-Profil</h2>
           <div class="pf-status" id="pf-status" data-state="saved" role="status" aria-live="polite">
             <span class="pf-status-dot"></span><span id="pf-status-text">Alle Änderungen gespeichert</span>
@@ -396,7 +358,7 @@
   <!-- ── JOBS (Suchagenten) ─────────────────────────── -->
   <div id="view-jobs" class="view">
     <div class="view-content">
-      <button class="btn-ghost back-btn" data-back-to-more><span class="i sm" data-icon="back"></span>Zurück</button>
+      <div class="sub-tabs" data-subtabs></div>
       <h2 class="view-title">Suchagenten</h2>
       <p class="view-subtitle">Suchergebnis-URL eintragen – neue Inserate werden automatisch geladen.</p>
       <div class="card-form">
@@ -461,7 +423,7 @@
   <!-- ── ARCHIVE ──────────────────────────────────────── -->
   <div id="view-archive" class="view">
     <div class="view-content">
-      <button class="btn-ghost back-btn" data-back-to-more><span class="i sm" data-icon="back"></span>Zurück</button>
+      <div class="sub-tabs" data-subtabs></div>
       <div class="rated-header">
         <div>
           <h2 class="view-title">Archiv</h2>
@@ -487,7 +449,7 @@
   <!-- ── SETTINGS ──────────────────────────────────── -->
   <div id="view-settings" class="view">
     <div class="view-content">
-      <button class="btn-ghost back-btn" data-back-to-more><span class="i sm" data-icon="back"></span>Zurück</button>
+      <button class="btn-ghost back-btn" data-back><span class="i sm" data-icon="back"></span>Zurück</button>
       <h2 class="view-title">Konto &amp; Einstellungen</h2>
 
       <!-- Account card -->
@@ -703,7 +665,6 @@
         <p class="form-success" id="admin-ok"></p>
       </div>
 
-      <button class="btn-danger" id="settings-logout-btn">Ausloggen</button>
     </div>
   </div>
 </div><!-- end app-screen -->
@@ -866,6 +827,7 @@
 
 <div id="toast"></div>
 <script src="/js/theme.js"></script>
+<script src="/js/nav.js"></script>
 <script src="/js/app.js"></script>
 <script src="/js/profile.js"></script>
 </body>
