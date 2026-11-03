@@ -15,7 +15,7 @@ const fs         = require('fs');
 const crypto     = require('crypto');
 const MemoryStore = require('memorystore')(session);
 const webpush    = require('web-push');
-const { pollSearchJob, checkExistingListings, detectPlatform, scrapeListing, isUrlAllowed, safeAgentFor, safeHttpsAgent } = require('./poller');
+const { pollSearchJob, checkExistingListings, detectPlatform, scrapeListing, validateSearchUrl, isUrlAllowed, safeAgentFor, safeHttpsAgent } = require('./poller');
 const mailer     = require('./mailer');
 const P          = require('./profile');
 
@@ -1977,6 +1977,8 @@ app.post('/api/jobs', requireAuth, (req, res) => {
   if (!isStr(label) || !label.trim())                  return res.status(400).json({ error: 'Bezeichnung erforderlich' });
   if (!isStr(search_url) || !search_url.startsWith('http')) return res.status(400).json({ error: 'Gültige Such-URL erforderlich' });
   if (!isUrlAllowed(search_url)) return res.status(400).json({ error: 'Ungültige URL' });
+  const urlProblem = validateSearchUrl(search_url);
+  if (urlProblem) return res.status(400).json({ error: urlProblem });
   if (dbGet('SELECT id FROM search_jobs WHERE search_url=?', [search_url]))
     return res.status(409).json({ error: 'Diese Suche ist bereits vorhanden' });
   const iv = Math.max(10, Math.min(1440, parseInt(interval_min)||60));

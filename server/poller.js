@@ -2,7 +2,7 @@
  * poller.js – Suche-Scraper für WohnungsSwipe
  *
  * Ablauf pro Job:
- *  1. Suchergebnisseite abrufen
+ *  1. Suchergebnisseite abrufen (Vonovia: über deren JSON-Schnittstelle)
  *  2. Alle Inserat-URLs extrahieren
  *  3. Neue URLs (nicht in DB) einzeln scrapen
  *  4. Bestehende Inserate auf offline/reserviert prüfen
@@ -128,6 +128,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ── Platform detection ─────────────────────────────────────
 function detectPlatform(url) {
+  if (isVonoviaUrl(url))                    return 'vonovia';
   if (url.includes('kleinanzeigen.de'))     return 'kleinanzeigen';
   if (url.includes('immobilienscout24.de')) return 'immoscout';
   if (url.includes('immowelt.de'))          return 'immowelt';
@@ -743,6 +744,168 @@ async function geocodeLocation(locationText) {
 // ── Scrape a single listing ───────────────────────────────
 // opts.lite: skip the extra Immowelt mobile request (used by the periodic
 // status re-check, which only needs status/price/title — not the full gallery).
+// ── Vonovia ────────────────────────────────────────────────
+// vonovia.de is a client-rendered app: its search page's HTML contains no listings. The site's
+// own front end loads them from a JSON API (/api/real-estate/list) with a short-lived token from
+// /api/real-estate/search-token (sent as "X-VON-Search-Token") – we do exactly that, with the
+// filter parameters of the search URL the user pasted (city, radius, max. rent, …).
+// The detail page, in contrast, embeds the complete listing as JSON in a data attribute
+// (data-vonovia-data), and answers HTTP 410 once a listing is gone.
+// All requests go through fetchPageRaw, i.e. through the same SSRF-guarded agent as every other
+// fetch, and carry an honest User-Agent.
+const VONOVIA_ORIGIN = 'https://www.vonovia.de';
+const VONOVIA_SEARCH_PATH = '/zuhause-finden/immobilien';
+const VONOVIA_UA = 'Flatswipe (private housing-search tool)';
+const VONOVIA_PAGE_HEADERS = { 'User-Agent': VONOVIA_UA, 'Accept': 'text/html,application/xhtml+xml,*/*;q=0.8', 'Accept-Language': 'de-DE,de;q=0.9' };
+const VONOVIA_API_HEADERS  = { 'User-Agent': VONOVIA_UA, 'Accept': 'application/json', 'Accept-Language': 'de-DE,de;q=0.9' };
+const VONOVIA_PAGE_SIZE = 15;      // what the site itself requests per page
+const VONOVIA_MAX_PAGES = 4;       // at most 60 results per run (extractListingUrls caps other portals at 50)
+let vonoviaTokenCache = { value: '', exp: 0 };
+
+function isVonoviaUrl(url) {
+  try { const h = new URL(url).hostname.toLowerCase(); return h === 'vonovia.de' || h.endsWith('.vonovia.de'); }
+  catch (_) { return false; }
+}
+
+// A pasted Vonovia search URL must be the results page with a place chosen — not a single
+// listing (its query string would not filter anything) and not an unfiltered "all of Germany".
+// Returns an error message, or '' when fine / not a Vonovia URL.
+function validateSearchUrl(url) {
+  if (!isVonoviaUrl(url)) return '';
+  const u = new URL(url);
+  if (u.pathname.replace(/\/+$/, '') !== VONOVIA_SEARCH_PATH)
+    return 'Bitte die Ergebnisseite der Vonovia-Suche einfügen (…/zuhause-finden/immobilien?…), nicht ein einzelnes Inserat';
+  if (!u.searchParams.get('city') && !(u.searchParams.get('latitude') && u.searchParams.get('longitude')))
+    return 'Bitte auf vonovia.de zuerst einen Ort auswählen und dann die Adresse der Ergebnisseite einfügen';
+  return '';
+}
+
+async function vonoviaToken(force = false) {
+  if (!force && vonoviaTokenCache.value && Date.now() < vonoviaTokenCache.exp) return vonoviaTokenCache.value;
+  const raw = await fetchPageRaw(`${VONOVIA_ORIGIN}/api/real-estate/search-token`, 15000, [], VONOVIA_API_HEADERS);
+  const j = JSON.parse(raw.text);
+  if (!j || !j.token) throw new Error('Vonovia hat kein Such-Token geliefert');
+  vonoviaTokenCache = { value: j.token, exp: Date.now() + Math.max(60, (Number(j.ttl) || 0) - 30) * 1000 };
+  return j.token;
+}
+
+async function vonoviaApi(pathAndQuery) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const token = await vonoviaToken(attempt > 0);
+    try {
+      const raw = await fetchPageRaw(VONOVIA_ORIGIN + pathAndQuery, 20000, [], { ...VONOVIA_API_HEADERS, 'X-VON-Search-Token': token });
+      return JSON.parse(raw.text);
+    } catch (e) {
+      if (attempt === 0 && /\b401\b/.test(e.message)) continue;     // token expired → get a fresh one once
+      throw e;
+    }
+  }
+}
+
+// Search page URL → detail URLs of everything it currently lists
+async function vonoviaSearchUrls(searchUrl) {
+  const err = validateSearchUrl(searchUrl);
+  if (err) throw new Error(err);
+  const filters = new URL(searchUrl).searchParams;
+  const slugs = [];
+  let total = Infinity;
+  for (let page = 0; page < VONOVIA_MAX_PAGES && slugs.length < total; page++) {
+    const q = new URLSearchParams(filters);
+    q.set('limit', String(VONOVIA_PAGE_SIZE));
+    q.set('offset', String(page * VONOVIA_PAGE_SIZE));
+    const data = await vonoviaApi(`/api/real-estate/list?${q}`);
+    if (!data || !Array.isArray(data.results)) throw new Error('Unerwartete Antwort der Vonovia-Suche');
+    const count = Number(data.paging && data.paging.info && data.paging.info.count);
+    if (Number.isFinite(count)) total = count;
+    for (const r of data.results) {
+      if (r && /^[a-z0-9-]+$/i.test(r.slug || '') && !slugs.includes(r.slug)) slugs.push(r.slug);
+    }
+    if (data.results.length < VONOVIA_PAGE_SIZE) break;
+    await sleep(600);
+  }
+  return slugs.map(slug => `${VONOVIA_ORIGIN}${VONOVIA_SEARCH_PATH}/${slug}`);
+}
+
+// 604.29 → "604,29 €", 1812.87 → "1.812,87 €"; empty/zero → ''
+function vonoviaEuro(n) {
+  const v = Number(n);
+  if (n === null || n === undefined || n === '' || !Number.isFinite(v) || v <= 0) return '';
+  const [int, dec] = v.toFixed(2).split('.');
+  return `${int.replace(/\B(?=(\d{3})+(?!\d))/g, '.')},${dec} €`;
+}
+
+// Detail page HTML → listing fields (null when the page carries no listing data)
+function parseVonoviaDetail(html) {
+  const $ = cheerio.load(html);
+  const attr = $('[data-vonovia-data]').first().attr('data-vonovia-data');
+  let j = null;
+  try { j = attr ? JSON.parse(attr) : null; } catch (_) {}
+  if (!j || typeof j !== 'object') return null;
+
+  const rows = {};
+  for (const sec of Array.isArray(j.sections) ? j.sections : [])
+    for (const r of sec.rows || []) if (r && r.label) rows[String(r.label).trim().toLowerCase()] = String(r.value ?? '').trim();
+
+  const imgUrls = [...new Set([...(j.overlayImages || []), ...(j.images || [])]
+    .map(i => i && i.url).filter(u => typeof u === 'string' && /^https:\/\//i.test(u)))];
+  // overlayImages are the large renditions of the same photos; the small ones only fill gaps
+  const large = (j.overlayImages || []).map(i => i && i.url).filter(u => typeof u === 'string' && /^https:\/\//i.test(u));
+  const photos = large.length ? [...new Set(large)] : imgUrls;
+
+  const lat = Number(j.latitude), lng = Number(j.longitude);
+  const avail = /^\d{4}-\d{2}-\d{2}/.test(j.availableFrom || '') ? j.availableFrom.slice(0, 10).split('-').reverse().join('.') : (j.availableFrom || '');
+  const address = [j.streetAndHouseNumber, j.postCodeAndCity].filter(Boolean).join(', ');
+  const description = [address && `Adresse: ${address}`, j.description, j.location]
+    .filter(Boolean).join('\n\n').substring(0, 1500);
+  const tags = [...new Set([
+    ...(Array.isArray(j.features) ? j.features : []).map(f => String(f).trim()),
+    rows['geschoss'] || '',
+  ].filter(t => t && t.length < 60))].slice(0, 12);
+
+  return {
+    title:      String(j.heading || '').trim(),
+    price_cold: vonoviaEuro(j.rent),
+    price:      vonoviaEuro(j.warmRent) || vonoviaEuro(j.rent),
+    size:       String(j.space || '').trim(),
+    rooms:      String(j.numberOfRooms ?? '').trim(),
+    location:   String(j.postCodeAndCity || '').trim(),
+    image_url:  photos[0] || '',
+    images_json: JSON.stringify(photos),
+    description,
+    tags_json:  JSON.stringify(tags),
+    nebenkosten: vonoviaEuro(j.operatingCosts),
+    heizkosten:  vonoviaEuro(j.heatingCosts),
+    kaution:     vonoviaEuro(j.securityDeposit),
+    available_from: avail,
+    property_type:  rows['art'] || rows['typ'] || '',
+    latitude:  Number.isFinite(lat) && lat !== 0 ? lat : null,
+    longitude: Number.isFinite(lng) && lng !== 0 ? lng : null,
+  };
+}
+
+async function scrapeVonovia(url, d) {
+  let raw;
+  try { raw = await fetchPageRaw(url, 18000, [], VONOVIA_PAGE_HEADERS); }
+  catch (e) {
+    if (e.message.includes('404') || e.message.includes('410')) d.status = 'offline';   // 410 = Angebot nicht mehr verfügbar
+    d.fetchFailed = true;
+    d.title = 'Inserat (nicht ladbar)';
+    d.description = `Fehler: ${e.message}`;
+    return d;
+  }
+  const parsed = parseVonoviaDetail(raw.text);
+  if (!parsed) {
+    if (/nicht mehr verfügbar/i.test(cheerio.load(raw.text)('title').text())) {
+      d.status = 'offline'; d.title = 'Inserat nicht mehr verfügbar';
+    } else {
+      d.fetchFailed = true; d.title = 'Inserat (nicht ladbar)';
+      d.description = 'Fehler: Die Vonovia-Seite enthält keine Inseratsdaten (Seitenaufbau geändert?)';
+    }
+    return d;
+  }
+  return Object.assign(d, parsed, { title: parsed.title || 'Vonovia-Inserat' });
+}
+
 async function scrapeListing(url, opts = {}) {
   const platform = detectPlatform(url);
   const d = {
@@ -753,6 +916,8 @@ async function scrapeListing(url, opts = {}) {
     nebenkosten: '', heizkosten: '', kaution: '', available_from: '', property_type: '',
     latitude: null, longitude: null,
   };
+
+  if (platform === 'vonovia') return scrapeVonovia(url, d);
 
   let html;
   let finalUrl = url;
@@ -1210,12 +1375,17 @@ async function checkExistingListings(listings, onStatusChange, onFieldChange) {
 
 // ── Main export – poll one search job ─────────────────────
 async function pollSearchJob(job, exists, insert) {
-  let searchHtml;
-  try { searchHtml = await fetchPage(job.search_url, 20000); }
-  catch (e) { throw new Error(`Suchseite nicht erreichbar: ${e.message}`); }
-
-  const urls = extractListingUrls(searchHtml, job.search_url);
-  if (!urls.length) {
+  let urls, searchHtml = '';
+  if (detectPlatform(job.search_url) === 'vonovia') {
+    // JSON API instead of a page; an empty result is a valid answer ("no flats match right now")
+    try { urls = await vonoviaSearchUrls(job.search_url); }
+    catch (e) { throw new Error(`Vonovia-Suche nicht erreichbar: ${e.message}`); }
+  } else {
+    try { searchHtml = await fetchPage(job.search_url, 20000); }
+    catch (e) { throw new Error(`Suchseite nicht erreichbar: ${e.message}`); }
+    urls = extractListingUrls(searchHtml, job.search_url);
+  }
+  if (!urls.length && detectPlatform(job.search_url) !== 'vonovia') {
     const lc = searchHtml.toLowerCase();
     if (lc.includes('captcha') || lc.includes('robot'))
       throw new Error('CAPTCHA erkannt – bitte Seite manuell öffnen');
@@ -1239,6 +1409,7 @@ async function pollSearchJob(job, exists, insert) {
 
 module.exports = {
   pollSearchJob, checkExistingListings, detectPlatform, scrapeListing, fetchPageRaw, checkListingStatus,
+  validateSearchUrl, vonoviaSearchUrls, parseVonoviaDetail,
   // Shared with index.js for the other places that call out to a
   // user-supplied address (ntfy server, browser-push endpoint).
   isUrlAllowed: isUrlSyntacticallyAllowed,
