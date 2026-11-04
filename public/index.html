@@ -752,6 +752,13 @@
       <button class="action-btn-mini skip"  id="detail-btn-skip"      title="Überspringen – später nochmal anzeigen" aria-label="Überspringen"><span class="i" data-icon="skip"></span></button>
       <span class="detail-kbd" aria-hidden="true"><span><kbd>←</kbd>Nein</span><span><kbd>↑</kbd>Super</span><span><kbd>→</kbd>Ja</span><span><kbd>Esc</kbd>Schließen</span></span>
     </div>
+    <!-- Opened from "Bewertet" or a group: change your own rating right here (current one highlighted) -->
+    <div class="detail-swipe-actions detail-rate-bar" id="detail-rate-bar" style="display:none" role="group" aria-label="Deine Bewertung">
+      <span class="detail-rate-label" id="detail-rate-label">Deine Bewertung</span>
+      <button class="action-btn dislike"   data-rate="dislike"   type="button" aria-pressed="false" aria-label="Nein"       title="Nein"><span class="i lg" data-icon="x"></span></button>
+      <button class="action-btn superlike" data-rate="superlike" type="button" aria-pressed="false" aria-label="Super-Like" title="Super!"><span class="i lg" data-icon="star"></span></button>
+      <button class="action-btn like"      data-rate="like"      type="button" aria-pressed="false" aria-label="Ja"         title="Ja!"><span class="i lg" data-icon="heart"></span></button>
+    </div>
   </div>
 </div>
 

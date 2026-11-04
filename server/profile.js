@@ -516,6 +516,16 @@ function documentsText(documents, { formal = true, plural = true } = {}) {
   return out.join(' ');
 }
 
+// The same documents as a plain list for the middle of a sentence ("…zur Verfügung: die A und die B") —
+// only when all of them are on hand; otherwise the status sentences above say more ('' then).
+function documentsInline(documents) {
+  const docs = documents.filter(d => d.doc);
+  if (!docs.length || docs.some(d => (d.status || 'vorhanden') !== 'vorhanden')) return '';
+  const names = docs.map(d => d.doc);
+  const arts = names.map(n => docArticle(n, true));
+  return germanList(arts.every(Boolean) ? names.map((n, i) => `${arts[i]} ${n}`) : names);
+}
+
 // Build the {placeholder} substitution map from a listing + profile(s).
 // For a group, person-related placeholders aggregate every filled member
 // profile ({name} -> "Anna, Ben und Chris"); for a solo request `profiles`
@@ -561,6 +571,7 @@ function buildPlaceholders(listing, profile, profiles = [profile], members = nul
     erreichbarkeit: uniq(profiles.map(x => formatAvailability(x.availability))).join(' bzw. '),
     unterlagen,                       // full sentences: "A und B stellen wir Ihnen gerne zur Verfügung. C ist beantragt."
     unterlagen_liste: unterlagenListe, // names only: "A, B und C"
+    _unterlagen_inline: documentsInline([...docs.values()]),   // used for "…, {unterlagen}" (see applyTemplate)
     merkmale: appeal,                 // "des Balkons und der Lage in Neustadt"
     grund:   appeal ? `Die Wohnung spricht ${plural ? 'uns' : 'mich'} besonders aufgrund ${appeal} an.` : '',
   };
@@ -571,16 +582,46 @@ function buildPlaceholders(listing, profile, profiles = [profile], members = nul
 // sent to a landlord); unknown ones (typos) stay visible and are reported
 // back in `unknown` so the UI can warn about them.
 const SENTENCE_PLACEHOLDERS = new Set(['unterlagen', 'grund']);
+
+// Text pasted from a mail program or a chat often carries hard line breaks every ~80 characters,
+// which then show up as breaks in the middle of a sentence. Within a paragraph (blank lines stay),
+// a line is joined with the next one when that one continues the sentence (starts lowercase and
+// the line has no closing punctuation) or when the line is long enough to have been wrapped.
+// Greetings, sign-offs, names and list items keep their own lines.
+const KEEP_LINE_RE = /^(?:mit (?:freundlichen|besten|herzlichen) grüßen|(?:viele|beste|liebe|herzliche|freundliche) grüße|grüße|gruß|mfg|hallo\b|hi\b|moin\b|sehr geehrte|liebe[rs]?\b|guten tag)/i;
+const LIST_LINE_RE = /^\s*(?:[-–•*·]|\d+[.)])\s/;
+function unwrapHardBreaks(text) {
+  return String(text || '').split(/(\n[ \t]*\n)/).map(part => {
+    if (/^\n[ \t]*\n$/.test(part)) return part;
+    const lines = part.split('\n');
+    const out = [lines[0]];
+    for (let i = 1; i < lines.length; i++) {
+      const prev = out[out.length - 1].replace(/[ \t]+$/, ''), next = lines[i].trim();
+      const continues = /^[a-zäöüß]/.test(next) && !/[.!?:]$/.test(prev);
+      const wrapped = prev.length >= 65 && !/:$/.test(prev);
+      if (prev && next && (continues || wrapped) && !LIST_LINE_RE.test(prev) && !LIST_LINE_RE.test(next) && !KEEP_LINE_RE.test(next))
+        out[out.length - 1] = `${prev} ${next}`;
+      else out.push(lines[i]);
+    }
+    return out.join('\n');
+  }).join('');
+}
+
 function applyTemplate(tpl, placeholders) {
   const unknown = [];
   // "…zur Verfügung, {unterlagen}" – these placeholders are whole sentences, so a comma in front of
-  // them becomes a full stop (and disappears together with an empty value).
-  const text = tpl.replace(/(,[ \t]*)?\{([\wäöüÄÖÜß]+)\}/g, (m, comma, key) => {
+  // them becomes a full stop (and disappears together with an empty value). The comma may also sit
+  // at the end of the previous line. Documents that are all on hand read better as a list instead:
+  // "…zur Verfügung: die A und die B."
+  const filled = tpl.replace(/(,\s*)?\{([\wäöüÄÖÜß]+)\}/g, (m, comma, key) => {
     const k = key.toLowerCase();
     if (placeholders[k] === undefined) { if (!unknown.includes(`{${key}}`)) unknown.push(`{${key}}`); return m; }
+    if (comma && k === 'unterlagen' && placeholders._unterlagen_inline) return `: ${placeholders._unterlagen_inline}`;
     if (comma && SENTENCE_PLACEHOLDERS.has(k)) return placeholders[k] ? `. ${placeholders[k]}` : '.';
     return (comma || '') + placeholders[k];
-  })
+  });
+  const text = unwrapHardBreaks(filled)
+    .replace(/(^|[^.])([.!?])\.(?!\.)/g, '$1$2')        // "…zur Verfügung.." after a sentence placeholder (not "...")
     .replace(/[ \t]+([,.;:!?])/g, '$1')
     .replace(/(\S)[ \t]{2,}/g, '$1 ');
   return { text, unknown };
@@ -792,7 +833,7 @@ function buildGuidedMessage(listing, profiles, formal, members = null) {
   if (docText) paragraphs.push(docText);
 
   // Free-text about sections
-  const abouts = profiles.map(x => x.about_text).filter(Boolean);
+  const abouts = profiles.map(x => unwrapHardBreaks(x.about_text).trim()).filter(Boolean);
   if (abouts.length) paragraphs.push(abouts.join('\n\n'));
 
   // ── Contact: phone (whose number, when there are several) + viewing times ──
@@ -874,7 +915,7 @@ module.exports = {
   OPTIONS, SHARE_KEYS, SHARE_KEY_NAMES, SECTIONS, DOC_STATUS_LABEL, cleanListingTitle, listingAppeal, documentsText,
   householdOf, normalizeGroupProfile, groupAsProfile, completenessGroup, GROUP_SHARE_KEY_NAMES, MEMBER_FED_KEYS, cleanDocuments, parseDocuments, parseShare, hasData, normalizeInput,
   completeness, isFilled, movePhraseOf, personsOf, childrenOf, visibleProfile, blockStatus,
-  buildPlaceholders, applyTemplate, buildGuidedMessage, summarizeForAi, groupMembersStatus,
+  buildPlaceholders, applyTemplate, unwrapHardBreaks, buildGuidedMessage, summarizeForAi, groupMembersStatus,
   formatSize, formatRooms, formatLocation, formatPhone, formatAvailability,
   germanList, isPluralDoc, optionLabel,
 };

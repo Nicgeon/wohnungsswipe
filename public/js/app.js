@@ -508,6 +508,10 @@ const detailView = {
     // Swipe actions only make sense (and only stay in sync with the queue)
     // when opened from the swipe page itself.
     $id('detail-swipe-actions').style.display = (this.fromSwipe && !opts.embedded) ? 'flex' : 'none';
+    // From "Bewertet" or a group: the own rating can be changed right here (not for archived listings)
+    this.onChange = opts.onChange || null;
+    $id('detail-rate-bar').style.display = (!this.fromSwipe && !opts.embedded && !opts.isArchive) ? 'flex' : 'none';
+    this._renderRating();
 
     this._renderGallery();
   },
@@ -519,6 +523,12 @@ const detailView = {
     document.removeEventListener('keydown', detailView._key);
     this.listing = null;
     syncDetailMount();                               // back to the docked panel on wide swipe pages
+  },
+
+  _renderRating() {
+    const mine = this.listing?.my_swipe || '';
+    document.querySelectorAll('#detail-rate-bar [data-rate]').forEach(b => b.setAttribute('aria-pressed', b.dataset.rate === mine ? 'true' : 'false'));
+    $id('detail-rate-label').textContent = mine && mine !== 'skip' ? 'Deine Bewertung' : 'Noch nicht bewertet';
   },
 
   _renderGallery() {
@@ -676,6 +686,17 @@ $id('detail-btn-skip').onclick = () => {
   if (detailView.listing) { doSwipe(detailView.listing, 'skip'); detailView.close(); }
 };
 $id('detail-btn-undo').onclick = () => { undoLastSwipe(); detailView.close(); };
+document.querySelectorAll('#detail-rate-bar [data-rate]').forEach(btn => btn.addEventListener('click', async () => {
+  const l = detailView.listing, act = btn.dataset.rate;
+  if (!l || l.my_swipe === act) return;
+  const r = await api('/api/listings/swipe', { method: 'POST', body: { listingId: l.id, action: act } });
+  if (r.error) return toast('❌ ' + r.error);
+  l.my_swipe = act;
+  detailView._renderRating();
+  toast({ like: '💚 Like gesetzt', superlike: '⭐ Super-Like gesetzt', dislike: '❌ Abgelehnt' }[act]);
+  state.swipeQueue = [];
+  detailView.onChange?.();          // refresh the list / group results behind the detail view
+}));
 
 $id('detail-report-btn').onclick = async () => {
   const listing = detailView.listing;
@@ -899,14 +920,14 @@ function buildListCard(listing, opts = {}) {
     // Tap anywhere on the card (except its controls) → detail view; footer shortcuts reuse the menu actions.
     div.addEventListener('click', e => {
       if (e.target.closest('button, a, label, input, textarea, select, [data-menu], [data-note-wrap], [data-vis-group-picker]')) return;
-      detailView.open(listing, { groupId: opts.groupId || null });
+      detailView.open(listing, { groupId: opts.groupId || null, onChange: opts.onChange, isArchive: opts.isArchive });
     });
     div.querySelector('[data-rc="message"]')?.addEventListener('click', e => { e.stopPropagation(); messageModal.open(listing, { groupId: opts.groupId || null }); });
     div.querySelector('[data-rc="contact"]')?.addEventListener('click', e => { e.stopPropagation(); div.querySelector('[data-menu-action="contact-toggle"]')?.click(); });
   }
 
   div.querySelector('[data-open-detail]')?.addEventListener('click', e => {
-    e.stopPropagation(); detailView.open(listing, { groupId: opts.groupId || null });
+    e.stopPropagation(); detailView.open(listing, { groupId: opts.groupId || null, onChange: opts.onChange, isArchive: opts.isArchive });
   });
 
   // ── Three-dot menu wiring ──

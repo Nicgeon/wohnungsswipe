@@ -944,6 +944,12 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline:2px solid
 }
 .detail-swipe-actions .action-btn { width:54px; height:54px; }
 .detail-swipe-actions .action-btn.like { width:62px; height:62px; }
+.detail-rate-label { font-size:var(--fs-small); font-weight:600; color:var(--text2); margin-right:2px; }
+.detail-rate-bar .action-btn[aria-pressed="true"] { color:#fff; box-shadow:0 4px 14px rgba(0,0,0,.18); }
+.detail-rate-bar .action-btn.dislike[aria-pressed="true"]   { background:var(--dislike);   border-color:var(--dislike); }
+.detail-rate-bar .action-btn.superlike[aria-pressed="true"] { background:var(--superlike); border-color:var(--superlike); }
+.detail-rate-bar .action-btn.like[aria-pressed="true"]      { background:var(--like);      border-color:var(--like); }
+.detail-rate-bar .action-btn[aria-pressed="true"]:hover { transform:none; }
 
 /* ── Desktop layout ──────────────────────────────────────
    Gallery fills the left column at full height, details scroll
