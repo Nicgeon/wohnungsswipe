@@ -695,8 +695,12 @@ function buildGuidedMessage(listing, profiles, formal, members = null) {
   const nameShown = x => !x._hideIntro && !!(x.display_name || '').trim();
   const named = people.filter(nameShown);
   const workers = people.map((x, i) => ({ x, i, wp: workPhrase(x) })).filter(w => w.wp);
+  // Several people but only one of them named: that person is the contact. The name comes in full at
+  // its first mention (the job sentence) and again in the contact block next to the phone number.
+  const contactPerson = plural && named.length === 1 ? named[0].display_name.trim() : '';
   // A household of several with a single profile has no name to fall back on in the third person
-  const speaker = (x, i) => (x.display_name || x._username) ? nameOf(x, i) : 'Eine Person aus unserem Haushalt';
+  const speaker = (x, i) => contactPerson && x === named[0] ? contactPerson
+    : (x.display_name || x._username) ? nameOf(x, i) : 'Eine Person aus unserem Haushalt';
   if (plural) {
     const kidsText = kids ? `, davon ${kids === 1 ? 'ein Kind' : `${numWord(kids)} Kinder`}` : '';
     let head;
@@ -707,10 +711,7 @@ function buildGuidedMessage(listing, profiles, formal, members = null) {
     else                                    head = ZU_WORD[persons] || `als ${numWord(persons)} Personen`;
     const intro = [];
     if (named.length >= 2) intro.push(`Wir, ${germanList(named.map(x => x.display_name.trim()))}, bewerben uns ${head}.`);
-    else {
-      intro.push(`Wir bewerben uns ${head}.`);
-      if (named.length === 1) intro.push(`${formal ? 'Ihre' : 'Deine'} Ansprechperson ist ${named[0].display_name.trim()}.`);
-    }
+    else intro.push(`Wir bewerben uns ${head}.`);
     if (workers.length) {
       // "Wir sind beide …" only when the profiles cover every person (a family of six with one
       // profile must not claim that the children are employed)
@@ -799,11 +800,16 @@ function buildGuidedMessage(listing, profiles, formal, members = null) {
   const phones = [...new Map(phoneOwners.map(o => [o.phone, o])).values()];
   const avails = [...new Set(profiles.map(x => formatAvailability(x.availability)).filter(Boolean))];
   const contact = [];
-  if (phones.length) {
-    const list = phones.length > 1 && profiles.length > 1
-      ? phones.map(o => `${o.phone} (${o.name})`).join(' oder ') : phones.map(o => o.phone).join(' oder ');
-    contact.push(formal ? `Sie erreichen ${uns} telefonisch unter ${list}.` : `Du erreichst ${uns} telefonisch unter ${list}.`);
-  }
+  const reach = formal ? 'Sie erreichen' : 'Du erreichst';
+  const YourCap = formal ? 'Ihre' : 'Deine';
+  if (phones.length > 1 && profiles.length > 1)            // several numbers: say whose, without brackets
+    contact.push(`Telefonisch ${formal ? 'erreichen Sie' : 'erreichst du'} ${germanList(phones.map(o => `${o.name} unter ${o.phone}`)).replace(/ und ([^ ]+ unter)/, ' oder $1')}.`);
+  else if (phones.length && contactPerson)
+    contact.push(`${YourCap} Ansprechperson ist ${contactPerson}, telefonisch erreichbar unter ${phones.map(o => o.phone).join(' oder ')}.`);
+  else if (phones.length)
+    contact.push(`${reach} ${uns} telefonisch unter ${phones.map(o => o.phone).join(' oder ')}.`);
+  else if (contactPerson)
+    contact.push(`${YourCap} Ansprechperson ist ${contactPerson}.`);
   if (avails.length) contact.push(`Besichtigungstermine sind ${plural ? 'bei uns' : 'bei mir'} ${avails.join(' bzw. ')} möglich.`);
   if (contact.length) paragraphs.push(contact.join(' '));
 
