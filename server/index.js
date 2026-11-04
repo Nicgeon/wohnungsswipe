@@ -1052,6 +1052,7 @@ Sprachliche Vorgaben:
 - Schreibe „Ihre Anzeige … gelesen“, nicht „gesehen“.
 - Keine technischen Klammerzusätze wie „(59 m², 2 Zimmer)“ – Angaben zur Wohnung, wenn überhaupt, natürlich im Satz.
 - Bei einer Ausbildung den konkreten Beruf nennen („Ich absolviere eine Ausbildung als …“), nicht nur „Ich bin in Ausbildung“.
+- Beruf und Beschäftigungsart einer Person in einem Satz nennen (z. B. „Lena ist als Pflegefachfrau unbefristet angestellt“), nicht als Klammer hinter dem Namen.
 - Unterlagen „stellen wir/stelle ich gerne zur Verfügung“.
 - Telefonnummern, Ortsnamen und Zeitangaben genau so übernehmen, wie sie unten stehen.
 - Den Wunsch nach Besichtigung bzw. Rückmeldung nur einmal äußern, am Schluss.

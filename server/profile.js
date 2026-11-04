@@ -625,6 +625,39 @@ const employmentIsRedundant = p => !!(p.employment && p.occupation && EMPLOYMENT
 // vague "Ich bin in Ausbildung." ("als" needs no zum/zur gender guess.)
 const traineeWithJob = p => p.employment === 'trainee' && !!p.occupation && !employmentIsRedundant(p);
 
+// Occupation and employment status as ONE statement, in the forms the letter needs:
+// { ich: 'bin als Pflegefachfrau unbefristet angestellt', er: 'ist als …', wir: 'sind {B} unbefristet angestellt' }.
+// `wir` only exists without an occupation (two people rarely share one); {B} becomes "beide"/"alle".
+// Replaces "Lena (Pflegefachfrau)" in the introduction plus a separate "Lena ist unbefristet angestellt."
+function workPhrase(p) {
+  const occ = (p.occupation || '').trim();
+  const emp = p.employment || '';
+  const perm = emp === 'employed' && !!p.employment_permanent;
+  if (!occ && !emp) return null;
+  if (occ && (!emp || employmentIsRedundant(p))) return { ich: `bin ${occ}`, er: `ist ${occ}` };
+  if (!occ) {
+    const forms = {
+      trainee:       ['befinde mich derzeit in einer Ausbildung', 'befindet sich derzeit in einer Ausbildung', 'befinden uns {B} derzeit in einer Ausbildung'],
+      student:       ['studiere', 'studiert', 'studieren {B}'],
+      employed:      perm ? ['bin unbefristet angestellt', 'ist unbefristet angestellt', 'sind {B} unbefristet angestellt']
+                          : ['bin angestellt', 'ist angestellt', 'sind {B} angestellt'],
+      self_employed: ['bin selbstständig', 'ist selbstständig', 'sind {B} selbstständig'],
+      retired:       ['bin in Rente', 'ist in Rente', 'sind {B} in Rente'],
+    }[emp];
+    return forms ? { ich: forms[0], er: forms[1], wir: forms[2] } : null;
+  }
+  switch (emp) {
+    case 'trainee':       return { ich: `absolviere eine Ausbildung als ${occ}`, er: `absolviert eine Ausbildung als ${occ}` };
+    case 'employed':      return /angestellt/i.test(occ)
+                            ? { ich: `bin ${occ} in unbefristeter Anstellung`, er: `ist ${occ} in unbefristeter Anstellung` }
+                            : { ich: `bin als ${occ} ${perm ? 'unbefristet ' : ''}angestellt`, er: `ist als ${occ} ${perm ? 'unbefristet ' : ''}angestellt` };
+    case 'self_employed': return { ich: `bin als ${occ} selbstständig`, er: `ist als ${occ} selbstständig` };
+    case 'student':       return { ich: `bin ${occ} und studiere`, er: `ist ${occ} und studiert` };
+    case 'retired':       return { ich: `bin ${occ} im Ruhestand`, er: `ist ${occ} im Ruhestand` };
+    default:              return { ich: `bin ${occ}`, er: `ist ${occ}` };
+  }
+}
+
 // Variant A1 — guided template built from structured profile fields. Written as flowing
 // German: related facts share a sentence, subjects vary, grammar follows tone and head count
 // ("beide"/"alle", "zu zweit", "Ihre"/"deine"). Expects visibleProfile() copies (hidden
@@ -658,34 +691,43 @@ function buildGuidedMessage(listing, profiles, formal, members = null) {
   // The wish for a viewing is said once, in the closing line — not here as well.
   paragraphs.push(`mit großem Interesse ${plural ? 'haben wir' : 'habe ich'} ${titleRef} gelesen.`);
 
-  // ── Who we are ──
-  const introProfiles = people.filter(x => !x._hideIntro);
-  const who = introProfiles.map(x => {
-    if (!x.display_name && !x.occupation) return '';
-    const job = traineeWithJob(x) ? `${x.occupation} in Ausbildung` : x.occupation;
-    return job ? `${x.display_name || 'eine Person'} (${job})` : x.display_name;
-  }).filter(Boolean);
+  // ── Who we are: names, then what each person does (job + employment in one sentence) ──
+  const nameShown = x => !x._hideIntro && !!(x.display_name || '').trim();
+  const named = people.filter(nameShown);
+  const workers = people.map((x, i) => ({ x, i, wp: workPhrase(x) })).filter(w => w.wp);
+  // A household of several with a single profile has no name to fall back on in the third person
+  const speaker = (x, i) => (x.display_name || x._username) ? nameOf(x, i) : 'Eine Person aus unserem Haushalt';
   if (plural) {
-    const kidsText = kids ? ` (davon ${kids === 1 ? 'ein Kind' : `${numWord(kids)} Kinder`})` : '';
+    const kidsText = kids ? `, davon ${kids === 1 ? 'ein Kind' : `${numWord(kids)} Kinder`}` : '';
     let head;
     if (type === 'couple' && persons === 2) head = 'als Paar';
     else if (type === 'couple')             head = `als Paar mit ${numWord(persons)} Personen${kidsText}`;
     else if (type === 'family')             head = `als Familie mit ${numWord(persons)} Personen${kidsText}`;
     else if (type === 'wg')                 head = ZU_WORD[persons] ? `als WG ${ZU_WORD[persons]}` : `als WG mit ${numWord(persons)} Personen`;
     else                                    head = ZU_WORD[persons] || `als ${numWord(persons)} Personen`;
-    let intro = `Wir bewerben uns ${head}${type === 'couple' && persons === 2 ? kidsText : ''}`;
-    if (who.length >= 2)      intro += `: ${germanList(who)}.`;
-    else if (who.length === 1) intro += `. Ansprechperson ist ${who[0]}.`;
-    else                       intro += '.';
-    paragraphs.push(intro);
-  } else if (who.length || people[0]?.display_name) {
+    const intro = [];
+    if (named.length >= 2) intro.push(`Wir, ${germanList(named.map(x => x.display_name.trim()))}, bewerben uns ${head}.`);
+    else {
+      intro.push(`Wir bewerben uns ${head}.`);
+      if (named.length === 1) intro.push(`${formal ? 'Ihre' : 'Deine'} Ansprechperson ist ${named[0].display_name.trim()}.`);
+    }
+    if (workers.length) {
+      // "Wir sind beide …" only when the profiles cover every person (a family of six with one
+      // profile must not claim that the children are employed)
+      const everyoneCovered = workers.length === people.length && people.length === persons;
+      const same = new Set(workers.map(w => w.wp.er)).size === 1;
+      if (everyoneCovered && same && workers.length > 1 && workers[0].wp.wir)
+        intro.push(`Wir ${workers[0].wp.wir.replace('{B}', both)}.`);
+      else intro.push(cap(germanList(workers.map(w => `${speaker(w.x, w.i)} ${w.wp.er}`))) + '.');
+    }
+    paragraphs.push(intro.join(' '));
+  } else {
     const p = people[0];
-    const name = !p._hideIntro && p.display_name;
-    const job = p.occupation;
-    const jobClause = job && (traineeWithJob(p) ? `absolviere eine Ausbildung als ${job}` : `bin ${job}`);
-    if (name && job)      paragraphs.push(`Mein Name ist ${name} und ich ${jobClause}.`);
-    else if (name)        paragraphs.push(`Mein Name ist ${name}.`);
-    else if (job)         paragraphs.push(`Ich ${jobClause}.`);
+    const name = nameShown(p) && p.display_name.trim();
+    const wp = workPhrase(p);
+    if (name && wp)  paragraphs.push(`Mein Name ist ${name} und ich ${wp.ich}.`);
+    else if (name)   paragraphs.push(`Mein Name ist ${name}.`);
+    else if (wp)     paragraphs.push(`Ich ${wp.ich}.`);
   }
 
   // Why this flat (from the listing's own amenities and district)
@@ -728,30 +770,6 @@ function buildGuidedMessage(listing, profiles, formal, members = null) {
                   : pets.none ? `${plural ? 'haben' : 'habe'} keine Haustiere` : '';
   if (smokeClause && petClause) facts.push(`${Wir} ${smokeClause} und ${petClause}.`);
   else if (smokeClause || petClause) facts.push(`${Wir} ${smokeClause || petClause}.`);
-
-  // Employment comes from the people themselves (their personal profiles). It is left out when the
-  // occupation already says it ("Duale Studentin" + "im Studium"), so nothing is stated twice.
-  // One statement if everyone matches, otherwise per person.
-  // A trainee's profession was already named in the introduction ("… in Ausbildung").
-  const emp = people.map((x, i) => ({ name: nameOf(x, i), text: employmentText(x), trainee: x.employment === 'trainee',
-                                      redundant: employmentIsRedundant(x) || traineeWithJob(x) }))
-                    .filter(e => e.text && !e.redundant);
-  // "in Ausbildung" on its own is vague; "befindet sich in einer Ausbildung" reads properly.
-  const empIch = e => e.trainee ? 'befinde mich derzeit in einer Ausbildung' : `bin ${e.text}`;
-  const empEr  = e => e.trainee ? `${e.name} befindet sich derzeit in einer Ausbildung` : `${e.name} ist ${e.text}`;
-  // "Wir sind beide …" only when the profiles cover every person (a family of six with one
-  // profile must not claim that the children are employed).
-  if (emp.length) {
-    const everyoneCovered = emp.length === people.length && people.length === persons;
-    if (!plural) facts.push(`Ich ${empIch(emp[0])}.`);
-    // A household of several with only one profile: the text speaks as "wir", so the one
-    // person is named ("Anna ist …") instead of switching to "Ich bin …".
-    else if (people.length === 1)
-      facts.push(`${empEr({ ...emp[0], name: people[0].display_name || people[0]._username ? emp[0].name : 'Eine Person aus unserem Haushalt' })}.`);
-    else if (everyoneCovered && new Set(emp.map(e => e.text)).size === 1)
-      facts.push(emp[0].trainee ? `Wir befinden uns ${both} derzeit in einer Ausbildung.` : `Wir sind ${both} ${emp[0].text}.`);
-    else facts.push(cap(germanList(emp.map(empEr))) + '.');
-  }
 
   // Income — only present if the person(s) chose to share it.
   const inc = profiles.map((x, i) => ({ name: nameOf(x, i), label: optionLabel('income_range', x.income_range) })).filter(e => e.label);
