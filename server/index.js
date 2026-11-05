@@ -15,6 +15,7 @@ const fs         = require('fs');
 const crypto     = require('crypto');
 const MemoryStore = require('memorystore')(session);
 const webpush    = require('web-push');
+const { computeClusters } = require('./dedupe');
 const { pollSearchJob, checkExistingListings, detectPlatform, scrapeListing, validateSearchUrl, isUrlAllowed, safeAgentFor, safeHttpsAgent } = require('./poller');
 const mailer     = require('./mailer');
 const P          = require('./profile');
@@ -379,6 +380,40 @@ async function initDb() {
     }
   } catch (e) { console.error('[Migration] swipes table:', e.message); }
 
+  // ── Where listings come from, and the same flat on several portals ──
+  // A listing can be found by several search agents and/or added by hand; each of those is a
+  // "source", and the listing is visible to everyone who may see at least one of them.
+  // cluster_id groups copies of the same flat from different portals (see dedupe.js).
+  migrate("ALTER TABLE listings    ADD COLUMN cluster_id      INTEGER");
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS listing_sources (
+      listing_id    INTEGER NOT NULL,
+      src_key       TEXT    NOT NULL,             -- 'job:<id>' (search agent) or 'user:<id>' (added by hand)
+      job_id        INTEGER,
+      added_by      INTEGER,
+      visibility    TEXT,
+      visibility_id INTEGER,
+      added_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (listing_id, src_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_listing_sources_job ON listing_sources(job_id);
+    CREATE INDEX IF NOT EXISTS idx_listings_cluster    ON listings(cluster_id);
+    CREATE TABLE IF NOT EXISTS listing_not_duplicates (a INTEGER NOT NULL, b INTEGER NOT NULL, PRIMARY KEY (a, b));
+  `);
+  if (!dbGet("SELECT 1 FROM app_meta WHERE key='listing_sources_v1'")) {
+    // Until now a listing belonged only to whatever found it first (listings.source_job_id / visibility)
+    db.exec(`
+      INSERT OR IGNORE INTO listing_sources (listing_id, src_key, job_id)
+        SELECT id, 'job:' || source_job_id, source_job_id FROM listings WHERE source_job_id IS NOT NULL;
+      INSERT OR IGNORE INTO listing_sources (listing_id, src_key, added_by, visibility, visibility_id)
+        SELECT id, 'user:' || COALESCE(added_by, 0), added_by, COALESCE(visibility, 'global'), visibility_id
+        FROM listings WHERE source_job_id IS NULL;
+      INSERT OR REPLACE INTO app_meta (key, value) VALUES ('listing_sources_v1', datetime('now'));
+    `);
+    console.log('[Migration] Inserat-Quellen übernommen');
+  }
+  recomputeClusters();
+
   saveDb();
 }
 
@@ -408,9 +443,27 @@ function dbRun(sql, p = []) {
   } catch (e) { console.error('dbRun:', e.message); throw e; }
 }
 
+// Records where a listing came from (a search agent, or someone adding it by hand).
+// Returns true when that source is new for the listing. Adding by hand again only updates
+// the visibility that person chose.
+function addListingSource(listingId, { jobId = null, addedBy = null, visibility = 'global', visibilityId = null } = {}) {
+  const key = jobId ? `job:${jobId}` : `user:${addedBy || 0}`;
+  if (dbGet('SELECT 1 FROM listing_sources WHERE listing_id=? AND src_key=?', [listingId, key])) {
+    if (!jobId) dbRun('UPDATE listing_sources SET visibility=?, visibility_id=? WHERE listing_id=? AND src_key=?',
+      [visibility, visibilityId, listingId, key]);
+    return false;
+  }
+  dbRun('INSERT INTO listing_sources (listing_id,src_key,job_id,added_by,visibility,visibility_id) VALUES (?,?,?,?,?,?)',
+    [listingId, key, jobId, jobId ? null : addedBy, jobId ? null : visibility, jobId ? null : visibilityId]);
+  return true;
+}
+
+// A URL that is already known gets the new source added instead of being skipped — before, a flat
+// stayed with whoever found it first (e.g. someone's private agent) and a group's agent never saw it.
 function insertListing(data, addedBy = null, sourceJobId = null, visibility = 'global', visibilityId = null) {
+  const source = { jobId: sourceJobId, addedBy, visibility, visibilityId };
   const ex = dbGet('SELECT id FROM listings WHERE url=?', [data.url]);
-  if (ex) return { id: ex.id, isNew: false };
+  if (ex) return { id: ex.id, isNew: false, linked: addListingSource(ex.id, source) };
   const r = dbRun(
     'INSERT INTO listings (url,title,price,price_cold,size,location,rooms,image_url,images_json,tags_json,description,platform,status,added_by,source_job_id,visibility,visibility_id,nebenkosten,heizkosten,kaution,available_from,property_type,latitude,longitude) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
     [data.url, data.title||'', data.price||'', data.price_cold||'', data.size||'',
@@ -421,7 +474,61 @@ function insertListing(data, addedBy = null, sourceJobId = null, visibility = 'g
      Number.isFinite(data.latitude) ? data.latitude : null,
      Number.isFinite(data.longitude) ? data.longitude : null]
   );
-  return { id: r.lastInsertRowid, isNew: true };
+  addListingSource(r.lastInsertRowid, source);
+  return { id: r.lastInsertRowid, isNew: true, linked: true };
+}
+
+// SQL condition "listing <alias> is visible to the user" — true when at least one of its sources is:
+// a search agent the user may see, or a hand-added entry shared with them. Takes visibleParams(uid).
+const visibleSql = (alias = 'l') => `EXISTS (
+  SELECT 1 FROM listing_sources src LEFT JOIN search_jobs sjv ON sjv.id = src.job_id
+  WHERE src.listing_id = ${alias}.id AND (
+    (src.job_id IS NULL AND (
+      COALESCE(src.visibility, 'global') = 'global'
+      OR (src.visibility = 'private' AND src.added_by = ?)
+      OR (src.visibility = 'group' AND src.visibility_id IN (SELECT group_id FROM group_members WHERE user_id = ?))))
+    OR (src.job_id IS NOT NULL AND (
+      sjv.visibility = 'global'
+      OR (sjv.visibility = 'private' AND sjv.added_by = ?)
+      OR (sjv.visibility = 'group' AND sjv.visibility_id IN (SELECT group_id FROM group_members WHERE user_id = ?))))))`;
+const visibleParams = uid => [uid, uid, uid, uid];
+
+// Every copy of one flat counts as one: a rating on any copy hides the others from the swipe stack.
+// "Flat key" = cluster_id for copies of the same flat on several portals, else the listing's own id.
+const SWIPED_FLATS_SQL = `SELECT COALESCE(l2.cluster_id, l2.id) FROM swipes s2 JOIN listings l2 ON l2.id = s2.listing_id
+                          WHERE s2.user_id = ? AND s2.action != 'skip'`;
+const flatKey = l => l.cluster_id || l.id;
+
+// All listing ids of the flat a listing belongs to (just itself when there are no copies)
+function flatListingIds(listingId) {
+  const l = dbGet('SELECT id, cluster_id FROM listings WHERE id=?', [listingId]);
+  if (!l) return [];
+  return l.cluster_id ? dbAll('SELECT id FROM listings WHERE cluster_id=?', [l.cluster_id]).map(r => r.id) : [l.id];
+}
+
+// The other portals the same flat is on (only copies this user may see, not offline ones)
+function attachAlsoOn(listings, uid) {
+  for (const l of listings) {
+    if (!l.cluster_id) { l.also_on = []; continue; }
+    l.also_on = dbAll(`SELECT l.id, l.platform, l.url, l.status FROM listings l
+      WHERE l.cluster_id = ? AND l.id != ? AND l.status != 'offline' AND ${visibleSql('l')} ORDER BY l.id`,
+      [l.cluster_id, l.id, ...visibleParams(uid)]);
+  }
+  return listings;
+}
+
+// Re-groups copies of the same flat (dedupe.js) and stores the result in listings.cluster_id.
+function recomputeClusters() {
+  const rows = dbAll('SELECT id,url,platform,size,rooms,price,price_cold,location,description,latitude,longitude,cluster_id FROM listings');
+  const notPairs = dbAll('SELECT a, b FROM listing_not_duplicates').map(r => [r.a, r.b]);
+  const clusters = computeClusters(rows, notPairs);
+  let changed = 0;
+  for (const r of rows) {
+    const c = clusters.get(r.id) || null;
+    if ((r.cluster_id || null) !== c) { dbRun('UPDATE listings SET cluster_id=? WHERE id=?', [c, r.id]); changed++; }
+  }
+  if (changed) console.log(`[Duplikate] ${changed} Inserate neu zugeordnet (${new Set(clusters.values()).size} Wohnungen mit Kopien auf mehreren Portalen)`);
+  return changed;
 }
 
 // ── Middleware ─────────────────────────────────────────────
@@ -1237,9 +1344,13 @@ async function checkAndNotifyMatch(listingId, groupId) {
   if (!memberIds.length) return;
 
   // Check if ALL members liked/superliked
+  // A like on any portal's copy of the same flat counts
+  const ids = flatListingIds(listingId);
+  if (!ids.length) return;
   const likeCount = dbGet(
-    `SELECT COUNT(*) as c FROM swipes WHERE listing_id=? AND user_id IN (${memberIds.map(()=>'?').join(',')}) AND action IN ('like','superlike')`,
-    [listingId, ...memberIds]
+    `SELECT COUNT(DISTINCT user_id) as c FROM swipes WHERE listing_id IN (${ids.map(()=>'?').join(',')})
+     AND user_id IN (${memberIds.map(()=>'?').join(',')}) AND action IN ('like','superlike')`,
+    [...ids, ...memberIds]
   )?.c || 0;
 
   if (likeCount < memberIds.length) return; // not a full match yet
@@ -1290,7 +1401,11 @@ app.post('/api/listings/add', requireAuth, async (req, res) => {
   if (!listing) {
     const scraped = await scrapeListing(url);
     const { id } = insertListing(scraped, req.session.userId, null, vis, visId);
+    recomputeClusters();
     listing = dbGet('SELECT * FROM listings WHERE id=?', [id]);
+  } else {
+    // already known (e.g. someone's private agent found it): now also visible as chosen here
+    addListingSource(listing.id, { addedBy: req.session.userId, visibility: vis, visibilityId: visId });
   }
   saveDb();
   res.json({ success: true, listing });
@@ -1317,7 +1432,7 @@ app.get('/api/jobs/:id/listings', requireAuth, (req, res) => {
     SELECT l.*,
       (SELECT action FROM swipes WHERE listing_id=l.id AND user_id=?) as my_swipe
     FROM listings l
-    WHERE l.source_job_id = ?
+    WHERE l.id IN (SELECT listing_id FROM listing_sources WHERE job_id = ?)
     ORDER BY l.added_at DESC
   `, [uid, req.params.id]);
   res.json({ listings, job });
@@ -1329,7 +1444,7 @@ app.get('/api/listings/mine', requireAuth, (req, res) => {
     SELECT l.*,
       (SELECT action FROM swipes WHERE listing_id=l.id AND user_id=?) as my_swipe
     FROM listings l
-    WHERE l.added_by = ? AND l.source_job_id IS NULL
+    WHERE l.id IN (SELECT listing_id FROM listing_sources WHERE src_key = 'user:' || ?)
     ORDER BY l.added_at DESC
   `, [req.session.userId, req.session.userId]);
   res.json({ listings });
@@ -1355,8 +1470,9 @@ app.patch('/api/listings/:id/visibility', requireAuth, (req, res) => {
 
   const listing = dbGet('SELECT * FROM listings WHERE id=?', [req.params.id]);
   if (!listing) return res.status(404).json({ error: 'Inserat nicht gefunden' });
-  if (listing.source_job_id) return res.status(400).json({ error: 'Sichtbarkeit nur für manuell hinzugefügte Inserate änderbar' });
-  if (listing.added_by !== req.session.userId) return res.status(403).json({ error: 'Nur der ursprüngliche Ersteller kann die Sichtbarkeit ändern' });
+  // Only for the entry this person added by hand (an agent's listings follow the agent's visibility)
+  const ownSource = dbGet("SELECT 1 FROM listing_sources WHERE listing_id=? AND src_key='user:' || ?", [listing.id, req.session.userId]);
+  if (!ownSource) return res.status(403).json({ error: 'Sichtbarkeit nur für selbst hinzugefügte Inserate änderbar' });
 
   const visId = visibility === 'group' ? (parseInt(visibility_id) || null) : null;
   if (visibility === 'group' && visId) {
@@ -1364,7 +1480,10 @@ app.patch('/api/listings/:id/visibility', requireAuth, (req, res) => {
     if (!member) return res.status(403).json({ error: 'Nicht Mitglied dieser Gruppe' });
   }
 
-  dbRun('UPDATE listings SET visibility=?, visibility_id=? WHERE id=?', [visibility, visId, req.params.id]);
+  dbRun("UPDATE listing_sources SET visibility=?, visibility_id=? WHERE listing_id=? AND src_key='user:' || ?",
+    [visibility, visId, listing.id, req.session.userId]);
+  if (listing.added_by === req.session.userId && !listing.source_job_id)        // legacy columns, kept in step
+    dbRun('UPDATE listings SET visibility=?, visibility_id=? WHERE id=?', [visibility, visId, listing.id]);
   saveDb();
   res.json({ success: true, visibility, visibility_id: visId });
 });
@@ -1375,65 +1494,37 @@ app.patch('/api/listings/:id/visibility', requireAuth, (req, res) => {
 // used by GET /api/listings/swipe so the two never disagree.
 function countPendingSwipes(uid) {
   return dbGet(`
-    SELECT COUNT(DISTINCT l.id) as c FROM listings l
-    LEFT JOIN search_jobs sj ON l.source_job_id = sj.id
+    SELECT COUNT(DISTINCT COALESCE(l.cluster_id, l.id)) as c FROM listings l
     WHERE l.status = 'active'
-    AND l.id NOT IN (SELECT listing_id FROM swipes WHERE user_id=? AND action != 'skip')
-    AND (
-      (l.source_job_id IS NULL AND (
-        COALESCE(l.visibility, 'global') = 'global'
-        OR (l.visibility = 'private' AND l.added_by = ?)
-        OR (l.visibility = 'group' AND l.visibility_id IN (
-              SELECT group_id FROM group_members WHERE user_id = ?
-            ))
-      ))
-      OR (l.source_job_id IS NOT NULL AND (
-        sj.visibility = 'global'
-        OR (sj.visibility = 'private' AND sj.added_by = ?)
-        OR (sj.visibility = 'group' AND sj.visibility_id IN (
-              SELECT group_id FROM group_members WHERE user_id = ?
-            ))
-      ))
-    )
-  `, [uid, uid, uid, uid, uid])?.c || 0;
+    AND COALESCE(l.cluster_id, l.id) NOT IN (${SWIPED_FLATS_SQL})
+    AND ${visibleSql('l')}
+  `, [uid, ...visibleParams(uid)])?.c || 0;
 }
 
 app.get('/api/listings/swipe', requireAuth, (req, res) => {
   const uid = req.session.userId;
-  // Listings are visible if:
-  //  (a) added manually with visibility='global' (or older rows with no visibility set)
-  //  (b) added manually with visibility='private' AND added_by = this user
-  //  (c) added manually with visibility='group'   AND user is member of that group
-  //  (d) added by a job with visibility='global'
-  //  (e) added by a job with visibility='private' AND job owner = this user
-  //  (f) added by a job with visibility='group'   AND user is member of that group
-  // Skipped listings ('skip' action) stay in the queue but are sorted to the end,
+  // Visible = at least one source (search agent or hand-added entry) is shared with this user, see
+  // visibleSql(). One card per flat: copies of the same flat on other portals are folded into the
+  // first-found one and listed as "also_on"; a rating on any copy removes the whole flat.
+  // Skipped flats ('skip' action) stay in the queue but are sorted to the end,
   // so they resurface after everything else has been swiped.
-  const listings = dbAll(`
-    SELECT DISTINCT l.*, sw.action as _skip_marker FROM listings l
-    LEFT JOIN swipes sw ON sw.listing_id = l.id AND sw.user_id = ? AND sw.action = 'skip'
-    LEFT JOIN search_jobs sj ON l.source_job_id = sj.id
+  const rows = dbAll(`
+    SELECT l.*,
+      (SELECT 1 FROM swipes sw JOIN listings lx ON lx.id = sw.listing_id
+        WHERE sw.user_id = ? AND sw.action = 'skip' AND COALESCE(lx.cluster_id, lx.id) = COALESCE(l.cluster_id, l.id) LIMIT 1) AS _skipped
+    FROM listings l
     WHERE l.status = 'active'
-    AND l.id NOT IN (SELECT listing_id FROM swipes WHERE user_id=? AND action != 'skip')
-    AND (
-      -- manually added listing (no source job) → check the listing's own visibility
-      (l.source_job_id IS NULL AND (
-        COALESCE(l.visibility, 'global') = 'global'
-        OR (l.visibility = 'private' AND l.added_by = ?)
-        OR (l.visibility = 'group' AND l.visibility_id IN (
-              SELECT group_id FROM group_members WHERE user_id = ?
-            ))
-      ))
-      -- job-sourced listing → check the job's visibility
-      OR (l.source_job_id IS NOT NULL AND (
-        sj.visibility = 'global'
-        OR (sj.visibility = 'private' AND sj.added_by = ?)
-        OR (sj.visibility = 'group' AND sj.visibility_id IN (
-              SELECT group_id FROM group_members WHERE user_id = ?
-            ))
-      ))
-    )
-  `, [uid, uid, uid, uid, uid, uid]);
+    AND COALESCE(l.cluster_id, l.id) NOT IN (${SWIPED_FLATS_SQL})
+    AND ${visibleSql('l')}
+    ORDER BY l.id
+  `, [uid, uid, ...visibleParams(uid)]);
+  const byFlat = new Map();
+  for (const r of rows) {
+    const k = flatKey(r);
+    if (!byFlat.has(k)) byFlat.set(k, { ...r, _skip_marker: r._skipped ? 'skip' : null, also_on: [] });
+    else byFlat.get(k).also_on.push({ id: r.id, platform: r.platform, url: r.url, status: r.status });
+  }
+  const listings = [...byFlat.values()];
 
   // ── Group-priority sort ──────────────────────────────────
   // Bring listings other group members already reacted to towards the
@@ -1451,24 +1542,26 @@ app.get('/api/listings/swipe', requireAuth, (req, res) => {
     WHERE gm1.user_id = ?
   `, [uid]).map(r => r.user_id);
 
-  let groupSignalByListing = {};
+  // Keyed by flat: a groupmate's rating of another portal's copy counts too
+  let groupSignalByFlat = {};
   if (otherMemberIds.length && listings.length) {
     const memberPh  = otherMemberIds.map(() => '?').join(',');
-    const listingPh = listings.map(() => '?').join(',');
+    const flats = new Set(listings.map(flatKey));
     const signals = dbAll(`
-      SELECT listing_id, action FROM swipes
-      WHERE user_id IN (${memberPh}) AND listing_id IN (${listingPh}) AND action IN ('like','superlike','dislike')
-    `, [...otherMemberIds, ...listings.map(l => l.id)]);
+      SELECT COALESCE(l.cluster_id, l.id) AS flat, s.action FROM swipes s JOIN listings l ON l.id = s.listing_id
+      WHERE s.user_id IN (${memberPh}) AND s.action IN ('like','superlike','dislike')
+    `, otherMemberIds);
     for (const s of signals) {
-      const cur = groupSignalByListing[s.listing_id];
-      // A listing keeps its BEST signal if groupmates disagree (any
+      if (!flats.has(s.flat)) continue;
+      const cur = groupSignalByFlat[s.flat];
+      // A flat keeps its BEST signal if groupmates disagree (any
       // superlike beats any like, which beats an all-dislike signal).
       const rank = { superlike: 0, like: 1, dislike: 2 }[s.action];
-      if (cur === undefined || rank < cur) groupSignalByListing[s.listing_id] = rank;
+      if (cur === undefined || rank < cur) groupSignalByFlat[s.flat] = rank;
     }
   }
   const tierOf = (listing) => {
-    const sig = groupSignalByListing[listing.id];
+    const sig = groupSignalByFlat[flatKey(listing)];
     if (sig === 0) return 0; // superliked by groupmate
     if (sig === 1) return 1; // liked by groupmate
     if (sig === 2) return 3; // disliked by groupmate
@@ -1494,6 +1587,10 @@ app.post('/api/listings/swipe', requireAuth, async (req, res) => {
   try { dbRun('INSERT OR REPLACE INTO swipes (user_id,listing_id,action) VALUES (?,?,?)',
     [req.session.userId, listingId, action]); }
   catch(e) {}
+  // One rating per flat: drop this user's ratings of the same flat's copies on other portals
+  const copies = flatListingIds(listingId).filter(id => id !== Number(listingId));
+  if (copies.length) dbRun(`DELETE FROM swipes WHERE user_id=? AND listing_id IN (${copies.map(() => '?').join(',')})`,
+    [req.session.userId, ...copies]);
   saveDb();
 
   // Check for group matches if this was a positive action
@@ -1520,7 +1617,8 @@ app.post('/api/listings/swipe/undo-last', requireAuth, (req, res) => {
 });
 
 app.delete('/api/listings/swipe/:id', requireAuth, (req, res) => {
-  dbRun('DELETE FROM swipes WHERE user_id=? AND listing_id=?', [req.session.userId, req.params.id]);
+  const ids = flatListingIds(req.params.id);
+  if (ids.length) dbRun(`DELETE FROM swipes WHERE user_id=? AND listing_id IN (${ids.map(() => '?').join(',')})`, [req.session.userId, ...ids]);
   saveDb();
   res.json({ success: true });
 });
@@ -1530,10 +1628,12 @@ app.delete('/api/listings/swipe/:id', requireAuth, (req, res) => {
 // are. Removed listings show up in the swipe queue again (same as the
 // single-delete route above).
 app.delete('/api/listings/rated', requireAuth, (req, res) => {
-  const ids = Array.isArray(req.body?.listingIds)
+  const picked = Array.isArray(req.body?.listingIds)
     ? [...new Set(req.body.listingIds.map(Number).filter(Number.isInteger))].slice(0, 500)
     : [];
-  if (!ids.length) return res.status(400).json({ error: 'Keine Inserate ausgewählt' });
+  if (!picked.length) return res.status(400).json({ error: 'Keine Inserate ausgewählt' });
+  const ids = [...new Set(picked.flatMap(flatListingIds))];       // the copies of each flat as well
+  if (!ids.length) return res.json({ success: true, deleted: 0 });
 
   const ph = ids.map(() => '?').join(',');
   const { c = 0 } = dbGet(
@@ -1577,25 +1677,36 @@ app.post('/api/listings/:id/report-offline', requireAuth, (req, res) => {
   // Re-trigger the source agent in the background to clear sibling dead
   // listings too. Only when the listing actually came from an agent.
   let jobTriggered = false;
-  if (listing.source_job_id) {
-    const job = dbGet('SELECT * FROM search_jobs WHERE id=?', [listing.source_job_id]);
+  for (const { job_id } of dbAll('SELECT job_id FROM listing_sources WHERE listing_id=? AND job_id IS NOT NULL', [id])) {
+    const job = dbGet('SELECT * FROM search_jobs WHERE id=?', [job_id]);
     if (job) { jobTriggered = true; runJob(job).catch(() => {}); }
   }
   res.json({ success: true, jobTriggered });
 });
 
 app.get('/api/listings/rated', requireAuth, (req, res) => {
-  const listings = dbAll(`
-    SELECT l.*, s.action as my_swipe,
-      CASE WHEN c.id IS NOT NULL THEN 1 ELSE 0 END as contacted,
-      c.note as contact_note
-    FROM listings l
-    JOIN swipes s ON l.id=s.listing_id AND s.user_id=?
-    LEFT JOIN contacts c ON c.listing_id=l.id AND c.user_id=? AND c.group_id IS NULL
-    WHERE l.status != 'offline'
-    ORDER BY s.swiped_at DESC
-  `, [req.session.userId, req.session.userId]);
-  res.json({ listings });
+  const uid = req.session.userId;
+  // One entry per flat. Normally the copy that was rated; if that one went offline but the same flat
+  // is still listed on another portal (and visible to this user), that copy takes its place.
+  const rows = dbAll(`
+    SELECT l.*, s.action AS my_swipe, s.listing_id AS _rated_id
+    FROM swipes s
+    JOIN listings sl ON sl.id = s.listing_id
+    JOIN listings l ON (l.id = sl.id OR (sl.cluster_id IS NOT NULL AND l.cluster_id = sl.cluster_id AND ${visibleSql('l')}))
+    WHERE s.user_id = ? AND l.status != 'offline'
+    ORDER BY s.swiped_at DESC, s.id DESC, (l.id = sl.id) DESC, l.id
+  `, [...visibleParams(uid), uid]);
+  const byFlat = new Map();
+  for (const r of rows) if (!byFlat.has(flatKey(r))) byFlat.set(flatKey(r), r);
+  const listings = [...byFlat.values()];
+  for (const l of listings) {
+    // "angeschrieben" counts for the flat, whichever portal's copy it was noted on
+    const c = dbGet(`SELECT c.note FROM contacts c JOIN listings x ON x.id = c.listing_id
+      WHERE c.user_id = ? AND c.group_id IS NULL AND COALESCE(x.cluster_id, x.id) = ? LIMIT 1`, [uid, flatKey(l)]);
+    l.contacted = c ? 1 : 0; l.contact_note = c ? c.note : null;
+    delete l._rated_id;
+  }
+  res.json({ listings: attachAlsoOn(listings, uid) });
 });
 
 app.get('/api/listings/liked', requireAuth, (req, res) => {
@@ -1641,7 +1752,26 @@ app.get('/api/listings/:id', requireAuth, (req, res) => {
     [req.session.userId, req.params.id]
   );
   if (!listing) return res.status(404).json({ error: 'Inserat nicht gefunden' });
-  res.json({ listing });
+  res.json({ listing: attachAlsoOn([listing], req.session.userId)[0] });
+});
+
+// "Kein Duplikat": two listings were merged as the same flat but are not – keep them apart for good.
+app.post('/api/listings/:id/not-duplicate', requireAuth, (req, res) => {
+  const a = parseInt(req.params.id), b = parseInt(req.body?.otherId);
+  if (!Number.isInteger(a) || !Number.isInteger(b) || a === b) return res.status(400).json({ error: 'Ungültige Anfrage' });
+  const la = dbGet('SELECT id, cluster_id FROM listings WHERE id=?', [a]);
+  const lb = dbGet('SELECT id, cluster_id FROM listings WHERE id=?', [b]);
+  if (!la || !lb || !la.cluster_id || la.cluster_id !== lb.cluster_id)
+    return res.status(400).json({ error: 'Diese Inserate sind nicht zusammengeführt' });
+  const uid = req.session.userId;
+  if (!dbGet(`SELECT 1 FROM listings l WHERE l.id=? AND ${visibleSql('l')}`, [a, ...visibleParams(uid)])
+      && !dbGet('SELECT 1 FROM swipes WHERE user_id=? AND listing_id IN (?,?)', [uid, a, b]))
+    return res.status(403).json({ error: 'Kein Zugriff auf dieses Inserat' });
+  dbRun('INSERT OR IGNORE INTO listing_not_duplicates (a, b) VALUES (?, ?)', [Math.min(a, b), Math.max(a, b)]);
+  recomputeClusters();
+  saveDb();
+  console.log(`[Duplikate] Nutzer ${uid}: Inserat ${a} und ${b} sind keine Duplikate`);
+  res.json({ success: true });
 });
 
 // ── Archive ───────────────────────────────────────────────
@@ -1657,9 +1787,13 @@ app.get('/api/archive', requireAuth, (req, res) => {
     LEFT JOIN archive_notes an ON an.listing_id=l.id
     LEFT JOIN contacts c ON c.listing_id=l.id AND c.user_id=? AND c.group_id IS NULL
     WHERE l.status = 'offline'
+    -- still listed on another portal → it stays under "Bewertet" instead
+    AND NOT EXISTS (SELECT 1 FROM listings x WHERE x.cluster_id IS NOT NULL AND x.cluster_id = l.cluster_id
+                    AND x.status != 'offline' AND ${visibleSql('x')})
     ORDER BY an.archived_at DESC, s.swiped_at DESC
-  `, [req.session.userId, req.session.userId]);
-  res.json({ listings });
+  `, [req.session.userId, req.session.userId, ...visibleParams(req.session.userId)]);
+  const seen = new Set();
+  res.json({ listings: listings.filter(l => !seen.has(flatKey(l)) && seen.add(flatKey(l))) });
 });
 
 // ── Contacts ───────────────────────────────────────────────
@@ -1891,39 +2025,46 @@ app.get('/api/groups/:id/results', requireAuth, (req, res) => {
   if (!memberIds.length) return res.json({ results: [], memberCount: 0 });
   const ph = memberIds.map(()=>'?').join(',');
 
-  const rows = dbAll(`
-    SELECT l.id,l.title,l.price,l.price_cold,l.size,l.location,l.rooms,
-           l.image_url,l.images_json,l.tags_json,l.url,l.platform,l.status,
-           s.user_id,s.action,u.username,
-           CASE WHEN c.id IS NOT NULL THEN 1 ELSE 0 END as group_contacted,
-           c.note as group_contact_note, c.contacted_at as group_contacted_at
-    FROM listings l
-    JOIN swipes s ON l.id=s.listing_id AND s.user_id IN (${ph})
-    JOIN users u ON s.user_id=u.id
-    LEFT JOIN contacts c ON c.listing_id=l.id AND c.group_id=?
-    WHERE l.status != 'offline'
-    ORDER BY l.id
-  `, [...memberIds, gid]);
-
+  // Votes are counted per flat: members may have rated different portals' copies of the same flat.
+  // A member's newest rating of the flat counts. The flat is shown through a copy that is not offline.
+  const votes = dbAll(`
+    SELECT COALESCE(l.cluster_id, l.id) AS flat, s.user_id, s.action, u.username
+    FROM swipes s JOIN listings l ON l.id = s.listing_id JOIN users u ON u.id = s.user_id
+    WHERE s.user_id IN (${ph})
+    ORDER BY s.swiped_at DESC, s.id DESC
+  `, memberIds);
   const byId = {};
-  rows.forEach(r => {
-    if (!byId[r.id]) byId[r.id] = {
-      id: r.id, title: r.title, price: r.price, price_cold: r.price_cold,
-      size: r.size, location: r.location, rooms: r.rooms, status: r.status,
-      image_url: r.image_url, images_json: r.images_json, tags_json: r.tags_json,
-      url: r.url, platform: r.platform, votes: [], score: 0,
-      group_contacted: r.group_contacted, group_contact_note: r.group_contact_note,
-      group_contacted_at: r.group_contacted_at,
-    };
-    const pts = r.action === 'superlike' ? 2 : r.action === 'like' ? 1 : -1;
-    byId[r.id].votes.push({ username: r.username, action: r.action, pts });
-    byId[r.id].score += pts;
-  });
+  const voted = new Set();
+  const shown = {};
+  const flats = [...new Set(votes.map(v => v.flat))];
+  if (flats.length) {
+    const fph = flats.map(() => '?').join(',');
+    for (const l of dbAll(`SELECT * FROM listings WHERE status != 'offline' AND COALESCE(cluster_id, id) IN (${fph}) ORDER BY id`, flats))
+      if (!shown[flatKey(l)]) shown[flatKey(l)] = l;
+  }
+  for (const v of votes) {
+    const l = shown[v.flat];
+    if (!l || voted.has(`${v.flat}:${v.user_id}`)) continue;
+    voted.add(`${v.flat}:${v.user_id}`);
+    if (!byId[l.id]) {
+      const c = dbGet(`SELECT c.note, c.contacted_at FROM contacts c JOIN listings x ON x.id = c.listing_id
+        WHERE c.group_id = ? AND COALESCE(x.cluster_id, x.id) = ? LIMIT 1`, [gid, v.flat]);
+      byId[l.id] = {
+        id: l.id, cluster_id: l.cluster_id, title: l.title, price: l.price, price_cold: l.price_cold,
+        size: l.size, location: l.location, rooms: l.rooms, status: l.status,
+        image_url: l.image_url, images_json: l.images_json, tags_json: l.tags_json,
+        url: l.url, platform: l.platform, votes: [], score: 0,
+        group_contacted: c ? 1 : 0, group_contact_note: c ? c.note : null, group_contacted_at: c ? c.contacted_at : null,
+      };
+    }
+    const pts = v.action === 'superlike' ? 2 : v.action === 'like' ? 1 : -1;
+    byId[l.id].votes.push({ username: v.username, action: v.action, pts });
+    byId[l.id].score += pts;
+  }
 
-  const myVotes = Object.fromEntries(
-    dbAll('SELECT listing_id,action FROM swipes WHERE user_id=?', [req.session.userId])
-      .map(v => [v.listing_id, v.action])
-  );
+  const myVotes = {};                                            // by flat, newest rating wins
+  for (const v of dbAll(`SELECT COALESCE(l.cluster_id, l.id) AS flat, s.action FROM swipes s JOIN listings l ON l.id = s.listing_id
+                         WHERE s.user_id=? ORDER BY s.swiped_at ASC, s.id ASC`, [req.session.userId])) myVotes[v.flat] = v.action;
 
   const tierOf = (item) => {
     const pos      = item.votes.filter(v => v.action !== 'dislike').length;
@@ -1940,10 +2081,10 @@ app.get('/api/groups/:id/results', requireAuth, (req, res) => {
 
   const order = { einstimmig: 0, mehrheitlich: 1, gespalten: 2, abgelehnt: 3 };
   const results = Object.values(byId)
-    .map(item => ({ ...item, tier: tierOf(item), my_swipe: myVotes[item.id] || null }))
+    .map(item => ({ ...item, tier: tierOf(item), my_swipe: myVotes[flatKey(item)] || null }))
     .sort((a, b) => order[a.tier] - order[b.tier] || b.score - a.score);
 
-  res.json({ results, memberCount: memberIds.length });
+  res.json({ results: attachAlsoOn(results, req.session.userId), memberCount: memberIds.length });
 });
 
 // ── Search Jobs ────────────────────────────────────────────
@@ -2048,6 +2189,7 @@ app.delete('/api/jobs/:id', requireAuth, (req, res) => {
   const user = dbGet('SELECT id, is_admin FROM users WHERE id=?', [req.session.userId]);
   if (!canManageJob(job, user)) return res.status(403).json({ error: 'Kein Zugriff auf diesen Suchagenten' });
   dbRun('DELETE FROM search_jobs WHERE id=?', [req.params.id]);
+  dbRun('DELETE FROM listing_sources WHERE job_id=?', [req.params.id]);
   saveDb();
   res.json({ success: true });
 });
@@ -2067,15 +2209,26 @@ app.post('/api/jobs/:id/run', requireAuth, async (req, res) => {
 // current scraper logic. Useful after a scraper bug fix, to flush out
 // old listings that were saved with incorrect/garbled data.
 function resetJobListings(jobId) {
-  const ids = dbAll('SELECT id FROM listings WHERE source_job_id=?', [jobId]).map(r => r.id);
+  const all = dbAll('SELECT listing_id FROM listing_sources WHERE job_id=?', [jobId]).map(r => r.listing_id);
+  // Listings that other agents or people also brought in stay; only this agent's link goes
+  const shared = all.filter(id => dbGet('SELECT 1 FROM listing_sources WHERE listing_id=? AND src_key != ?', [id, `job:${jobId}`]));
+  const ids = all.filter(id => !shared.includes(id));
+  dbRun('DELETE FROM listing_sources WHERE job_id=?', [jobId]);
+  for (const id of shared) {
+    const next = dbGet('SELECT job_id FROM listing_sources WHERE listing_id=? AND job_id IS NOT NULL ORDER BY added_at LIMIT 1', [id]);
+    dbRun('UPDATE listings SET source_job_id=? WHERE id=? AND source_job_id=?', [next ? next.job_id : null, id, jobId]);
+  }
+  dbRun('UPDATE search_jobs SET last_run=NULL, last_error=NULL, last_new=0, total_found=0 WHERE id=?', [jobId]);
   if (!ids.length) return 0;
   const placeholders = ids.map(() => '?').join(',');
   dbRun(`DELETE FROM swipes          WHERE listing_id IN (${placeholders})`, ids);
   dbRun(`DELETE FROM contacts        WHERE listing_id IN (${placeholders})`, ids);
   dbRun(`DELETE FROM archive_notes   WHERE listing_id IN (${placeholders})`, ids);
   dbRun(`DELETE FROM listing_changes WHERE listing_id IN (${placeholders})`, ids);
+  dbRun(`DELETE FROM listing_sources WHERE listing_id IN (${placeholders})`, ids);
+  dbRun(`DELETE FROM listing_not_duplicates WHERE a IN (${placeholders}) OR b IN (${placeholders})`, [...ids, ...ids]);
   dbRun(`DELETE FROM listings        WHERE id IN (${placeholders})`, ids);
-  dbRun('UPDATE search_jobs SET last_run=NULL, last_error=NULL, last_new=0, total_found=0 WHERE id=?', [jobId]);
+  recomputeClusters();
   return ids.length;
 }
 
@@ -2127,11 +2280,26 @@ async function runJob(job) {
   runningJobs.add(job.id);
   console.log(`[Poller] Job: ${job.label}`);
   try {
-    const { newCount, totalFound } = await pollSearchJob(
+    // A URL that is already known (from another agent or added by hand) is linked to this agent
+    // instead of being skipped, so it becomes visible to this agent's audience as well.
+    let linked = 0;
+    const insertedIds = [];
+    const { totalFound } = await pollSearchJob(
       job,
-      (url) => !!dbGet('SELECT id FROM listings WHERE url=?', [url]),
-      (data) => { insertListing(data, job.added_by, job.id); }
+      (url) => {
+        const ex = dbGet('SELECT id FROM listings WHERE url=?', [url]);
+        if (ex && addListingSource(ex.id, { jobId: job.id })) linked++;
+        return !!ex;
+      },
+      (data) => { const r = insertListing(data, job.added_by, job.id); if (r.isNew) insertedIds.push(r.id); }
     );
+    if (insertedIds.length || linked) recomputeClusters();
+    // "New" means a new flat: a copy of a flat that was already known from another portal is not
+    const inserted = new Set(insertedIds);
+    const newFlats = new Set(insertedIds.filter(id => flatListingIds(id).every(x => inserted.has(x)))
+      .map(id => flatKey(dbGet('SELECT id, cluster_id FROM listings WHERE id=?', [id]))));
+    const newCount = newFlats.size;
+    if (linked) console.log(`[Poller] ${job.label}: ${linked} bereits bekannte Inserate zusätzlich verknüpft`);
     dbRun(`UPDATE search_jobs SET last_run=datetime('now'),last_error=NULL,last_new=?,total_found=total_found+? WHERE id=?`,
       [newCount, newCount, job.id]);
     saveDb();

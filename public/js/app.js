@@ -61,6 +61,13 @@ function safeHref(url) {
   return /^https?:\/\//i.test(String(url || '').trim()) ? String(url).trim() : '#';
 }
 
+// Portal keys as stored → names as people know them
+const PLATFORM_NAMES = { kleinanzeigen: 'Kleinanzeigen', immoscout: 'ImmoScout24', immowelt: 'Immowelt', rentola: 'rentola',
+                         meinestadt: 'meinestadt', vonovia: 'Vonovia', leg: 'LEG', gewoba: 'GEWOBA' };
+const platformName = p => PLATFORM_NAMES[p] || p || 'Inserat';
+// Badge on a swipe card: portal, plus how many other portals list the same flat ("leg +1")
+const platformBadge = l => `${l.platform || 'inserat'}${l.also_on?.length ? ` +${l.also_on.length}` : ''}`;
+
 function parseTags(json) {
   try { return JSON.parse(json || '[]'); } catch { return []; }
 }
@@ -419,6 +426,7 @@ const detailView = {
     this.groupId   = opts.groupId || null;
 
     $id('detail-platform').textContent = listing.platform || 'Inserat';
+    this._renderAlsoOn();
     $id('detail-title').textContent    = listing.title || 'Inserat';
 
     const cold  = (listing.price_cold || '').trim();
@@ -523,6 +531,16 @@ const detailView = {
     document.removeEventListener('keydown', detailView._key);
     this.listing = null;
     syncDetailMount();                               // back to the docked panel on wide swipe pages
+  },
+
+  // The same flat on other portals: links, and a way to undo a wrong match
+  _renderAlsoOn() {
+    const also = this.listing?.also_on || [];
+    const box = $id('detail-also-on');
+    box.hidden = !also.length;
+    box.innerHTML = also.length ? `<span class="dao-label">${icon('copy', 'sm')}Auch auf</span>` + also.map(a =>
+      `<span class="dao-item"><a href="${esc(safeHref(a.url))}" target="_blank" rel="noopener">${esc(platformName(a.platform))}${icon('external', 'sm')}</a>` +
+      `<button type="button" class="dao-split" data-not-dup="${a.id}" title="Das ist eine andere Wohnung">Kein Duplikat?</button></span>`).join('') : '';
   },
 
   _renderRating() {
@@ -686,6 +704,22 @@ $id('detail-btn-skip').onclick = () => {
   if (detailView.listing) { doSwipe(detailView.listing, 'skip'); detailView.close(); }
 };
 $id('detail-btn-undo').onclick = () => { undoLastSwipe(); detailView.close(); };
+$id('detail-also-on').addEventListener('click', async e => {
+  const btn = e.target.closest('[data-not-dup]');
+  const l = detailView.listing;
+  if (!btn || !l) return;
+  const other = (l.also_on || []).find(a => String(a.id) === btn.dataset.notDup);
+  if (!confirm(`Ist das Inserat auf ${platformName(other?.platform)} eine andere Wohnung? Dann werden die beiden wieder getrennt angezeigt.`)) return;
+  const r = await api(`/api/listings/${l.id}/not-duplicate`, { method: 'POST', body: { otherId: Number(btn.dataset.notDup) } });
+  if (r.error) return toast('❌ ' + r.error);
+  l.also_on = (l.also_on || []).filter(a => String(a.id) !== btn.dataset.notDup);
+  if (!l.also_on.length) l.cluster_id = null;
+  detailView._renderAlsoOn();
+  toast('✓ Getrennt – erscheint jetzt als eigenes Inserat');
+  state.swipeQueue = [];
+  if (detailView.fromSwipe) loadSwipeQueue();
+  detailView.onChange?.();
+});
 document.querySelectorAll('#detail-rate-bar [data-rate]').forEach(btn => btn.addEventListener('click', async () => {
   const l = detailView.listing, act = btn.dataset.rate;
   if (!l || l.my_swipe === act) return;
@@ -751,7 +785,7 @@ function buildSwipeCard(listing) {
       ${hasImg
         ? `<img class="card-image" src="${esc(images[0])}" onerror="this.style.display='none'" />`
         : `<div class="card-image-placeholder">${icon('image', 'lg')}</div>`}
-      <span class="card-platform">${esc(listing.platform || 'inserat')}</span>
+      <span class="card-platform">${esc(platformBadge(listing))}</span>
       ${statusBadge}
       ${hasImg ? `<button class="card-photo-btn" data-gallery type="button" aria-label="${images.length > 1 ? `Alle ${images.length} Fotos ansehen` : 'Foto im Vollbild ansehen'}">${icon('expand', 'sm')}${images.length > 1 ? images.length : ''}</button>` : ''}
       ${mainPrice ? `<div class="card-price-over"><b>${esc(mainPrice)}</b>${priceSub ? `<span>${priceSub}</span>` : ''}</div>` : ''}
@@ -891,6 +925,7 @@ function buildListCard(listing, opts = {}) {
         <div class="rc-facts">
           ${listing.size  ? `<span class="rc-chip">${esc(listing.size)}</span>` : ''}
           ${listing.rooms ? `<span class="rc-chip">${esc(listing.rooms)} Zi.</span>` : ''}
+          ${listing.also_on?.length ? `<span class="rc-chip" title="${esc(listing.also_on.map(a => platformName(a.platform)).join(', '))}">${icon('copy', 'sm')}+${listing.also_on.length} Portal${listing.also_on.length > 1 ? 'e' : ''}</span>` : ''}
           ${listing.status === 'reserved' ? `<span class="rc-chip warn">Reserviert</span>` : ''}
           ${listing.status === 'offline'  ? `<span class="rc-chip bad">Nicht mehr verfügbar</span>` : ''}
           <span class="contacted-badge rc-chip like" ${listing.contacted ? '' : 'hidden'}>${esc(contactedText)}</span>
@@ -1269,9 +1304,12 @@ function renderStack() {
   const domIds   = new Set(domCards.map(c => parseInt(c.dataset.id)));
   const queueIds = new Set(top3.map(l => l.id));
 
-  // Remove cards no longer in top-3
+  // Remove cards no longer in top-3; cards that stay get their portal badge refreshed (copies may have changed)
   domCards.forEach(c => {
-    if (!queueIds.has(parseInt(c.dataset.id))) c.remove();
+    const id = parseInt(c.dataset.id);
+    if (!queueIds.has(id)) return c.remove();
+    const badge = c.querySelector('.card-platform');
+    if (badge) badge.textContent = platformBadge(top3.find(l => l.id === id));
   });
 
   // Add missing cards (pre-rendered, initially invisible at back position)
