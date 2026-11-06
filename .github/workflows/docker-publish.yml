@@ -1,39 +1,28 @@
 name: Docker Hub
 
-# Baut das Image und veröffentlicht es als nicgeon/wohnungsswipe auf Docker Hub.
+# Baut das Image und veröffentlicht es als nicgeon/wohnungsswipe auf Docker Hub –
+# NUR bei einem Release (oder von Hand). Pushes und Merges lösen nichts aus,
+# damit keine Actions-Minuten verbraucht werden.
 #
-# Weg 1 – Version erhöhen und mergen (empfohlen):
-#   "version" in package.json erhöhen, nach master mergen – fertig.
-#   - jeder Push auf master  → :latest und :sha-<kurz>
-#   - ist die Version aus package.json neu (Git-Tag vX.Y.Z existiert noch nicht):
-#       zusätzlich :vX.Y.Z, und es wird ein GitHub-Release vX.Y.Z angelegt
-#       (mit Tag und automatisch erzeugten Release-Notes aus den Commits)
-#   - ist die Version unverändert: nur :latest/:sha (ein bestehender Versionstag
-#     wird nie überschrieben)
+# Release-Ablauf:
+#   1. "version" in package.json erhöhen und nach master mergen
+#   2. Auf GitHub unter "Releases" → "Draft a new release" einen neuen Tag
+#      vX.Y.Z auf master anlegen, "Generate release notes" klicken, veröffentlichen
+#   → das Image wird als :vX.Y.Z gebaut, und als :latest, wenn das Release keine
+#     Vorabversion ("pre-release") ist.
 #
-# Weg 2 – Release auf GitHub veröffentlichen:
-#   Unter "Releases" → "Draft a new release" einen Tag vX.Y.Z wählen/anlegen und
-#   veröffentlichen → genau dieser Stand wird als :vX.Y.Z gebaut, und – wenn es
-#   keine Vorabversion ("pre-release") ist – auch als :latest.
-#   (Releases, die Weg 1 selbst anlegt, lösen keinen zweiten Build aus: Aktionen
-#   mit dem GITHUB_TOKEN starten keine weiteren Workflows.)
-#
-# Außerdem manuell über "Run workflow" im Actions-Tab (Logik wie Weg 1).
+# Von Hand: Actions-Tab → "Docker Hub" → "Run workflow" baut den gewählten Branch
+# mit der Version aus package.json als :vX.Y.Z und :latest.
 # Voraussetzung: Secrets DOCKERHUB_USERNAME und DOCKERHUB_TOKEN.
 
 on:
-  push:
-    branches: [master]
-    paths-ignore:
-      - '**.md'
-      - '.gitignore'
   release:
     types: [published]
   workflow_dispatch:
 
 concurrency:
-  group: docker-publish-${{ github.ref }}
-  cancel-in-progress: true
+  group: docker-publish
+  cancel-in-progress: false
 
 env:
   IMAGE: nicgeon/wohnungsswipe
@@ -42,18 +31,11 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # nötig, um Tag und GitHub-Release vX.Y.Z anzulegen
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0   # auch bestehende Tags laden
 
-      # Ergebnis:
-      #   version         – X.Y.Z
-      #   push_version    – :vX.Y.Z veröffentlichen?
-      #   latest          – :latest veröffentlichen?
-      #   create_release  – Tag + GitHub-Release anlegen? (nur Weg 1 mit neuer Version)
       - name: Version bestimmen
         id: ver
         env:
@@ -62,6 +44,7 @@ jobs:
           PRERELEASE: ${{ github.event.release.prerelease }}
         run: |
           PKG=$(node -p "require('./package.json').version")
+          LATEST=true
           if [ "$EVENT" = "release" ]; then
             if ! [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
               echo "::error::Release-Tag '$RELEASE_TAG' hat nicht das Format vX.Y.Z – es wird kein Image gebaut."
@@ -71,31 +54,13 @@ jobs:
             if [ "$V" != "$PKG" ]; then
               echo "::warning::Release $RELEASE_TAG, aber package.json enthält Version $PKG."
             fi
-            LATEST=true
             if [ "$PRERELEASE" = "true" ]; then LATEST=false; fi
-            {
-              echo "version=$V"
-              echo "push_version=true"
-              echo "latest=$LATEST"
-              echo "create_release=false"
-            } >> "$GITHUB_OUTPUT"
-            echo "::notice::Release $RELEASE_TAG – wird als :v$V veröffentlicht$([ "$LATEST" = true ] && echo ' und als :latest')."
           else
             V="$PKG"
-            if git rev-parse -q --verify "refs/tags/v$V" >/dev/null; then
-              NEW=false
-              echo "::notice::Version v$V existiert bereits als Tag – es wird nur :latest veröffentlicht. Zum Release die Version in package.json erhöhen."
-            else
-              NEW=true
-              echo "::notice::Neue Version v$V – wird als :latest und :v$V veröffentlicht, Release v$V wird angelegt."
-            fi
-            {
-              echo "version=$V"
-              echo "push_version=$NEW"
-              echo "latest=true"
-              echo "create_release=$NEW"
-            } >> "$GITHUB_OUTPUT"
           fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "::notice::Baue :v$V$([ "$LATEST" = true ] && echo ' und :latest')."
 
       - name: Docker Hub login
         uses: docker/login-action@v3
@@ -116,9 +81,8 @@ jobs:
           images: ${{ env.IMAGE }}
           flavor: latest=false
           tags: |
+            type=raw,value=v${{ steps.ver.outputs.version }}
             type=raw,value=latest,enable=${{ steps.ver.outputs.latest == 'true' }}
-            type=sha,prefix=sha-,format=short
-            type=raw,value=v${{ steps.ver.outputs.version }},enable=${{ steps.ver.outputs.push_version == 'true' }}
 
       - name: Build und Push
         uses: docker/build-push-action@v6
@@ -130,18 +94,3 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-      # Erst nach erfolgreichem Push: legt Tag vX.Y.Z (auf diesem Commit) und das
-      # GitHub-Release mit Notizen aus den Commits seit der vorigen Version an.
-      - name: GitHub-Release anlegen
-        if: steps.ver.outputs.create_release == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          V: ${{ steps.ver.outputs.version }}
-        run: |
-          gh release create "v$V" \
-            --target "$GITHUB_SHA" \
-            --title "v$V" \
-            --generate-notes \
-            --notes "Docker-Image: \`${IMAGE}:v$V\` (auch \`:latest\`)"
