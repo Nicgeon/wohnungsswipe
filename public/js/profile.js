@@ -5,7 +5,7 @@
 const PLACEHOLDER_LIST = ['titel','preis','kalt','warm','zimmer','groesse','lage','name','namen','personen','kinder',
   'beruf','wohnform','einzug','mietdauer','beschaeftigung','einkommen','haushalt','unterlagen','unterlagen_liste','grund','merkmale','telefon','erreichbarkeit'];
 const PLACEHOLDER_HINT = {
-  titel: 'Titel der Anzeige ohne Preisangaben', unterlagen: 'ganze Sätze, z. B. „A und B legen wir Ihnen gerne vor.“',
+  titel: 'Titel der Anzeige ohne Preisangaben', unterlagen: 'ganze Sätze, z. B. „A und B stellen wir Ihnen gerne zur Verfügung.“',
   unterlagen_liste: 'nur die Namen, z. B. „A, B und C“', grund: 'ganzer Satz: „Die Wohnung spricht uns besonders aufgrund … an.“',
   merkmale: 'z. B. „des Balkons und der Lage in Neustadt“ (nach „aufgrund“)',
 };
@@ -499,13 +499,19 @@ function pfApplyMode() {
   const layout = $id('pf-layout'); if (!layout) return;
   layout.dataset.mode = pfDesktop() ? 'desktop' : pf.mode;
   pfShowSection();
+  nav.sync();
 }
 window.matchMedia('(min-width: 1000px)').addEventListener('change', pfApplyMode);
+// On phones the section editor sits one level above the profile overview: the back gesture returns to it
+nav.register({
+  isOpen: () => !pfDesktop() && pf.mode === 'edit' && $id('view-profile').classList.contains('active'),
+  close:  () => { pf.mode = 'hub'; pfApplyMode(); },
+});
 
 function pfGoto(section, { fromMissing = false } = {}) {
   pf.section = section;
   pfShowSection(); pfRenderNav();
-  if (!pfDesktop()) { pf.mode = 'edit'; $id('pf-layout').dataset.mode = 'edit'; $id('view-profile').querySelector('.view-content').scrollTop = 0; }
+  if (!pfDesktop()) { pf.mode = 'edit'; $id('pf-layout').dataset.mode = 'edit'; $id('view-profile').querySelector('.view-content').scrollTop = 0; nav.sync(); }
   if (pfDesktop() && fromMissing) $id('pf-editor').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   pfPreviewSoon();
 }
@@ -625,7 +631,7 @@ function pfBindEditor() {
   $id('pf-nav').addEventListener('click', e => { const b = e.target.closest('[data-section]'); if (b) pfGoto(b.dataset.section); });
   $id('pf-missing').addEventListener('click', e => { const b = e.target.closest('[data-section]'); if (b) pfGoto(b.dataset.section, { fromMissing: true }); });
   $id('pf-back').addEventListener('click', () => {
-    if (!pfDesktop() && pf.mode === 'edit') { pf.mode = 'hub'; pfApplyMode(); } else showView(window.innerWidth >= 900 ? 'swipe' : 'more', true);
+    nav.back();
   });
   $id('pf-switch').addEventListener('click', e => { const b = e.target.closest('[data-target]'); if (b && String(b.dataset.target) !== String(pf.target)) pfSwitchTarget(b.dataset.target === 'me' ? 'me' : b.dataset.target); });
   $id('pf-switch').addEventListener('change', e => { if (e.target.tagName === 'SELECT' && e.target.value) pfSwitchTarget(e.target.value); });

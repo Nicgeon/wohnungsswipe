@@ -2,7 +2,7 @@
  * poller.js – Suche-Scraper für WohnungsSwipe
  *
  * Ablauf pro Job:
- *  1. Suchergebnisseite abrufen
+ *  1. Suchergebnisseite abrufen (Vonovia/GEWOBA: über deren JSON-Daten, LEG: Regionsseite)
  *  2. Alle Inserat-URLs extrahieren
  *  3. Neue URLs (nicht in DB) einzeln scrapen
  *  4. Bestehende Inserate auf offline/reserviert prüfen
@@ -128,6 +128,9 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ── Platform detection ─────────────────────────────────────
 function detectPlatform(url) {
+  if (isVonoviaUrl(url))                    return 'vonovia';
+  if (hostMatches(url, 'leg-wohnen.de'))    return 'leg';
+  if (hostMatches(url, 'gewoba.de'))        return 'gewoba';
   if (url.includes('kleinanzeigen.de'))     return 'kleinanzeigen';
   if (url.includes('immobilienscout24.de')) return 'immoscout';
   if (url.includes('immowelt.de'))          return 'immowelt';
@@ -743,6 +746,399 @@ async function geocodeLocation(locationText) {
 // ── Scrape a single listing ───────────────────────────────
 // opts.lite: skip the extra Immowelt mobile request (used by the periodic
 // status re-check, which only needs status/price/title — not the full gallery).
+// ── Vonovia ────────────────────────────────────────────────
+// vonovia.de is a client-rendered app: its search page's HTML contains no listings. The site's
+// own front end loads them from a JSON API (/api/real-estate/list) with a short-lived token from
+// /api/real-estate/search-token (sent as "X-VON-Search-Token") – we do exactly that, with the
+// filter parameters of the search URL the user pasted (city, radius, max. rent, …).
+// The detail page, in contrast, embeds the complete listing as JSON in a data attribute
+// (data-vonovia-data), and answers HTTP 410 once a listing is gone.
+// All requests go through fetchPageRaw, i.e. through the same SSRF-guarded agent as every other
+// fetch, and carry an honest User-Agent.
+const VONOVIA_ORIGIN = 'https://www.vonovia.de';
+const VONOVIA_SEARCH_PATH = '/zuhause-finden/immobilien';
+const HONEST_UA = 'Flatswipe (private housing-search tool)';
+const HONEST_PAGE_HEADERS = { 'User-Agent': HONEST_UA, 'Accept': 'text/html,application/xhtml+xml,*/*;q=0.8', 'Accept-Language': 'de-DE,de;q=0.9' };
+const VONOVIA_API_HEADERS = { 'User-Agent': HONEST_UA, 'Accept': 'application/json', 'Accept-Language': 'de-DE,de;q=0.9' };
+const VONOVIA_PAGE_SIZE = 15;      // what the site itself requests per page
+const VONOVIA_MAX_PAGES = 4;       // at most 60 results per run (extractListingUrls caps other portals at 50)
+let vonoviaTokenCache = { value: '', exp: 0 };
+
+// true for the domain itself and its subdomains — not for look-alikes ("vonovia.de.evil.example")
+function hostMatches(url, domain) {
+  try { const h = new URL(url).hostname.toLowerCase(); return h === domain || h.endsWith('.' + domain); }
+  catch (_) { return false; }
+}
+const isVonoviaUrl = url => hostMatches(url, 'vonovia.de');
+
+// A pasted Vonovia search URL must be the results page with a place chosen — not a single
+// listing (its query string would not filter anything) and not an unfiltered "all of Germany".
+// Returns an error message, or '' when fine.
+function validateVonoviaSearchUrl(url) {
+  const u = new URL(url);
+  if (u.pathname.replace(/\/+$/, '') !== VONOVIA_SEARCH_PATH)
+    return 'Bitte die Ergebnisseite der Vonovia-Suche einfügen (…/zuhause-finden/immobilien?…), nicht ein einzelnes Inserat';
+  if (!u.searchParams.get('city') && !(u.searchParams.get('latitude') && u.searchParams.get('longitude')))
+    return 'Bitte auf vonovia.de zuerst einen Ort auswählen und dann die Adresse der Ergebnisseite einfügen';
+  return '';
+}
+
+async function vonoviaToken(force = false) {
+  if (!force && vonoviaTokenCache.value && Date.now() < vonoviaTokenCache.exp) return vonoviaTokenCache.value;
+  const raw = await fetchPageRaw(`${VONOVIA_ORIGIN}/api/real-estate/search-token`, 15000, [], VONOVIA_API_HEADERS);
+  const j = JSON.parse(raw.text);
+  if (!j || !j.token) throw new Error('Vonovia hat kein Such-Token geliefert');
+  vonoviaTokenCache = { value: j.token, exp: Date.now() + Math.max(60, (Number(j.ttl) || 0) - 30) * 1000 };
+  return j.token;
+}
+
+async function vonoviaApi(pathAndQuery) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const token = await vonoviaToken(attempt > 0);
+    try {
+      const raw = await fetchPageRaw(VONOVIA_ORIGIN + pathAndQuery, 20000, [], { ...VONOVIA_API_HEADERS, 'X-VON-Search-Token': token });
+      return JSON.parse(raw.text);
+    } catch (e) {
+      if (attempt === 0 && /\b401\b/.test(e.message)) continue;     // token expired → get a fresh one once
+      throw e;
+    }
+  }
+}
+
+// Search page URL → detail URLs of everything it currently lists
+async function vonoviaSearchUrls(searchUrl) {
+  const err = validateVonoviaSearchUrl(searchUrl);
+  if (err) throw new Error(err);
+  const filters = new URL(searchUrl).searchParams;
+  const slugs = [];
+  let total = Infinity;
+  for (let page = 0; page < VONOVIA_MAX_PAGES && slugs.length < total; page++) {
+    const q = new URLSearchParams(filters);
+    q.set('limit', String(VONOVIA_PAGE_SIZE));
+    q.set('offset', String(page * VONOVIA_PAGE_SIZE));
+    const data = await vonoviaApi(`/api/real-estate/list?${q}`);
+    if (!data || !Array.isArray(data.results)) throw new Error('Unerwartete Antwort der Vonovia-Suche');
+    const count = Number(data.paging && data.paging.info && data.paging.info.count);
+    if (Number.isFinite(count)) total = count;
+    for (const r of data.results) {
+      if (r && /^[a-z0-9-]+$/i.test(r.slug || '') && !slugs.includes(r.slug)) slugs.push(r.slug);
+    }
+    if (data.results.length < VONOVIA_PAGE_SIZE) break;
+    await sleep(600);
+  }
+  return slugs.map(slug => `${VONOVIA_ORIGIN}${VONOVIA_SEARCH_PATH}/${slug}`);
+}
+
+// 604.29 → "604,29 €", 1812.87 → "1.812,87 €"; empty/zero → ''
+function vonoviaEuro(n) {
+  const v = Number(n);
+  if (n === null || n === undefined || n === '' || !Number.isFinite(v) || v <= 0) return '';
+  const [int, dec] = v.toFixed(2).split('.');
+  return `${int.replace(/\B(?=(\d{3})+(?!\d))/g, '.')},${dec} €`;
+}
+
+// Detail page HTML → listing fields (null when the page carries no listing data)
+function parseVonoviaDetail(html) {
+  const $ = cheerio.load(html);
+  const attr = $('[data-vonovia-data]').first().attr('data-vonovia-data');
+  let j = null;
+  try { j = attr ? JSON.parse(attr) : null; } catch (_) {}
+  if (!j || typeof j !== 'object') return null;
+
+  const rows = {};
+  for (const sec of Array.isArray(j.sections) ? j.sections : [])
+    for (const r of sec.rows || []) if (r && r.label) rows[String(r.label).trim().toLowerCase()] = String(r.value ?? '').trim();
+
+  const imgUrls = [...new Set([...(j.overlayImages || []), ...(j.images || [])]
+    .map(i => i && i.url).filter(u => typeof u === 'string' && /^https:\/\//i.test(u)))];
+  // overlayImages are the large renditions of the same photos; the small ones only fill gaps
+  const large = (j.overlayImages || []).map(i => i && i.url).filter(u => typeof u === 'string' && /^https:\/\//i.test(u));
+  const photos = large.length ? [...new Set(large)] : imgUrls;
+
+  const lat = Number(j.latitude), lng = Number(j.longitude);
+  const avail = /^\d{4}-\d{2}-\d{2}/.test(j.availableFrom || '') ? j.availableFrom.slice(0, 10).split('-').reverse().join('.') : (j.availableFrom || '');
+  const address = [j.streetAndHouseNumber, j.postCodeAndCity].filter(Boolean).join(', ');
+  const description = [address && `Adresse: ${address}`, j.description, j.location]
+    .filter(Boolean).join('\n\n').substring(0, 1500);
+  const tags = [...new Set([
+    ...(Array.isArray(j.features) ? j.features : []).map(f => String(f).trim()),
+    rows['geschoss'] || '',
+  ].filter(t => t && t.length < 60))].slice(0, 12);
+
+  return {
+    title:      String(j.heading || '').trim(),
+    price_cold: vonoviaEuro(j.rent),
+    price:      vonoviaEuro(j.warmRent) || vonoviaEuro(j.rent),
+    size:       String(j.space || '').trim(),
+    rooms:      String(j.numberOfRooms ?? '').trim(),
+    location:   String(j.postCodeAndCity || '').trim(),
+    image_url:  photos[0] || '',
+    images_json: JSON.stringify(photos),
+    description,
+    tags_json:  JSON.stringify(tags),
+    nebenkosten: vonoviaEuro(j.operatingCosts),
+    heizkosten:  vonoviaEuro(j.heatingCosts),
+    kaution:     vonoviaEuro(j.securityDeposit),
+    available_from: avail,
+    property_type:  rows['art'] || rows['typ'] || '',
+    latitude:  Number.isFinite(lat) && lat !== 0 ? lat : null,
+    longitude: Number.isFinite(lng) && lng !== 0 ? lng : null,
+  };
+}
+
+// Shared by the portals that give us structured data (Vonovia JSON, LEG/GEWOBA markup):
+// fetch the detail page, let `parse` turn the HTML into listing fields, and translate the
+// failure modes the same way for all of them (404/410 → offline, unparseable → fetchFailed).
+async function scrapeWithParser(url, d, { parse, fallbackTitle, opts = {} }) {
+  let raw;
+  try { raw = await fetchPageRaw(url, 18000, [], HONEST_PAGE_HEADERS); }
+  catch (e) {
+    if (e.message.includes('404') || e.message.includes('410')) d.status = 'offline';
+    d.fetchFailed = true;
+    d.title = 'Inserat (nicht ladbar)';
+    d.description = `Fehler: ${e.message}`;
+    return d;
+  }
+  const parsed = parse(raw.text);
+  if (!parsed) {
+    if (/nicht mehr verfügbar/i.test(cheerio.load(raw.text)('title').text())) {
+      d.status = 'offline'; d.title = 'Inserat nicht mehr verfügbar';
+    } else {
+      d.fetchFailed = true; d.title = 'Inserat (nicht ladbar)';
+      d.description = 'Fehler: Die Seite enthält keine Inseratsdaten (Seitenaufbau geändert?)';
+    }
+    return d;
+  }
+  const { geocodeQuery, ...fields } = parsed;
+  Object.assign(d, fields, { title: fields.title || fallbackTitle });
+  // No coordinates on the page: place the address on the map once (not on every status re-check)
+  if (!Number.isFinite(d.latitude) && geocodeQuery && !opts.lite) {
+    const geo = await geocodeLocation(geocodeQuery);
+    if (geo) { d.latitude = geo.lat; d.longitude = geo.lon; }
+  }
+  return d;
+}
+const scrapeVonovia = (url, d, opts) => scrapeWithParser(url, d, { parse: parseVonoviaDetail, fallbackTitle: 'Vonovia-Inserat', opts });
+
+// Soft hyphens (&shy;) inside words of labels must disappear, not turn into spaces
+const SHY = new RegExp(String.fromCharCode(173), 'g');
+// LEG prefixes feature lists with a mis-encoded bullet (control character U+0095) — drop those too
+const C1_CONTROLS = new RegExp('[' + String.fromCharCode(0x80) + '-' + String.fromCharCode(0x9f) + ']', 'g');
+const plainText = t => String(t || '').replace(SHY, '').replace(C1_CONTROLS, '').replace(/\s+/g, ' ').trim();
+
+// ── LEG Wohnen ─────────────────────────────────────────────
+// leg-wohnen.de renders everything on the server. A region page (/mietwohnungen/<region>, optionally
+// /<stadtteil>) lists ALL current flats of that region as cards that link to /immobilien/detail/<id>;
+// the page paginates only in the browser. A removed flat's detail page answers 404.
+const LEG_ORIGIN = 'https://www.leg-wohnen.de';
+const LEG_MAX_RESULTS = 100;
+const LEG_SEARCH_PATH_RE = /^\/mietwohnungen\/[a-z0-9-]+(?:\/[a-z0-9-]+)?\/?$/i;
+
+function validateLegSearchUrl(url) {
+  return LEG_SEARCH_PATH_RE.test(new URL(url).pathname) ? ''
+    : 'Bitte die Seite einer LEG-Region einfügen, z. B. https://www.leg-wohnen.de/mietwohnungen/bremen';
+}
+
+async function legSearchUrls(searchUrl) {
+  const err = validateLegSearchUrl(searchUrl);
+  if (err) throw new Error(err);
+  const raw = await fetchPageRaw(LEG_ORIGIN + new URL(searchUrl).pathname, 20000, [], HONEST_PAGE_HEADERS);
+  const $ = cheerio.load(raw.text);
+  // "0 Mietwohnungen gefunden" is a valid answer; a page without list or counter is not
+  if (!$('.sg-estate-list').length && !/Mietwohnung(?:en)? gefunden/i.test($('body').text()))
+    throw new Error('Seitenaufbau der LEG-Suche nicht erkannt');
+  const urls = [];
+  $('.sg-estate-list-item').each((_, el) => {
+    const href = ($(el).find('a[href^="/immobilien/detail/"]').first().attr('href') || '').split('?')[0];
+    if (/^\/immobilien\/detail\/[A-Za-z0-9._-]+$/.test(href) && !urls.includes(LEG_ORIGIN + href)) urls.push(LEG_ORIGIN + href);
+  });
+  return urls.slice(0, LEG_MAX_RESULTS);
+}
+
+// "1." → "1. Etage", "EG" → "EG"
+const legFloorTag = f => /^\d+\.?$/.test(f) ? `${f.replace(/\.$/, '')}. Etage` : f;
+
+function parseLegDetail(html) {
+  const $ = cheerio.load(html);
+  const txt = el => plainText($(el).text());
+  const details = {};                                    // "Fläche" → "33,1 m²", "Verfügbar ab" → "sofort" …
+  $('.sge-details-item').each((_, el) => {
+    const k = txt($(el).find('.sge-details-item-desc').first()), v = txt($(el).find('.sge-details-item-main').first());
+    if (k && v && !(k in details)) details[k] = v;
+  });
+  const rows = {};                                       // cost + energy table: label → value
+  $('tr').each((_, tr) => {
+    const k = txt($(tr).find('td strong').first()), v = txt($(tr).find('td').eq(1));
+    if (k && v && !(k in rows)) rows[k] = v;
+  });
+  if (!rows['Preis / Kaltmiete'] && !details['Fläche']) return null;
+
+  // Sections are an <h2> followed by bare text/<br> (or a <p>) up to the next <h2> — read them as lines
+  const sectionLines = name => {
+    const h = $('h2').filter((_, el) => txt(el).toLowerCase() === name).first();
+    if (!h.length) return [];
+    const lines = []; let cur = '';
+    const flush = () => { const t = plainText(cur); if (t) lines.push(t); cur = ''; };
+    for (let n = h.get(0).next; n; n = n.next) {
+      if (n.type === 'tag' && (n.name === 'h2' || n.name === 'div')) break;   // next section / map / "similar flats"
+      if (n.type === 'tag' && n.name === 'br') flush();
+      else if (n.type === 'text') cur += n.data;
+      else if (n.type === 'tag') { flush(); cur = $(n).text(); flush(); }
+    }
+    flush();
+    return lines;
+  };
+  const address = sectionLines('karte')[0] || '';
+  const am = address.match(/^(.*?),\s*(\d{5})\s+(.+)$/);
+  // "Lage und Wohnumfeld" is free text: often just a district ("Bahnhofsvorstadt, Bremen-Mitte"), sometimes a
+  // whole marketing paragraph. Only a short place-like first part goes into the location field.
+  const lageText = sectionLines('lage und wohnumfeld').join(' ');
+  const firstPart = lageText.split(',')[0].trim();
+  const district = firstPart.length <= 30 && firstPart.split(/\s+/).length <= 3 && !/[.!?:]$/.test(firstPart) ? firstPart : '';
+  const city = am ? `${am[2]} ${am[3]}` : '';
+  const location = [city, district && !city.includes(district) ? district : ''].filter(Boolean).join(' - ');
+
+  const features = sectionLines('ausstattung').flatMap(l => l.split(/[;,]/)).map(t => t.trim()).filter(t => t && t.length < 60);
+  const tags = [...new Set([...features, legFloorTag(details['Etage'] || '')].filter(Boolean))].slice(0, 12);
+
+  const photos = [...new Set($('a[data-fancybox]').map((_, a) => $(a).attr('href')).get()
+    .filter(h => /^\/uploads\//.test(h)).map(h => LEG_ORIGIN + h))];
+
+  const desc = $('[itemprop="description"]').first();
+  desc.find('br').replaceWith('\n');
+  const body = desc.text().replace(/[ \t]+/g, ' ').replace(/\n\s*\n\s*\n+/g, '\n\n').trim();
+  const description = [address && `Adresse: ${address}`, body, lageText && `Lage: ${lageText}`].filter(Boolean).join('\n\n').substring(0, 1500);
+
+  let lat = null, lng = null;
+  try {
+    let m = JSON.parse($('[data-map-markers]').first().attr('data-map-markers'));
+    if (typeof m === 'string') m = JSON.parse(m);
+    if (Array.isArray(m)) m = m[0];
+    lat = Number(m.latitude); lng = Number(m.longitude);
+  } catch (_) {}
+
+  const title = txt($('h1').first()).replace(/\s+mieten$/i, '') || $('title').text().replace(/\s+mieten.*$/i, '').trim();
+  return {
+    title,
+    price_cold: rows['Preis / Kaltmiete'] || '',
+    price:      rows['Gesamtmiete'] || rows['Preis / Kaltmiete'] || '',
+    size:       details['Fläche'] || '',
+    rooms:      details['Zimmer'] || '',
+    location,
+    image_url:  photos[0] || '',
+    images_json: JSON.stringify(photos),
+    description,
+    tags_json:  JSON.stringify(tags),
+    nebenkosten: rows['Nebenkosten'] || '',
+    heizkosten:  rows['Heizkosten'] || '',
+    kaution:     rows['Kaution'] || '',
+    available_from: details['Verfügbar ab'] || '',
+    property_type:  details['Objekttyp'] === 'Etage' ? 'Etagenwohnung' : (details['Objekttyp'] || ''),
+    latitude:  Number.isFinite(lat) && lat !== 0 ? lat : null,
+    longitude: Number.isFinite(lng) && lng !== 0 ? lng : null,
+    geocodeQuery: address,
+  };
+}
+
+// ── GEWOBA ─────────────────────────────────────────────────
+// gewoba.de's search page is a form whose results the browser fills in from a small data file
+// (…/Js/propertiesJson.js: `var jsonObj = {"properties":[…]}`) that holds ALL current offers, each
+// with the path of its exposé page (_uri). The exposé is server-rendered; a removed one answers 404.
+// The search has no filters in its URL (the form posts), so an agent watches all offers.
+const GEWOBA_ORIGIN = 'https://www.gewoba.de';
+const GEWOBA_SEARCH_PATH = '/immobilien/mieten/wohnungssuche';
+
+function validateGewobaSearchUrl(url) {
+  return new URL(url).pathname.replace(/\/+$/, '') === GEWOBA_SEARCH_PATH ? ''
+    : `Bitte die GEWOBA-Wohnungssuche einfügen: ${GEWOBA_ORIGIN}${GEWOBA_SEARCH_PATH}`;
+}
+
+async function gewobaSearchUrls(searchUrl) {
+  const err = validateGewobaSearchUrl(searchUrl);
+  if (err) throw new Error(err);
+  const page = await fetchPageRaw(GEWOBA_ORIGIN + GEWOBA_SEARCH_PATH, 20000, [], HONEST_PAGE_HEADERS);
+  const src = cheerio.load(page.text)('script[src*="propertiesJson"]').first().attr('src');
+  if (!src) throw new Error('Datenquelle der GEWOBA-Suche nicht gefunden');
+  const dataUrl = new URL(src, GEWOBA_ORIGIN + GEWOBA_SEARCH_PATH).toString();
+  if (!hostMatches(dataUrl, 'gewoba.de')) throw new Error('Unerwartete Datenquelle der GEWOBA-Suche');
+  const raw = await fetchPageRaw(dataUrl, 20000, [], HONEST_PAGE_HEADERS);
+  const m = raw.text.match(/^\s*var\s+jsonObj\s*=\s*([\s\S]*?);?\s*$/);
+  let data; try { data = JSON.parse(m && m[1]); } catch (_) { data = null; }
+  if (!data || !Array.isArray(data.properties)) throw new Error('Unerwartetes Datenformat der GEWOBA-Suche');
+  return [...new Set(data.properties.map(p => p && p._uri)
+    .filter(u => typeof u === 'string' && /^\/exposee\/[^\s"'<>?#]+$/.test(u)).map(u => GEWOBA_ORIGIN + u))];
+}
+
+function parseGewobaDetail(html) {
+  const $ = cheerio.load(html);
+  const clean = el => plainText($(el).text());
+  const top = {};
+  $('.prop-topinfo-item').each((_, el) => { top[clean($(el).find('.label'))] = clean($(el).find('.data')); });
+  const det = {};
+  $('.prop-detail-data-top > div, .prop-detail-data-main > div').each((_, el) => {
+    const k = clean($(el).find('.label')).replace(/:$/, ''), v = clean($(el).find('.data'));
+    if (k && !(k in det)) det[k] = v;
+  });
+  const title = clean($('h1.property-headline').first());
+  if (!title && !top['Gesamtkaltmiete']) return null;
+
+  const money = t => { const m = String(t || '').match(/\d[\d.]*,\d{2}\s*€/); return m ? m[0].replace(/\s+/g, ' ') : ''; };
+  // "Lehe / Werftstraße 8 / 27576 Bremerhaven" → district, street, "27576 Bremerhaven"
+  const locBlock = $('.label').filter((_, l) => /^objektlage$/i.test(clean(l))).first().parent().find('.data').first();
+  const lines = (locBlock.html() || '').split(/<br\s*\/?>/i).map(x => cheerio.load(`<i>${x}</i>`)('i').text().replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const plzCity = lines.find(l => /^\d{5}\s/.test(l)) || '';
+  const street  = lines.length >= 3 ? lines[lines.length - 2] : '';
+  const district = lines.length >= 3 ? lines[0] : '';
+  const location = [plzCity, district].filter(Boolean).join(' - ');
+
+  const features = $('.prop-features-short li').map((_, li) => clean(li)).get().filter(Boolean);
+  const wbs = /Wohnberechtigungsschein|B-Schein/i.test(`${det['Gesamtmiete'] || ''} ${features.join(' ')} ${title}`);
+  const floor = (det['Etage'] || '').split(',')[0].trim();
+  const tags = [...new Set([...features, wbs ? 'Wohnberechtigungsschein nötig' : '', floor].filter(Boolean))].slice(0, 12);
+
+  const photos = [...new Set($('img[src*="Fotos800"], a[href*="Fotos800"]').map((_, el) => $(el).attr('src') || $(el).attr('href')).get()
+    .filter(u => u && u.startsWith('/')).map(u => GEWOBA_ORIGIN + u))];
+
+  const avRaw = (det['Verfügbar'] || '').replace(/^ab\s+/i, '');
+  const avail = /^\d{4}-\d{2}-\d{2}/.test(avRaw) ? avRaw.slice(0, 10).split('-').reverse().join('.') : avRaw;
+  const address = [street, plzCity].filter(Boolean).join(', ');
+  const description = [address && `Adresse: ${address}`,
+    wbs && 'Nur mit Wohnberechtigungsschein (B-Schein).'].filter(Boolean).join('\n\n');
+
+  return {
+    title: title || 'GEWOBA-Inserat',
+    price_cold: top['Gesamtkaltmiete'] || det['Grundmiete'] || '',
+    price:      money(det['Gesamtmiete']) || top['Gesamtkaltmiete'] || '',
+    size:       top['Wohnfläche'] || det['Wohnfläche'] || '',
+    rooms:      top['Zimmer'] || det['Zimmer'] || '',
+    location,
+    image_url:  photos[0] || '',
+    images_json: JSON.stringify(photos),
+    description,
+    tags_json:  JSON.stringify(tags),
+    nebenkosten: money(det['Nebenkostenvorauszahlung']),
+    heizkosten:  money(det['Heizkostenvorauszahlung']),
+    kaution:     det['Sicherheitsleistungen'] || '',
+    available_from: avail,
+    property_type:  det['Objektart'] || '',
+    latitude: null, longitude: null,                     // the page carries none → geocoded from the address
+    geocodeQuery: address,
+  };
+}
+
+// ── Platform adapters for pages that need more than "download the search page and read links" ──
+const SEARCH_ADAPTERS = {
+  vonovia: { label: 'Vonovia', urls: vonoviaSearchUrls,  validate: validateVonoviaSearchUrl },
+  leg:     { label: 'LEG',     urls: legSearchUrls,      validate: validateLegSearchUrl },
+  gewoba:  { label: 'GEWOBA',  urls: gewobaSearchUrls,   validate: validateGewobaSearchUrl },
+};
+
+// Returns an error message when a pasted search URL can't work for its portal, else ''.
+function validateSearchUrl(url) {
+  const a = SEARCH_ADAPTERS[detectPlatform(url)];
+  return a ? a.validate(url) : '';
+}
+
 async function scrapeListing(url, opts = {}) {
   const platform = detectPlatform(url);
   const d = {
@@ -753,6 +1149,10 @@ async function scrapeListing(url, opts = {}) {
     nebenkosten: '', heizkosten: '', kaution: '', available_from: '', property_type: '',
     latitude: null, longitude: null,
   };
+
+  if (platform === 'vonovia') return scrapeVonovia(url, d, opts);
+  if (platform === 'leg')     return scrapeWithParser(url, d, { parse: parseLegDetail,    fallbackTitle: 'LEG-Inserat',    opts });
+  if (platform === 'gewoba')  return scrapeWithParser(url, d, { parse: parseGewobaDetail, fallbackTitle: 'GEWOBA-Inserat', opts });
 
   let html;
   let finalUrl = url;
@@ -1210,16 +1610,22 @@ async function checkExistingListings(listings, onStatusChange, onFieldChange) {
 
 // ── Main export – poll one search job ─────────────────────
 async function pollSearchJob(job, exists, insert) {
-  let searchHtml;
-  try { searchHtml = await fetchPage(job.search_url, 20000); }
-  catch (e) { throw new Error(`Suchseite nicht erreichbar: ${e.message}`); }
-
-  const urls = extractListingUrls(searchHtml, job.search_url);
-  if (!urls.length) {
-    const lc = searchHtml.toLowerCase();
-    if (lc.includes('captcha') || lc.includes('robot'))
-      throw new Error('CAPTCHA erkannt – bitte Seite manuell öffnen');
-    throw new Error(`Keine Inserat-Links gefunden (${searchHtml.length} Bytes) – Seitenstruktur evtl. geändert`);
+  let urls, searchHtml = '';
+  const adapter = SEARCH_ADAPTERS[detectPlatform(job.search_url)];
+  if (adapter) {
+    // Own data source instead of a page to scrape; an empty result is a valid answer ("nothing listed right now")
+    try { urls = await adapter.urls(job.search_url); }
+    catch (e) { throw new Error(`${adapter.label}-Suche nicht erreichbar: ${e.message}`); }
+  } else {
+    try { searchHtml = await fetchPage(job.search_url, 20000); }
+    catch (e) { throw new Error(`Suchseite nicht erreichbar: ${e.message}`); }
+    urls = extractListingUrls(searchHtml, job.search_url);
+    if (!urls.length) {
+      const lc = searchHtml.toLowerCase();
+      if (lc.includes('captcha') || lc.includes('robot'))
+        throw new Error('CAPTCHA erkannt – bitte Seite manuell öffnen');
+      throw new Error(`Keine Inserat-Links gefunden (${searchHtml.length} Bytes) – Seitenstruktur evtl. geändert`);
+    }
   }
 
   const newUrls = urls.filter(u => !exists(u));
@@ -1239,6 +1645,8 @@ async function pollSearchJob(job, exists, insert) {
 
 module.exports = {
   pollSearchJob, checkExistingListings, detectPlatform, scrapeListing, fetchPageRaw, checkListingStatus,
+  validateSearchUrl, vonoviaSearchUrls, parseVonoviaDetail,
+  legSearchUrls, parseLegDetail, gewobaSearchUrls, parseGewobaDetail,
   // Shared with index.js for the other places that call out to a
   // user-supplied address (ntfy server, browser-push endpoint).
   isUrlAllowed: isUrlSyntacticallyAllowed,

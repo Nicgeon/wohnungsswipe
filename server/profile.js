@@ -48,6 +48,22 @@ const optionLabel  = (key, value) => OPTIONS[key].find(o => o.value === value)?.
 const PLURAL_DOC_RE = /(nachweise|unterlagen|papiere|kopien|bescheinigungen|auskünfte|verträge|belege|dokumente|zeugnisse|kontoauszüge|abrechnungen)$/i;
 const isPluralDoc = name => PLURAL_DOC_RE.test((name || '').trim());
 
+// Definite article for a document name, from the last part of the compound
+// ("Mietschuldenfreiheits|bescheinigung" → die). `acc` is the accusative ("den
+// Arbeitsvertrag stellen wir … zur Verfügung"). Returns '' for names we can't
+// classify (abbreviations like "WBS", free text) — then no article is used.
+const DOC_GENDER = [
+  [/(ung|heit|keit|schaft|ion|tät|kunft|kopie|urkunde|karte|mappe|liste|police)$/i, 'f'],
+  [/(nachweis|vertrag|ausweis|bescheid|pass|brief|auszug|beleg|schein|lebenslauf)$/i, 'm'],
+  [/(zeugnis|zertifikat|dokument|formular|schreiben|gutachten|attest)$/i, 'n'],
+];
+function docArticle(name, acc = false) {
+  const n = (name || '').trim();
+  if (isPluralDoc(n)) return 'die';
+  const g = DOC_GENDER.find(([re]) => re.test(n))?.[1];
+  return g === 'f' ? 'die' : g === 'n' ? 'das' : g === 'm' ? (acc ? 'den' : 'der') : '';
+}
+
 // Status a given document can be in, as shown in the applicant profile's
 // document list and rendered into the guided message.
 const DOC_STATUS_LABEL = {
@@ -382,6 +398,80 @@ function cleanListingTitle(title) {
   return t.length >= 6 ? t : orig;
 }
 
+// ── Werte für den Fließtext aufbereiten ────────────────────
+// Scraped and typed values arrive in whatever shape the source used; in a letter
+// they should read like German prose. Each helper only touches values it fully
+// recognises and returns anything else unchanged.
+const fmtNum = n => (Number.isInteger(n) ? String(n) : String(n).replace('.', ','));
+
+// "59.0 m²" → "59 m²", "58.5qm" → "58,5 m²"
+function formatSize(size) {
+  const s = String(size || '').trim();
+  const m = s.match(/^(?:ca\.?\s*)?(\d+(?:[.,]\d+)?)\s*(?:m²|m2|qm)?$/i);
+  return m ? `${fmtNum(parseFloat(m[1].replace(',', '.')))} m²` : s;
+}
+
+// "2.5" → "2,5", "3.0" → "3"
+function formatRooms(rooms) {
+  const s = String(rooms || '').trim();
+  const m = s.match(/^(\d+(?:[.,]\d+)?)$/);
+  return m ? fmtNum(parseFloat(m[1].replace(',', '.'))) : s;
+}
+
+// "Bremen - Obervieland" → "Bremen-Obervieland"
+const formatLocation = loc => String(loc || '').replace(/\s+[-–—]\s+/g, '-').replace(/\s+/g, ' ').trim();
+
+// Unformatted German mobile numbers get the usual gap after the prefix:
+// "015510046689" → "01551 0046689", "+4917612345678" → "+49 176 12345678".
+// Numbers the user already formatted, and landlines (area codes vary in
+// length, so there is no safe split), stay exactly as entered.
+function formatPhone(phone) {
+  const s = String(phone || '').trim();
+  if (!/^\+?\d{8,15}$/.test(s)) return s;
+  let intl = true, rest;
+  if (s.startsWith('+49'))       rest = s.slice(3);
+  else if (s.startsWith('0049')) rest = s.slice(4);
+  else if (/^0[1-9]/.test(s))    { intl = false; rest = s.slice(1); }
+  else return s;
+  const m = rest.match(/^(15\d\d|1[67]\d)(\d{6,8})$/);
+  if (!m) return s;
+  return `${intl ? '+49 ' : '0'}${m[1]} ${m[2]}`;
+}
+
+// Weekday shorthand in the viewing times, written out:
+// "Mo.–Fr. ab 17 Uhr, Sa. ganztags" → "montags bis freitags ab 17 Uhr, samstags ganztags".
+// Only ranges ("Mo-Fr"), pairs ("Sa/So") and dotted days ("Sa.") are expanded —
+// a bare "So" could just as well be the word "so".
+const WEEKDAYS = { mo: 'montags', di: 'dienstags', mi: 'mittwochs', do: 'donnerstags', fr: 'freitags', sa: 'samstags', so: 'sonntags' };
+const DAY_RE = '(Mo|Di|Mi|Do|Fr|Sa|So|MO|DI|MI|DO|FR|SA|SO)';
+const day = d => WEEKDAYS[d.toLowerCase()];
+function formatAvailability(text) {
+  return String(text || '')
+    .replace(new RegExp(`\\b${DAY_RE}\\.?\\s*(?:[-–—]|bis)\\s*${DAY_RE}\\b\\.?`, 'g'), (m, a, b) => `${day(a)} bis ${day(b)}`)
+    .replace(new RegExp(`\\b${DAY_RE}\\.?\\s*(?:/|\\+|&|und)\\s*${DAY_RE}\\b\\.?`, 'g'), (m, a, b) => `${day(a)} und ${day(b)}`)
+    .replace(new RegExp(`\\b${DAY_RE}\\.(?=[\\s,;]|$)`, 'g'), (m, a) => day(a))
+    .trim()
+    // it is used mid-sentence ("Besichtigungstermine sind bei mir abends möglich")
+    .replace(/^(Abends|Morgens|Mittags|Vormittags|Nachmittags|Werktags|Wochentags|Täglich|Jederzeit|Nach Absprache|Flexibel)\b/,
+             w => w.charAt(0).toLowerCase() + w.slice(1));
+}
+
+// What the listing is, for the opening sentence — "die 59 m² große 2-Zimmer-Wohnung" —
+// instead of a technical "(59 m², 2 Zimmer)". Whatever the title already says is not repeated.
+function flatDescription(listing, cleanTitle) {
+  const title = cleanTitle || '';
+  const size  = formatSize(listing.size);
+  const rooms = formatRooms(listing.rooms);
+  const isRoom  = /\bWG\b|WG-Zimmer|\bZimmer in\b/i.test(title);
+  const isHouse = !isRoom && /haus\b|haushälfte|bungalow/i.test(title);
+  const noun = isRoom ? 'Zimmer' : isHouse ? 'Haus' : 'Wohnung';
+  const sizeOk  = /^\d/.test(size) && !/\d\s*(?:m²|m2|qm)/i.test(title);
+  const roomsOk = !isRoom && /^\d+(?:,\d+)?$/.test(rooms) && !/\d\s*-?\s*(?:zimmer|zi\b|raum|räume)/i.test(title);
+  if (!sizeOk && !roomsOk) return '';
+  const art = noun === 'Wohnung' ? 'die' : 'das';
+  return `${art} ${sizeOk ? `${size} große ` : ''}${roomsOk ? `${rooms}-Zimmer-${noun}` : noun}`;
+}
+
 // Why the flat appeals: built from what the listing really offers, so the sentence is
 // never a blank "[…]". Known amenity tags → genitive phrases, plus the district.
 const FEATURE_PHRASES = [
@@ -399,26 +489,41 @@ function listingAppeal(listing) {
   const feats = [];
   for (const [re, phrase] of FEATURE_PHRASES) if (re.test(hay) && !feats.includes(phrase)) feats.push(phrase);
   const parts = feats.slice(0, 2);
-  const loc = (listing.location || '').replace(/^\s*\d{4,5}\s*/, '').trim();
+  const loc = formatLocation((listing.location || '').replace(/^\s*\d{4,5}\s*/, ''));
   if (loc) parts.push(`der Lage in ${loc}`);
   return parts.length ? germanList(parts) : '';
 }
 
-// Supporting documents as sentences ("A und B legen wir Ihnen gerne vor. C ist beantragt.").
-// The sentence form avoids "…zur Verfügung, A (liegt vor)" fragments and needs no gender guessing.
+// Supporting documents as sentences ("Die A und die B stellen wir Ihnen gerne zur Verfügung.
+// Die C ist bereits beantragt."). The sentence form avoids "…zur Verfügung, A (liegt vor)"
+// fragments. Articles are added only when every name in a list can be classified — a lone
+// "Mietschuldenfreiheitsbescheinigung ist beantragt." reads like a note, not a letter.
 function documentsText(documents, { formal = true, plural = true } = {}) {
   const byStatus = {};
   for (const d of documents) if (d.doc) (byStatus[d.status || 'vorhanden'] ||= []).push(d.doc);
   const you = formal ? 'Ihnen' : 'dir';
   const out = [];
-  const list = names => germanList(names);
-  if (byStatus.vorhanden?.length) out.push(`${cap(list(byStatus.vorhanden))} ${plural ? 'legen wir' : 'lege ich'} ${you} gerne vor.`);
+  const list = (names, acc) => {
+    const arts = names.map(n => docArticle(n, acc));
+    return germanList(arts.every(Boolean) ? names.map((n, i) => `${arts[i]} ${n}`) : names);
+  };
+  if (byStatus.vorhanden?.length) out.push(`${cap(list(byStatus.vorhanden, true))} ${plural ? 'stellen wir' : 'stelle ich'} ${you} gerne zur Verfügung.`);
   if (byStatus.beantragt?.length) {
     const names = byStatus.beantragt;
-    out.push(`${cap(list(names))} ${(names.length > 1 || names.some(isPluralDoc)) ? 'sind' : 'ist'} beantragt.`);
+    out.push(`${cap(list(names, false))} ${(names.length > 1 || names.some(isPluralDoc)) ? 'sind' : 'ist'} bereits beantragt.`);
   }
-  if (byStatus.auf_anfrage?.length) out.push(`${cap(list(byStatus.auf_anfrage))} ${plural ? 'können wir' : 'kann ich'} ${you} auf Wunsch gerne nachreichen.`);
+  if (byStatus.auf_anfrage?.length) out.push(`${cap(list(byStatus.auf_anfrage, true))} ${plural ? 'können wir' : 'kann ich'} ${you} auf Wunsch gerne nachreichen.`);
   return out.join(' ');
+}
+
+// The same documents as a plain list for the middle of a sentence ("…zur Verfügung: die A und die B") —
+// only when all of them are on hand; otherwise the status sentences above say more ('' then).
+function documentsInline(documents) {
+  const docs = documents.filter(d => d.doc);
+  if (!docs.length || docs.some(d => (d.status || 'vorhanden') !== 'vorhanden')) return '';
+  const names = docs.map(d => d.doc);
+  const arts = names.map(n => docArticle(n, true));
+  return germanList(arts.every(Boolean) ? names.map((n, i) => `${arts[i]} ${n}`) : names);
 }
 
 // Build the {placeholder} substitution map from a listing + profile(s).
@@ -446,11 +551,11 @@ function buildPlaceholders(listing, profile, profiles = [profile], members = nul
     preis:   listing.price_cold || listing.price || '',
     warm:    listing.price || '',
     kalt:    listing.price_cold || '',
-    zimmer:  listing.rooms || '',
-    groesse: listing.size || '',
-    größe:   listing.size || '',
-    lage:    listing.location || '',
-    ort:     listing.location || '',
+    zimmer:  formatRooms(listing.rooms),
+    groesse: formatSize(listing.size),
+    größe:   formatSize(listing.size),
+    lage:    formatLocation(listing.location),
+    ort:     formatLocation(listing.location),
     name:    namen,
     namen,
     personen: String(Math.max(persons, 1)),
@@ -462,10 +567,11 @@ function buildPlaceholders(listing, profile, profiles = [profile], members = nul
     mietdauer: uniq(profiles.map(x => x.lease_duration === 'any' ? '' : optionLabel('lease_duration', x.lease_duration))).join(', '),
     beschaeftigung: uniq(people.map(employmentText)).join(', '),
     einkommen: uniq(profiles.map(x => optionLabel('income_range', x.income_range))).join(', '),
-    telefon: uniq(profiles.map(x => x.phone)).join(' oder '),
-    erreichbarkeit: uniq(profiles.map(x => x.availability)).join(' bzw. '),
-    unterlagen,                       // full sentences: "A und B legen wir Ihnen gerne vor. C ist beantragt."
+    telefon: uniq(profiles.map(x => formatPhone(x.phone))).join(' oder '),
+    erreichbarkeit: uniq(profiles.map(x => formatAvailability(x.availability))).join(' bzw. '),
+    unterlagen,                       // full sentences: "A und B stellen wir Ihnen gerne zur Verfügung. C ist beantragt."
     unterlagen_liste: unterlagenListe, // names only: "A, B und C"
+    _unterlagen_inline: documentsInline([...docs.values()]),   // used for "…, {unterlagen}" (see applyTemplate)
     merkmale: appeal,                 // "des Balkons und der Lage in Neustadt"
     grund:   appeal ? `Die Wohnung spricht ${plural ? 'uns' : 'mich'} besonders aufgrund ${appeal} an.` : '',
   };
@@ -476,16 +582,46 @@ function buildPlaceholders(listing, profile, profiles = [profile], members = nul
 // sent to a landlord); unknown ones (typos) stay visible and are reported
 // back in `unknown` so the UI can warn about them.
 const SENTENCE_PLACEHOLDERS = new Set(['unterlagen', 'grund']);
+
+// Text pasted from a mail program or a chat often carries hard line breaks every ~80 characters,
+// which then show up as breaks in the middle of a sentence. Within a paragraph (blank lines stay),
+// a line is joined with the next one when that one continues the sentence (starts lowercase and
+// the line has no closing punctuation) or when the line is long enough to have been wrapped.
+// Greetings, sign-offs, names and list items keep their own lines.
+const KEEP_LINE_RE = /^(?:mit (?:freundlichen|besten|herzlichen) grüßen|(?:viele|beste|liebe|herzliche|freundliche) grüße|grüße|gruß|mfg|hallo\b|hi\b|moin\b|sehr geehrte|liebe[rs]?\b|guten tag)/i;
+const LIST_LINE_RE = /^\s*(?:[-–•*·]|\d+[.)])\s/;
+function unwrapHardBreaks(text) {
+  return String(text || '').split(/(\n[ \t]*\n)/).map(part => {
+    if (/^\n[ \t]*\n$/.test(part)) return part;
+    const lines = part.split('\n');
+    const out = [lines[0]];
+    for (let i = 1; i < lines.length; i++) {
+      const prev = out[out.length - 1].replace(/[ \t]+$/, ''), next = lines[i].trim();
+      const continues = /^[a-zäöüß]/.test(next) && !/[.!?:]$/.test(prev);
+      const wrapped = prev.length >= 65 && !/:$/.test(prev);
+      if (prev && next && (continues || wrapped) && !LIST_LINE_RE.test(prev) && !LIST_LINE_RE.test(next) && !KEEP_LINE_RE.test(next))
+        out[out.length - 1] = `${prev} ${next}`;
+      else out.push(lines[i]);
+    }
+    return out.join('\n');
+  }).join('');
+}
+
 function applyTemplate(tpl, placeholders) {
   const unknown = [];
   // "…zur Verfügung, {unterlagen}" – these placeholders are whole sentences, so a comma in front of
-  // them becomes a full stop (and disappears together with an empty value).
-  const text = tpl.replace(/(,[ \t]*)?\{([\wäöüÄÖÜß]+)\}/g, (m, comma, key) => {
+  // them becomes a full stop (and disappears together with an empty value). The comma may also sit
+  // at the end of the previous line. Documents that are all on hand read better as a list instead:
+  // "…zur Verfügung: die A und die B."
+  const filled = tpl.replace(/(,\s*)?\{([\wäöüÄÖÜß]+)\}/g, (m, comma, key) => {
     const k = key.toLowerCase();
     if (placeholders[k] === undefined) { if (!unknown.includes(`{${key}}`)) unknown.push(`{${key}}`); return m; }
+    if (comma && k === 'unterlagen' && placeholders._unterlagen_inline) return `: ${placeholders._unterlagen_inline}`;
     if (comma && SENTENCE_PLACEHOLDERS.has(k)) return placeholders[k] ? `. ${placeholders[k]}` : '.';
     return (comma || '') + placeholders[k];
-  })
+  });
+  const text = unwrapHardBreaks(filled)
+    .replace(/(^|[^.])([.!?])\.(?!\.)/g, '$1$2')        // "…zur Verfügung.." after a sentence placeholder (not "...")
     .replace(/[ \t]+([,.;:!?])/g, '$1')
     .replace(/(\S)[ \t]{2,}/g, '$1 ');
   return { text, unknown };
@@ -525,6 +661,43 @@ const EMPLOYMENT_HINTS = { trainee: /ausbild|azubi|auszubild/i, student: /stud/i
                            retired: /rent|pension/i, employed: /angestellt/i };
 const employmentIsRedundant = p => !!(p.employment && p.occupation && EMPLOYMENT_HINTS[p.employment]?.test(p.occupation)
                                        && !(p.employment === 'employed' && p.employment_permanent));
+// A trainee whose occupation names the profession: "Ich absolviere eine Ausbildung als
+// Fachinformatiker …" says it precisely, instead of "Ich bin Fachinformatiker …" plus a
+// vague "Ich bin in Ausbildung." ("als" needs no zum/zur gender guess.)
+const traineeWithJob = p => p.employment === 'trainee' && !!p.occupation && !employmentIsRedundant(p);
+
+// Occupation and employment status as ONE statement, in the forms the letter needs:
+// { ich: 'bin als Pflegefachfrau unbefristet angestellt', er: 'ist als …', wir: 'sind {B} unbefristet angestellt' }.
+// `wir` only exists without an occupation (two people rarely share one); {B} becomes "beide"/"alle".
+// Replaces "Lena (Pflegefachfrau)" in the introduction plus a separate "Lena ist unbefristet angestellt."
+function workPhrase(p) {
+  const occ = (p.occupation || '').trim();
+  const emp = p.employment || '';
+  const perm = emp === 'employed' && !!p.employment_permanent;
+  if (!occ && !emp) return null;
+  if (occ && (!emp || employmentIsRedundant(p))) return { ich: `bin ${occ}`, er: `ist ${occ}` };
+  if (!occ) {
+    const forms = {
+      trainee:       ['befinde mich derzeit in einer Ausbildung', 'befindet sich derzeit in einer Ausbildung', 'befinden uns {B} derzeit in einer Ausbildung'],
+      student:       ['studiere', 'studiert', 'studieren {B}'],
+      employed:      perm ? ['bin unbefristet angestellt', 'ist unbefristet angestellt', 'sind {B} unbefristet angestellt']
+                          : ['bin angestellt', 'ist angestellt', 'sind {B} angestellt'],
+      self_employed: ['bin selbstständig', 'ist selbstständig', 'sind {B} selbstständig'],
+      retired:       ['bin in Rente', 'ist in Rente', 'sind {B} in Rente'],
+    }[emp];
+    return forms ? { ich: forms[0], er: forms[1], wir: forms[2] } : null;
+  }
+  switch (emp) {
+    case 'trainee':       return { ich: `absolviere eine Ausbildung als ${occ}`, er: `absolviert eine Ausbildung als ${occ}` };
+    case 'employed':      return /angestellt/i.test(occ)
+                            ? { ich: `bin ${occ} in unbefristeter Anstellung`, er: `ist ${occ} in unbefristeter Anstellung` }
+                            : { ich: `bin als ${occ} ${perm ? 'unbefristet ' : ''}angestellt`, er: `ist als ${occ} ${perm ? 'unbefristet ' : ''}angestellt` };
+    case 'self_employed': return { ich: `bin als ${occ} selbstständig`, er: `ist als ${occ} selbstständig` };
+    case 'student':       return { ich: `bin ${occ} und studiere`, er: `ist ${occ} und studiert` };
+    case 'retired':       return { ich: `bin ${occ} im Ruhestand`, er: `ist ${occ} im Ruhestand` };
+    default:              return { ich: `bin ${occ}`, er: `ist ${occ}` };
+  }
+}
 
 // Variant A1 — guided template built from structured profile fields. Written as flowing
 // German: related facts share a sentence, subjects vary, grammar follows tone and head count
@@ -550,40 +723,53 @@ function buildGuidedMessage(listing, profiles, formal, members = null) {
   const paragraphs = [];
   paragraphs.push(formal ? 'Sehr geehrte Damen und Herren,' : 'Hallo,');
 
+  // The title identifies the listing; size and rooms only stand in for a missing title
+  // ("Ihre Anzeige über die 59 m² große 2-Zimmer-Wohnung") — never as "(59 m², 2 Zimmer)".
   const cleanTitle = cleanListingTitle(listing.title);
-  const titleRef = cleanTitle ? `${formal ? 'Ihre' : 'deine'} Anzeige „${cleanTitle}“` : `${formal ? 'Ihre' : 'deine'} Wohnungsanzeige`;
-  const details = [];
-  if (listing.size)  details.push(listing.size);
-  if (listing.rooms) details.push(`${listing.rooms} Zimmer`);
-  const detailStr = details.length ? ` (${details.join(', ')})` : '';
-  paragraphs.push(`mit großem Interesse ${plural ? 'haben wir' : 'habe ich'} ${titleRef}${detailStr} gesehen und ${plural ? 'würden uns' : 'würde mich'} sehr über eine Besichtigung freuen.`);
+  const flat = cleanTitle ? '' : flatDescription(listing, '');
+  const Ihre = formal ? 'Ihre' : 'deine';
+  const titleRef = cleanTitle ? `${Ihre} Anzeige „${cleanTitle}“` : flat ? `${Ihre} Anzeige über ${flat}` : `${Ihre} Wohnungsanzeige`;
+  // The wish for a viewing is said once, in the closing line — not here as well.
+  paragraphs.push(`mit großem Interesse ${plural ? 'haben wir' : 'habe ich'} ${titleRef} gelesen.`);
 
-  // ── Who we are ──
-  const introProfiles = people.filter(x => !x._hideIntro);
-  const who = introProfiles.map(x => {
-    if (!x.display_name && !x.occupation) return '';
-    return x.occupation ? `${x.display_name || 'eine Person'} (${x.occupation})` : x.display_name;
-  }).filter(Boolean);
+  // ── Who we are: names, then what each person does (job + employment in one sentence) ──
+  const nameShown = x => !x._hideIntro && !!(x.display_name || '').trim();
+  const named = people.filter(nameShown);
+  const workers = people.map((x, i) => ({ x, i, wp: workPhrase(x) })).filter(w => w.wp);
+  // Several people but only one of them named: that person is the contact. The name comes in full at
+  // its first mention (the job sentence) and again in the contact block next to the phone number.
+  const contactPerson = plural && named.length === 1 ? named[0].display_name.trim() : '';
+  // A household of several with a single profile has no name to fall back on in the third person
+  const speaker = (x, i) => contactPerson && x === named[0] ? contactPerson
+    : (x.display_name || x._username) ? nameOf(x, i) : 'Eine Person aus unserem Haushalt';
   if (plural) {
-    const kidsText = kids ? ` (davon ${kids === 1 ? 'ein Kind' : `${numWord(kids)} Kinder`})` : '';
+    const kidsText = kids ? `, davon ${kids === 1 ? 'ein Kind' : `${numWord(kids)} Kinder`}` : '';
     let head;
     if (type === 'couple' && persons === 2) head = 'als Paar';
     else if (type === 'couple')             head = `als Paar mit ${numWord(persons)} Personen${kidsText}`;
     else if (type === 'family')             head = `als Familie mit ${numWord(persons)} Personen${kidsText}`;
     else if (type === 'wg')                 head = ZU_WORD[persons] ? `als WG ${ZU_WORD[persons]}` : `als WG mit ${numWord(persons)} Personen`;
     else                                    head = ZU_WORD[persons] || `als ${numWord(persons)} Personen`;
-    let intro = `Wir bewerben uns ${head}${type === 'couple' && persons === 2 ? kidsText : ''}`;
-    if (who.length >= 2)      intro += `: ${germanList(who)}.`;
-    else if (who.length === 1) intro += `. Ansprechperson ist ${who[0]}.`;
-    else                       intro += '.';
-    paragraphs.push(intro);
-  } else if (who.length || people[0]?.display_name) {
+    const intro = [];
+    if (named.length >= 2) intro.push(`Wir, ${germanList(named.map(x => x.display_name.trim()))}, bewerben uns ${head}.`);
+    else intro.push(`Wir bewerben uns ${head}.`);
+    if (workers.length) {
+      // "Wir sind beide …" only when the profiles cover every person (a family of six with one
+      // profile must not claim that the children are employed)
+      const everyoneCovered = workers.length === people.length && people.length === persons;
+      const same = new Set(workers.map(w => w.wp.er)).size === 1;
+      if (everyoneCovered && same && workers.length > 1 && workers[0].wp.wir)
+        intro.push(`Wir ${workers[0].wp.wir.replace('{B}', both)}.`);
+      else intro.push(cap(germanList(workers.map(w => `${speaker(w.x, w.i)} ${w.wp.er}`))) + '.');
+    }
+    paragraphs.push(intro.join(' '));
+  } else {
     const p = people[0];
-    const name = !p._hideIntro && p.display_name;
-    const job = p.occupation;
-    if (name && job)      paragraphs.push(`Mein Name ist ${name} und ich bin ${job}.`);
-    else if (name)        paragraphs.push(`Mein Name ist ${name}.`);
-    else if (job)         paragraphs.push(`Ich bin ${job}.`);
+    const name = nameShown(p) && p.display_name.trim();
+    const wp = workPhrase(p);
+    if (name && wp)  paragraphs.push(`Mein Name ist ${name} und ich ${wp.ich}.`);
+    else if (name)   paragraphs.push(`Mein Name ist ${name}.`);
+    else if (wp)     paragraphs.push(`Ich ${wp.ich}.`);
   }
 
   // Why this flat (from the listing's own amenities and district)
@@ -627,20 +813,6 @@ function buildGuidedMessage(listing, profiles, formal, members = null) {
   if (smokeClause && petClause) facts.push(`${Wir} ${smokeClause} und ${petClause}.`);
   else if (smokeClause || petClause) facts.push(`${Wir} ${smokeClause || petClause}.`);
 
-  // Employment comes from the people themselves (their personal profiles). It is left out when the
-  // occupation already says it ("Duale Studentin" + "im Studium"), so nothing is stated twice.
-  // One statement if everyone matches, otherwise per person.
-  const emp = people.map((x, i) => ({ name: nameOf(x, i), text: employmentText(x), redundant: employmentIsRedundant(x) }))
-                    .filter(e => e.text && !e.redundant);
-  // "Wir sind beide …" only when the profiles cover every person (a family of six with one
-  // profile must not claim that the children are employed).
-  if (emp.length) {
-    const everyoneCovered = emp.length === people.length && people.length === persons;
-    if (!plural || people.length === 1) facts.push(`Ich bin ${emp[0].text}.`);
-    else if (everyoneCovered && new Set(emp.map(e => e.text)).size === 1) facts.push(`Wir sind ${both} ${emp[0].text}.`);
-    else facts.push(cap(germanList(emp.map(e => `${e.name} ist ${e.text}`))) + '.');
-  }
-
   // Income — only present if the person(s) chose to share it.
   const inc = profiles.map((x, i) => ({ name: nameOf(x, i), label: optionLabel('income_range', x.income_range) })).filter(e => e.label);
   if (inc.length) {
@@ -661,25 +833,30 @@ function buildGuidedMessage(listing, profiles, formal, members = null) {
   if (docText) paragraphs.push(docText);
 
   // Free-text about sections
-  const abouts = profiles.map(x => x.about_text).filter(Boolean);
+  const abouts = profiles.map(x => unwrapHardBreaks(x.about_text).trim()).filter(Boolean);
   if (abouts.length) paragraphs.push(abouts.join('\n\n'));
 
   // ── Contact: phone (whose number, when there are several) + viewing times ──
-  const phoneOwners = profiles.filter(x => x.phone).map((x, i) => ({ phone: x.phone, name: nameOf(x, profiles.indexOf(x)) }));
+  const phoneOwners = profiles.filter(x => x.phone).map(x => ({ phone: formatPhone(x.phone), name: nameOf(x, profiles.indexOf(x)) }));
   const phones = [...new Map(phoneOwners.map(o => [o.phone, o])).values()];
-  const avails = [...new Set(profiles.map(x => x.availability).filter(Boolean))];
+  const avails = [...new Set(profiles.map(x => formatAvailability(x.availability)).filter(Boolean))];
   const contact = [];
-  if (phones.length) {
-    const list = phones.length > 1 && profiles.length > 1
-      ? phones.map(o => `${o.phone} (${o.name})`).join(' oder ') : phones.map(o => o.phone).join(' oder ');
-    contact.push(formal ? `Sie erreichen ${uns} telefonisch unter ${list}.` : `Du erreichst ${uns} telefonisch unter ${list}.`);
-  }
+  const reach = formal ? 'Sie erreichen' : 'Du erreichst';
+  const YourCap = formal ? 'Ihre' : 'Deine';
+  if (phones.length > 1 && profiles.length > 1)            // several numbers: say whose, without brackets
+    contact.push(`Telefonisch ${formal ? 'erreichen Sie' : 'erreichst du'} ${germanList(phones.map(o => `${o.name} unter ${o.phone}`)).replace(/ und ([^ ]+ unter)/, ' oder $1')}.`);
+  else if (phones.length && contactPerson)
+    contact.push(`${YourCap} Ansprechperson ist ${contactPerson}, telefonisch erreichbar unter ${phones.map(o => o.phone).join(' oder ')}.`);
+  else if (phones.length)
+    contact.push(`${reach} ${uns} telefonisch unter ${phones.map(o => o.phone).join(' oder ')}.`);
+  else if (contactPerson)
+    contact.push(`${YourCap} Ansprechperson ist ${contactPerson}.`);
   if (avails.length) contact.push(`Besichtigungstermine sind ${plural ? 'bei uns' : 'bei mir'} ${avails.join(' bzw. ')} möglich.`);
   if (contact.length) paragraphs.push(contact.join(' '));
 
   paragraphs.push(formal
-    ? `Über eine Rückmeldung ${plural ? 'würden wir uns' : 'würde ich mich'} sehr freuen.`
-    : `Über eine kurze Rückmeldung ${plural ? 'würden wir uns' : 'würde ich mich'} sehr freuen.`);
+    ? `Über eine Rückmeldung und die Möglichkeit einer Besichtigung ${plural ? 'würden wir uns' : 'würde ich mich'} sehr freuen.`
+    : `Über eine kurze Rückmeldung und einen Besichtigungstermin ${plural ? 'würden wir uns' : 'würde ich mich'} sehr freuen.`);
   const sigNames = people.map(x => x.display_name).filter(Boolean);
   paragraphs.push([formal ? 'Mit freundlichen Grüßen' : 'Viele Grüße', sigNames.join(', ')].filter(Boolean).join('\n'));
 
@@ -715,8 +892,8 @@ function summarizeForAi(profiles, members = null) {
     const docs = parseDocuments(p);
     if (docs.length) parts.push(`Unterlagen: ${docs.map(d => `${d.doc} (${DOC_STATUS_LABEL[d.status]?.[isPluralDoc(d.doc) ? 'many' : 'one'] || d.status})`).join(', ')}`);
     if (p.about_text) parts.push(`Über: ${p.about_text}`);
-    if (p.phone) parts.push(`Telefon: ${p.phone}`);
-    if (p.availability) parts.push(`Besichtigung möglich: ${p.availability}`);
+    if (p.phone) parts.push(`Telefon: ${formatPhone(p.phone)}`);
+    if (p.availability) parts.push(`Besichtigung möglich: ${formatAvailability(p.availability)}`);
     lines.push(`${members ? 'Gemeinsame Angaben der Gruppe' : `Person ${i + 1}`}: ${parts.join(', ')}`);
   });
   return (members ? 'Suche als Gruppe (Wir-Form).\n' : '') + lines.join('\n');
@@ -738,6 +915,7 @@ module.exports = {
   OPTIONS, SHARE_KEYS, SHARE_KEY_NAMES, SECTIONS, DOC_STATUS_LABEL, cleanListingTitle, listingAppeal, documentsText,
   householdOf, normalizeGroupProfile, groupAsProfile, completenessGroup, GROUP_SHARE_KEY_NAMES, MEMBER_FED_KEYS, cleanDocuments, parseDocuments, parseShare, hasData, normalizeInput,
   completeness, isFilled, movePhraseOf, personsOf, childrenOf, visibleProfile, blockStatus,
-  buildPlaceholders, applyTemplate, buildGuidedMessage, summarizeForAi, groupMembersStatus,
+  buildPlaceholders, applyTemplate, unwrapHardBreaks, buildGuidedMessage, summarizeForAi, groupMembersStatus,
+  formatSize, formatRooms, formatLocation, formatPhone, formatAvailability,
   germanList, isPluralDoc, optionLabel,
 };

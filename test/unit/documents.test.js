@@ -1,0 +1,21 @@
+const P=require('../../server/profile.js');
+let fails=0; const eq=(a,b,m)=>{ if(a!==b){fails++;console.log('✗',m,'\n   ',a,'\n  ≠',b);} };
+const D=(arr)=>arr.map(([doc,status])=>({doc,status}));
+eq(P.documentsText(D([['Mietschuldenfreiheitsbescheinigung','beantragt']])),'Die Mietschuldenfreiheitsbescheinigung ist bereits beantragt.','single fem');
+eq(P.documentsText(D([['Arbeitsvertrag','vorhanden']]),{plural:false}),'Den Arbeitsvertrag stelle ich Ihnen gerne zur Verfügung.','masc acc');
+eq(P.documentsText(D([['Arbeitsvertrag','beantragt']])),'Der Arbeitsvertrag ist bereits beantragt.','masc nom');
+eq(P.documentsText(D([['Gehaltsnachweise','vorhanden'],['SCHUFA-Auskunft','vorhanden'],['Ausweiskopie','vorhanden']])),'Die Gehaltsnachweise, die SCHUFA-Auskunft und die Ausweiskopie stellen wir Ihnen gerne zur Verfügung.','list');
+eq(P.documentsText(D([['Gehaltsnachweise','beantragt']])),'Die Gehaltsnachweise sind bereits beantragt.','plural');
+eq(P.documentsText(D([['Mieterselbstauskunft','auf_anfrage'],['Bürgschaft','auf_anfrage']]),{formal:false}),'Die Mieterselbstauskunft und die Bürgschaft können wir dir auf Wunsch gerne nachreichen.','auf anfrage');
+eq(P.documentsText(D([['WBS','beantragt']])),'WBS ist bereits beantragt.','unknown stays bare');
+eq(P.documentsText(D([['SCHUFA-Auskunft','vorhanden'],['WBS','vorhanden']])),'SCHUFA-Auskunft und WBS stellen wir Ihnen gerne zur Verfügung.','mixed unknown → bare list');
+eq(P.documentsText(D([['Schulzeugnis','vorhanden']]),{plural:false}),'Das Schulzeugnis stelle ich Ihnen gerne zur Verfügung.','neut');
+// couple with one profile
+const base={display_name:'',occupation:'',household_size:'',household_type:'couple',persons:2,children:0,move_in_type:'',move_in_date:'',lease_duration:'',smoker:0,pets:'',employment:'employed',employment_permanent:1,income_range:'',documents_json:'[]',about_text:'',phone:'',availability:'',formal:1,share_json:'{}'};
+const m1=P.buildGuidedMessage({title:'Helle Wohnung am Park'},[P.visibleProfile({...base,display_name:'Anna Schmidt',occupation:'Ärztin'})],1);
+eq(/Anna Schmidt ist als Ärztin unbefristet angestellt\./.test(m1) && /Ihre Ansprechperson ist Anna Schmidt\./.test(m1) && !/Ich bin/.test(m1),true,'couple named');
+const m2=P.buildGuidedMessage({title:'Helle Wohnung am Park'},[P.visibleProfile({...base,employment:'trainee'})],1);
+eq(/Eine Person aus unserem Haushalt befindet sich derzeit in einer Ausbildung\./.test(m2) && !/Ich /.test(m2),true,'couple no name');
+const m3=P.buildGuidedMessage({title:'Helle Wohnung am Park'},[P.visibleProfile({...base,household_type:'',persons:0,display_name:'Max'})],1);
+eq(/Mein Name ist Max und ich bin unbefristet angestellt\./.test(m3),true,'solo unchanged');
+console.log(fails?`${fails} FAILS`:'all ok'); if(!fails) console.log('\n'+m1);

@@ -63,6 +63,14 @@ volumes:
 - BASE_URL
     - set it to your public `https://…` address when running behind a reverse proxy – this also enables secure (HTTPS-only) cookies.
 
+## Tests
+```bash
+npm ci
+npm test          # unit + API tests (each API test starts its own server with a temporary database)
+npm run test:ui   # additionally the browser tests (needs Playwright: npm i -D playwright && npx playwright install chromium)
+```
+Search agents don't contact real portals in the tests: `test/helpers/fake-poll.js` feeds them fixed listings, everything after that runs for real. Run single files with e.g. `node test/run.js dedupe`.
+
 ## Credits
 Parts of this project were taken over from the fork
 [Cuzimgamer2/wohnungsswipe_cuzi](https://github.com/Cuzimgamer2/wohnungsswipe_cuzi)
