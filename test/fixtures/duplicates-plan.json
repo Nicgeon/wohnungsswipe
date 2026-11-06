@@ -1,0 +1,7 @@
+{ "Anna privat": [
+    {"url":"https://www.kleinanzeigen.de/s-anzeige/u1","platform":"kleinanzeigen","title":"U1 Altbau","size":"60 m²","rooms":"2","price_cold":"600 €","location":"28201 Bremen - Neustadt"} ],
+  "WG-Gruppe": [
+    {"url":"https://www.kleinanzeigen.de/s-anzeige/u1","platform":"kleinanzeigen","title":"U1 Altbau","size":"60 m²","rooms":"2","price_cold":"600 €","location":"28201 Bremen - Neustadt"},
+    {"url":"https://www.leg-wohnen.de/immobilien/detail/u2","platform":"leg","title":"U2 LEG","size":"69,0 m²","rooms":"3","price_cold":"679,00 €","price":"899,00 €","location":"28357 Bremen - Lehesterdeich"},
+    {"url":"https://www.immowelt.de/expose/u3","platform":"immowelt","title":"U3 Immowelt-Kopie","size":"69 m²","rooms":"3","price_cold":"679 €","location":"28357 Bremen"} ]
+}

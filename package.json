@@ -1,10 +1,12 @@
 {
   "name": "wohnungsswipe",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Tinder-style Wohnungssuche",
   "main": "server/index.js",
   "scripts": {
-    "start": "node server/index.js"
+    "start": "node server/index.js",
+    "test": "node test/run.js",
+    "test:ui": "node test/run.js --ui"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
